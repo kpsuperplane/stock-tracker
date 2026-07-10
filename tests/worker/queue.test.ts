@@ -69,9 +69,6 @@ describe("Queue consumer", () => {
       "explain",
     ).mockResolvedValue({
       explanationZhCn: "企业客户增长可能推动股价上涨。",
-      confidence: "high",
-      clearCatalyst: true,
-      sourceIndexes: [0],
       model: "test",
     });
     const message = {

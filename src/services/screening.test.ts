@@ -64,9 +64,6 @@ describe("ScreeningService", () => {
     const news = { search: vi.fn(async () => sources) };
     const result = {
       explanationZhCn: "企业客户增长可能推动股价上涨。",
-      confidence: "high" as const,
-      clearCatalyst: true,
-      sourceIndexes: [0],
       model: "test",
     };
     const explanation = { explain: vi.fn(async () => result) };
@@ -160,9 +157,6 @@ describe("ScreeningService", () => {
     const explanation = {
       explain: vi.fn(async () => ({
         explanationZhCn: "未找到相关新闻，因此无法确定明确催化因素。",
-        confidence: "low" as const,
-        clearCatalyst: false,
-        sourceIndexes: [],
         model: "deterministic-no-sources",
       })),
     };

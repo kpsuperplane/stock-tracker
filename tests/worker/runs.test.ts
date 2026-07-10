@@ -153,7 +153,7 @@ describe("RunRepository", () => {
     ).toEqual({ count: 1 });
   });
 
-  it("persists price, sources, analysis, and cited source indexes", async () => {
+  it("persists price, analysis, and cites every supplied source", async () => {
     const ticker = await insertTicker("shop", "SHOP.TO", "Shopify Inc.");
     const repository = new RunRepository(env.DB);
     const run = await repository.createRun({

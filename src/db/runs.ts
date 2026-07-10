@@ -239,9 +239,7 @@ export class RunRepository {
           now,
         ),
       this.db
-        .prepare(
-          "UPDATE sources SET cited = 1 WHERE screening_id = ?1",
-        )
+        .prepare("UPDATE sources SET cited = 1 WHERE screening_id = ?1")
         .bind(screeningId),
       this.db
         .prepare(
