@@ -158,4 +158,41 @@ describe("Queue consumer", () => {
         .first(),
     ).toEqual({ status: "failed", error_code: "screening_failed" });
   });
+
+  it("exhausts a transient provider retry on the third attempt", async () => {
+    const run = await createRun("MSFT", "retry-msft", "2026-07-06");
+    const [screeningId] = run.screeningIds;
+    if (!screeningId) throw new Error("screening_missing");
+    await env.DB.prepare(
+      "UPDATE screenings SET attempt_count = 2 WHERE id = ?1",
+    )
+      .bind(screeningId)
+      .run();
+    vi.spyOn(
+      YahooMarketDataProvider.prototype,
+      "getInstrument",
+    ).mockRejectedValue(new Error("market_http_503"));
+    const message = {
+      body: {
+        screeningId,
+        reportRunId: run.runId,
+        tickerId: "retry-msft",
+      },
+      ack: vi.fn(),
+      retry: vi.fn(),
+    } as unknown as Message<ScreeningJobMessage>;
+    await handleQueue(
+      { messages: [message] } as unknown as MessageBatch<ScreeningJobMessage>,
+      env,
+    );
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare(
+        "SELECT status, attempt_count FROM screenings WHERE id = ?1",
+      )
+        .bind(screeningId)
+        .first(),
+    ).toEqual({ status: "failed", attempt_count: 3 });
+  });
 });
