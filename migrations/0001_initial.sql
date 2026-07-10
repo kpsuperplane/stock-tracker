@@ -48,6 +48,8 @@ CREATE TABLE report_runs (
 );
 CREATE UNIQUE INDEX report_runs_one_published_date_idx
   ON report_runs(trading_date) WHERE published = 1;
+CREATE UNIQUE INDEX report_runs_one_scheduled_date_idx
+  ON report_runs(trading_date) WHERE origin = 'scheduled';
 CREATE INDEX report_runs_history_idx ON report_runs(published, trading_date DESC);
 
 CREATE TABLE screenings (
