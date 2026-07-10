@@ -5,6 +5,7 @@ import { requireBasicAuth } from "./auth";
 import type { Env } from "./env";
 import { ApiError } from "./errors";
 import { backfillRoutes } from "./routes/backfills";
+import { eventImportRoutes } from "./routes/event-imports";
 import { corporateActionRoutes, eventsRoutes } from "./routes/events";
 import { reportRoutes } from "./routes/reports";
 import { retryRoutes } from "./routes/retries";
@@ -12,23 +13,30 @@ import { tickerRoutes } from "./routes/tickers";
 
 export const createApp = () => {
   const app = new Hono<{ Bindings: Env }>();
+  const bodyTooLarge = (context: Parameters<ReturnType<typeof bodyLimit>>[0]) =>
+    context.json(
+      {
+        error: {
+          code: "body_too_large",
+          message: "Request body is too large.",
+        },
+      },
+      413,
+    );
+  const normalBodyLimit = bodyLimit({
+    maxSize: 64 * 1024,
+    onError: bodyTooLarge,
+  });
+  const importPreviewBodyLimit = bodyLimit({
+    maxSize: 256 * 1024,
+    onError: bodyTooLarge,
+  });
 
   app.use("*", requireBasicAuth());
-  app.use(
-    "/api/*",
-    bodyLimit({
-      maxSize: 64 * 1024,
-      onError: (context) =>
-        context.json(
-          {
-            error: {
-              code: "body_too_large",
-              message: "Request body is too large.",
-            },
-          },
-          413,
-        ),
-    }),
+  app.use("/api/*", (context, next) =>
+    context.req.path === "/api/event-imports/preview"
+      ? importPreviewBodyLimit(context, next)
+      : normalBodyLimit(context, next),
   );
   app.use("/api/*", async (context, next) => {
     const contentType = context.req.header("Content-Type");
@@ -36,7 +44,11 @@ export const createApp = () => {
     if (
       ["POST", "PATCH", "PUT"].includes(context.req.method) &&
       context.req.raw.body !== null &&
-      mimeType !== "application/json"
+      mimeType !== "application/json" &&
+      !(
+        context.req.path === "/api/event-imports/preview" &&
+        mimeType === "multipart/form-data"
+      )
     ) {
       return context.json(
         { error: { code: "content_type", message: "Use application/json." } },
@@ -50,6 +62,7 @@ export const createApp = () => {
   app.route("/api/backfills", backfillRoutes);
   app.route("/api/corporate-actions", corporateActionRoutes);
   app.route("/api/events", eventsRoutes);
+  app.route("/api/event-imports", eventImportRoutes);
   app.route("/api/reports", reportRoutes);
   app.route("/api/screenings", retryRoutes);
   app.route("/api/tickers", tickerRoutes);
