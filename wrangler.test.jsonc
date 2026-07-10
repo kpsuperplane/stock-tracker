@@ -1,0 +1,32 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "stock-movement-explainer-test",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "stock-tracker-test",
+      "database_id": "test-placeholder",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "SCREENING_QUEUE",
+        "queue": "stock-tracker-screenings-test"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "stock-tracker-screenings-test",
+        "max_batch_size": 5,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 5
+      }
+    ]
+  }
+}

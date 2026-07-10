@@ -31,6 +31,8 @@ npm run test:e2e
 
 `npm run check` regenerates Worker types, checks formatting/lint and TypeScript, runs unit and local D1/Worker tests, and creates the production build. Browser tests cover phone and desktop report, history, watchlist, and backfill flows.
 
+Worker integration tests use the local-only `wrangler.test.jsonc`. Keep that test configuration separate from `wrangler.jsonc`; pointing Vitest at the production configuration can connect remote bindings and mutate deployed Worker state.
+
 ## Architecture and guardrails
 
 One Cloudflare Worker protects the React static assets and Hono API with HTTP Basic Authentication. D1 retains ticker snapshots and published report generations, a weekday Cron Trigger starts work at 22:00 UTC, Cloudflare Queues fan out per-ticker screening, and Workers AI is called at most once for each qualifying mover with news.
@@ -58,7 +60,7 @@ npx wrangler secret put BASIC_AUTH_PASSWORD
 npm run deploy:production
 ```
 
-Commit the real D1 identifier and regenerated `worker-configuration.d.ts` written after bootstrap. The checked-in `local-placeholder` identifier is not a production resource. Secrets are entered interactively and must never be stored in Git or shell history.
+Commit the real D1 identifier and regenerated `worker-configuration.d.ts` written after bootstrap. Secrets are entered interactively and must never be stored in Git or shell history.
 
 ## Automatic deployment
 
