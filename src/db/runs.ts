@@ -233,20 +233,16 @@ export class RunRepository {
           crypto.randomUUID(),
           screeningId,
           result.explanationZhCn,
-          result.confidence,
-          result.clearCatalyst ? 1 : 0,
+          null,
+          null,
           result.model,
           now,
         ),
       this.db
         .prepare(
-          `UPDATE sources
-           SET cited = CASE
-             WHEN source_index IN (SELECT value FROM json_each(?1)) THEN 1
-             ELSE 0 END
-           WHERE screening_id = ?2`,
+          "UPDATE sources SET cited = 1 WHERE screening_id = ?1",
         )
-        .bind(JSON.stringify(result.sourceIndexes), screeningId),
+        .bind(screeningId),
       this.db
         .prepare(
           `UPDATE screenings SET status = 'complete', error_code = NULL,
@@ -262,7 +258,6 @@ export class RunRepository {
     result: ExplanationResult,
     now: string,
   ): Promise<void> {
-    const citedIndexes = new Set(result.sourceIndexes);
     await this.db.batch([
       this.db
         .prepare("DELETE FROM sources WHERE screening_id = ?1")
@@ -282,7 +277,7 @@ export class RunRepository {
             source.publisher,
             source.publishedAt,
             source.url,
-            citedIndexes.has(index) ? 1 : 0,
+            1,
           ),
       ),
       this.db
@@ -296,8 +291,8 @@ export class RunRepository {
           crypto.randomUUID(),
           screeningId,
           result.explanationZhCn,
-          result.confidence,
-          result.clearCatalyst ? 1 : 0,
+          null,
+          null,
           result.model,
           now,
         ),
@@ -697,8 +692,7 @@ export class RunRepository {
          s.company_name AS companyName, s.exchange, s.currency,
          s.current_price AS currentPrice, s.change_amount AS changeAmount,
          s.change_pct AS changePct, s.qualified,
-         a.explanation_zh_cn AS explanationZhCn, a.confidence,
-         a.clear_catalyst AS clearCatalyst, a.status AS analysisStatus
+         a.explanation_zh_cn AS explanationZhCn, a.status AS analysisStatus
          FROM screenings s LEFT JOIN analyses a ON a.screening_id = s.id
          WHERE s.report_run_id = ?1
          ORDER BY CASE WHEN s.change_pct IS NULL THEN 1 ELSE 0 END,
@@ -706,8 +700,7 @@ export class RunRepository {
       )
       .bind(run.id)
       .all<
-        Omit<MoverDto, "sources" | "clearCatalyst" | "qualified"> & {
-          clearCatalyst: number | null;
+        Omit<MoverDto, "sources" | "qualified"> & {
           qualified: number | null;
         }
       >();
@@ -723,8 +716,6 @@ export class RunRepository {
       hydrated.push({
         ...mover,
         qualified: mover.qualified === null ? null : mover.qualified === 1,
-        clearCatalyst:
-          mover.clearCatalyst === null ? null : mover.clearCatalyst === 1,
         sources: sources.results.map((source) => ({
           ...source,
           cited: source.cited === 1,

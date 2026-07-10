@@ -3,6 +3,15 @@ import type { ReportDto, ReportSummaryDto } from "../../shared/contracts";
 import { api } from "../api";
 import { MoverTable } from "../components/MoverTable";
 
+const formatTimelineDate = (date: string) => {
+  const [year, month, day] = date.split("-");
+  return {
+    full: `${year}年${Number(month)}月${Number(day)}日`,
+    monthDay: `${Number(month)}月${Number(day)}日`,
+    year: `${year}年`,
+  };
+};
+
 export const HistoryPage = () => {
   const [dates, setDates] = useState<ReportSummaryDto[]>([]);
   const [report, setReport] = useState<ReportDto | null>(null);
@@ -62,11 +71,16 @@ export const HistoryPage = () => {
               <button
                 type="button"
                 className="timeline-day"
-                aria-label={`${run.tradingDate}，${run.tickersQualified} 个异动`}
+                aria-label={`${formatTimelineDate(run.tradingDate).full}，${run.tickersQualified} 个异动`}
                 aria-pressed={selectedDate === run.tradingDate}
                 onClick={() => void selectDate(run.tradingDate)}
               >
-                <span>{run.tradingDate}</span>
+                <span className="timeline-date">
+                  <strong>
+                    {formatTimelineDate(run.tradingDate).monthDay}
+                  </strong>
+                  <small>{formatTimelineDate(run.tradingDate).year}</small>
+                </span>
                 <strong>{run.tickersQualified}</strong>
                 <small>个异动</small>
               </button>

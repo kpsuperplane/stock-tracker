@@ -10,7 +10,6 @@ export type RunStatus =
   | "complete"
   | "complete_with_errors"
   | "no_market_data";
-export type Confidence = "high" | "medium" | "low";
 
 export interface SourceDto {
   title: string;
@@ -31,8 +30,6 @@ export interface MoverDto {
   changePct: number | null;
   qualified: boolean | null;
   explanationZhCn: string | null;
-  confidence: Confidence | null;
-  clearCatalyst: boolean | null;
   analysisStatus: "complete" | "unavailable" | null;
   sources: SourceDto[];
 }

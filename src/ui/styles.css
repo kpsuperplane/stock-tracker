@@ -204,14 +204,26 @@ h3 {
   border-bottom-color: var(--accent);
 }
 
-.timeline-day span {
+.timeline-date {
+  display: grid;
   grid-row: 1 / span 2;
-  font-family: var(--mono);
-  font-size: 0.7rem;
-  font-variant-numeric: tabular-nums;
+  gap: 0.05rem;
 }
 
-.timeline-day strong {
+.timeline-date strong {
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.timeline-date small {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+}
+
+.timeline-day > strong {
   font-family: var(--mono);
   font-size: 1rem;
   font-variant-numeric: tabular-nums;
@@ -219,7 +231,7 @@ h3 {
   text-align: right;
 }
 
-.timeline-day small {
+.timeline-day > small {
   color: var(--muted);
   font-size: 0.62rem;
   text-align: right;
@@ -317,25 +329,6 @@ h3 {
 
 .move--down {
   color: var(--negative);
-}
-
-.confidence {
-  display: inline-block;
-  min-width: 1.6rem;
-  padding: 0.12rem 0.3rem;
-  border: 1px solid var(--line-strong);
-  font-size: 0.68rem;
-  text-align: center;
-}
-
-.confidence--high {
-  color: var(--positive);
-  border-color: #9ebead;
-}
-
-.confidence--medium,
-.confidence--low {
-  color: #795d13;
 }
 
 .muted-value,

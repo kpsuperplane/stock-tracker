@@ -2,12 +2,6 @@ import { useState } from "react";
 import type { MoverDto } from "../../shared/contracts";
 import { api } from "../api";
 
-const confidenceLabel = {
-  high: "高",
-  medium: "中",
-  low: "低",
-} as const;
-
 export const MoverCard = ({ mover }: { mover: MoverDto }) => {
   const [expanded, setExpanded] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -59,15 +53,6 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
             </small>
           )}
         </td>
-        <td>
-          {qualified && mover.confidence ? (
-            <span className={`confidence confidence--${mover.confidence}`}>
-              {confidenceLabel[mover.confidence]}
-            </span>
-          ) : (
-            <span className="muted-value">—</span>
-          )}
-        </td>
         <td className="explanation-cell">
           {!qualified ? (
             <span className="muted-value">—</span>
@@ -82,11 +67,6 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
           {qualified && mover.sources.length === 0 && (
             <span className="state-label">未找到相关来源</span>
           )}
-          {qualified &&
-            mover.sources.length > 0 &&
-            mover.clearCatalyst === false && (
-              <span className="state-label">无明确催化因素</span>
-            )}
           {qualified && mover.sources.length > 0 && (
             <button
               type="button"
@@ -112,7 +92,7 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
       </tr>
       {expanded && (
         <tr className="sources-row">
-          <td colSpan={6}>
+          <td colSpan={5}>
             <ul className="sources">
               {mover.sources.map((source) => (
                 <li key={`${source.url}-${source.title}`}>

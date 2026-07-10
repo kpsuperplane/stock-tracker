@@ -192,9 +192,6 @@ describe("RunRepository", () => {
       ],
       {
         explanationZhCn: "企业客户增长可能推动股价上涨。",
-        confidence: "high",
-        clearCatalyst: true,
-        sourceIndexes: [1],
         model: "test",
       },
       now,
@@ -215,7 +212,7 @@ describe("RunRepository", () => {
           .all()
       ).results,
     ).toEqual([
-      { source_index: 0, cited: 0 },
+      { source_index: 0, cited: 1 },
       { source_index: 1, cited: 1 },
     ]);
   });

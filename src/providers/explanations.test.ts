@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { WorkersAiExplanationProvider } from "./explanations";
 
@@ -32,107 +31,66 @@ describe("WorkersAiExplanationProvider", () => {
     expect(result).toEqual({
       explanationZhCn:
         "未找到与本次价格变动时间相符的相关新闻来源，因此无法确定明确催化因素。",
-      confidence: "low",
-      clearCatalyst: false,
-      sourceIndexes: [],
       model: "deterministic-no-sources",
     });
     expect(ai.run).not.toHaveBeenCalled();
   });
 
-  it("accepts schema-valid Simplified Chinese output and valid citations", async () => {
-    const payload = JSON.parse(
-      await readFile("tests/fixtures/ai/valid-explanation.json", "utf8"),
-    );
+  it("accepts plain Simplified Chinese text", async () => {
     const ai = {
-      run: vi.fn(async () => ({ response: payload })),
+      run: vi.fn(async () => ({
+        response:
+          "企业客户增长和分析师上调目标价可能推动股价上涨。现有报道无法证明单一原因。",
+      })),
     } as unknown as Ai;
+
     const result = await new WorkersAiExplanationProvider(ai).explain({
       ...move,
       sources,
     });
-    expect(result.sourceIndexes).toEqual([0, 1]);
-    expect(result.confidence).toBe("high");
+
+    expect(result).toEqual({
+      explanationZhCn:
+        "企业客户增长和分析师上调目标价可能推动股价上涨。现有报道无法证明单一原因。",
+      model: "@cf/meta/llama-3.1-8b-instruct-fast",
+    });
     expect(ai.run).toHaveBeenCalledOnce();
+    expect(ai.run).toHaveBeenCalledWith(
+      "@cf/meta/llama-3.1-8b-instruct-fast",
+      expect.not.objectContaining({ response_format: expect.anything() }),
+    );
   });
 
-  it("deduplicates citations and rejects an unknown source index", async () => {
+  it("removes an accidental Markdown fence instead of failing", async () => {
     const ai = {
       run: vi.fn(async () => ({
-        response: {
-          explanation_zh_cn: "报道可能解释了上涨。现有证据不能证明单一原因。",
-          confidence: "low",
-          clear_catalyst: true,
-          source_indexes: [0, 0, 9],
-        },
+        response: "```\n相关报道可能解释本次上涨。现有证据仍然有限。\n```",
       })),
+    } as unknown as Ai;
+
+    await expect(
+      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
+    ).resolves.toEqual({
+      explanationZhCn: "相关报道可能解释本次上涨。现有证据仍然有限。",
+      model: "@cf/meta/llama-3.1-8b-instruct-fast",
+    });
+  });
+
+  it("rejects empty output", async () => {
+    const ai = {
+      run: vi.fn(async () => ({ response: "   " })),
     } as unknown as Ai;
     await expect(
       new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
-    ).rejects.toThrow("invalid_source_index");
+    ).rejects.toThrow("invalid_explanation_text");
   });
 
-  it("rejects an explanation without Simplified Chinese text", async () => {
+  it("rejects output without Simplified Chinese text", async () => {
     const ai = {
-      run: vi.fn(async () => ({
-        response: {
-          explanation_zh_cn: "News may explain the move.",
-          confidence: "low",
-          clear_catalyst: false,
-          source_indexes: [],
-        },
-      })),
+      run: vi.fn(async () => ({ response: "News may explain the move." })),
     } as unknown as Ai;
     await expect(
       new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
     ).rejects.toThrow("invalid_explanation_language");
-  });
-
-  it("requires cited evidence for a claimed clear catalyst", async () => {
-    const ai = {
-      run: vi.fn(async () => ({
-        response: {
-          explanation_zh_cn: "报道可能解释了上涨。现有证据仍然有限。",
-          confidence: "medium",
-          clear_catalyst: true,
-          source_indexes: [],
-        },
-      })),
-    } as unknown as Ai;
-    await expect(
-      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
-    ).rejects.toThrow("missing_catalyst_source");
-  });
-
-  it("requires low confidence when no clear catalyst is found", async () => {
-    const ai = {
-      run: vi.fn(async () => ({
-        response: {
-          explanation_zh_cn: "现有报道相互矛盾。没有找到明确催化因素。",
-          confidence: "medium",
-          clear_catalyst: false,
-          source_indexes: [],
-        },
-      })),
-    } as unknown as Ai;
-    await expect(
-      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
-    ).rejects.toThrow("invalid_no_catalyst_confidence");
-  });
-
-  it("rejects model output outside the requested two-to-four sentences", async () => {
-    const ai = {
-      run: vi.fn(async () => ({
-        response: {
-          explanation_zh_cn: "报道可能解释本次上涨。",
-          confidence: "low",
-          clear_catalyst: false,
-          source_indexes: [],
-        },
-      })),
-    } as unknown as Ai;
-    await expect(
-      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
-    ).rejects.toThrow("invalid_explanation_sentence_count");
   });
 });
