@@ -110,6 +110,13 @@ const previewResponse = (
       result.code,
       "The split-history provider is unavailable. Try again later.",
     );
+  if (result.kind === "conflict")
+    return error(
+      context,
+      409,
+      result.code,
+      "The portfolio changed. Reload and try again.",
+    );
   return context.json(result, 201);
 };
 

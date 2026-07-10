@@ -100,7 +100,8 @@ export type ImportPreviewResult =
     }
   | { kind: "invalid_file"; code: string }
   | { kind: "duplicate"; batchId: string; status: string }
-  | { kind: "provider_unavailable"; code: string };
+  | { kind: "provider_unavailable"; code: string }
+  | { kind: "conflict"; code: "ledger_conflict" };
 
 export interface ImportConfirmation {
   instrumentId: string;
@@ -458,7 +459,11 @@ export class EventImportsService {
     }
 
     const batchId = this.newId();
-    const basePositionBasisRevision = await this.positionBasis.revision();
+    const expectedPositionBasisRevision = await this.positionBasis.revision();
+    const correctionMutationId =
+      blockingSnapshots.length > 0 ? this.newId() : null;
+    const basePositionBasisRevision =
+      expectedPositionBasisRevision + (correctionMutationId ? 1 : 0);
     const expiresAt = new Date(
       this.now().valueOf() + PREVIEW_LIFETIME_MS,
     ).toISOString();
@@ -478,6 +483,16 @@ export class EventImportsService {
     };
     try {
       await this.dependencies.db.batch([
+        ...(correctionMutationId
+          ? [
+              this.positionBasis.mutationTokenStatement({
+                id: correctionMutationId,
+                expectedRevision: expectedPositionBasisRevision,
+                kind: "action_quarantine",
+                createdAt: timestamp,
+              }),
+            ]
+          : []),
         this.imports.createBatchStatement(batch),
         ...this.stagingRowStatements(batchId, rows),
         ...this.blockingSnapshotStatements(blockingSnapshots, timestamp),
@@ -496,6 +511,8 @@ export class EventImportsService {
             status: existing.status,
           };
       }
+      if (String(error).includes("ledger_conflict"))
+        return { kind: "conflict", code: "ledger_conflict" };
       throw error;
     }
 

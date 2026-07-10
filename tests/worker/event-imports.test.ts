@@ -1,6 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InstrumentRepository } from "../../src/db/instruments";
+import { PositionBasisRepository } from "../../src/db/position-basis";
 import type {
   CorporateActionProvider,
   SplitEventRange,
@@ -469,9 +470,25 @@ describe("EventImportsService", () => {
     expect(result).toEqual(
       expect.objectContaining({
         kind: "preview",
+        basePositionBasisRevision: 1,
         rows: [expect.objectContaining({ status: "invalid" })],
       }),
     );
+    expect(
+      await env.DB.prepare(
+        "SELECT revision FROM position_basis_state WHERE id = 1",
+      ).first(),
+    ).toEqual({ revision: 1 });
+    expect(
+      await env.DB.prepare(
+        `SELECT expected_revision, resulting_revision, mutation_kind
+         FROM ledger_mutations`,
+      ).first(),
+    ).toEqual({
+      expected_revision: 0,
+      resulting_revision: 1,
+      mutation_kind: "action_quarantine",
+    });
     expect(
       await env.DB.prepare(
         "SELECT status, conflict_code FROM corporate_actions WHERE provider_event_id = 'corrected-reverse-split'",
@@ -482,6 +499,83 @@ describe("EventImportsService", () => {
         "SELECT status, error_code FROM corporate_action_coverage WHERE instrument_id = 'instrument-1'",
       ).first(),
     ).toEqual({ status: "conflict", error_code: "negative_history" });
+  });
+
+  it("rejects a stale preview correction without overwriting the newer authoritative state", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO transactions
+           (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+            revision, created_at, updated_at)
+           VALUES ('prior-buy', 'instrument-1', '2025-01-01', 'buy', '1', '1', 1, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO transactions
+           (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+            revision, created_at, updated_at)
+           VALUES ('prior-sell', 'instrument-1', '2025-02-01', 'sell', '0.75', '1', 1, ?1, ?1)`,
+      ).bind(now),
+    ]);
+    const originalBatch = env.DB.batch.bind(env.DB);
+    let batchCalls = 0;
+    const batch = vi
+      .spyOn(env.DB, "batch")
+      .mockImplementation(async (statements) => {
+        batchCalls += 1;
+        if (batchCalls === 2) {
+          await originalBatch([
+            new PositionBasisRepository(env.DB).mutationTokenStatement({
+              id: "concurrent-winner",
+              expectedRevision: 0,
+              kind: "action_quarantine",
+              createdAt: now,
+            }),
+          ]);
+        }
+        return originalBatch(statements);
+      });
+    try {
+      const result = await service(
+        providerWithEvents("snapshot-r2", [
+          {
+            type: "split",
+            symbol: "SHOP.TO",
+            effectiveDate: "2025-01-15",
+            numerator: "1",
+            denominator: "2",
+            provider: "yahoo-chart-v8",
+            providerEventId: "stale-reverse-split",
+            providerRevision: "event-r2",
+          },
+        ]),
+      ).preview({
+        originalFilename: "stale-correction.csv",
+        file: new TextEncoder().encode(csv(["2025-02-02,SHOP.TO,buy,1,1"])),
+      });
+      expect(result).toEqual({ kind: "conflict", code: "ledger_conflict" });
+    } finally {
+      batch.mockRestore();
+    }
+    expect(
+      await env.DB.prepare(
+        "SELECT revision, last_mutation_id FROM position_basis_state WHERE id = 1",
+      ).first(),
+    ).toEqual({ revision: 1, last_mutation_id: "concurrent-winner" });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_batches",
+      ).first(),
+    ).toEqual({ count: 0 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM corporate_actions WHERE provider_event_id = 'stale-reverse-split'",
+      ).first(),
+    ).toEqual({ count: 0 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM corporate_action_coverage",
+      ).first(),
+    ).toEqual({ count: 0 });
   });
 
   it("accepts RFC-style quoted fields but rejects bytes after a closing quote and preserves quoted newlines as one row", async () => {
