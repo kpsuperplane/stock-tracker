@@ -12,11 +12,7 @@ export const WatchlistPage = () => {
   }, []);
   useEffect(() => {
     void load()
-      .catch((cause) =>
-        setError(
-          cause instanceof Error ? cause.message : "Could not load watchlist.",
-        ),
-      )
+      .catch(() => setError("无法加载观察列表。"))
       .finally(() => setLoading(false));
   }, [load]);
 
@@ -28,10 +24,8 @@ export const WatchlistPage = () => {
       await api.addTicker(symbol.trim().toUpperCase());
       setSymbol("");
       await load();
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not add ticker.",
-      );
+    } catch {
+      setError("无法添加标的，请检查代码后重试。");
     } finally {
       setBusy(false);
     }
@@ -42,10 +36,8 @@ export const WatchlistPage = () => {
     try {
       await action();
       await load();
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Watchlist update failed.",
-      );
+    } catch {
+      setError("无法更新观察列表。");
     }
   };
 
@@ -53,32 +45,31 @@ export const WatchlistPage = () => {
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Tracked symbols</p>
-          <h1>Watchlist</h1>
+          <p className="eyebrow">跟踪标的</p>
+          <h1>观察列表</h1>
         </div>
         <span>
-          {tickers.filter((ticker) => ticker.active).length}/100 active
+          {tickers.filter((ticker) => ticker.active).length}/100 个已启用
         </span>
       </header>
       <form className="admin-form" onSubmit={submit}>
-        <label htmlFor="symbol">Yahoo symbol</label>
+        <label htmlFor="symbol">Yahoo 代码</label>
         <div className="field-row">
           <input
             id="symbol"
             value={symbol}
             onChange={(event) => setSymbol(event.target.value)}
-            placeholder="AAPL, SHOP.TO, or WELL.V"
+            placeholder="AAPL、SHOP.TO 或 WELL.V"
             maxLength={20}
             autoCapitalize="characters"
             required
           />
           <button type="submit" disabled={busy}>
-            {busy ? "Validating…" : "Add ticker"}
+            {busy ? "正在验证…" : "添加标的"}
           </button>
         </div>
         <p className="form-help">
-          Symbols are validated against recent Yahoo Finance daily data before
-          saving.
+          保存前会使用 Yahoo Finance 近期日线数据验证代码。
         </p>
         {error && <p role="alert">{error}</p>}
       </form>
@@ -88,8 +79,8 @@ export const WatchlistPage = () => {
             ···
           </span>
           <div>
-            <strong>Loading watchlist</strong>
-            <p>Checking tracked symbols.</p>
+            <strong>正在加载观察列表</strong>
+            <p>正在检查跟踪标的。</p>
           </div>
         </section>
       )}
@@ -99,43 +90,65 @@ export const WatchlistPage = () => {
             +
           </span>
           <div>
-            <strong>Build your coverage list</strong>
-            <p>Add a US or Canadian Yahoo symbol to begin tracking it.</p>
+            <strong>建立跟踪范围</strong>
+            <p>添加美股或加股的 Yahoo 代码即可开始跟踪。</p>
           </div>
         </section>
       )}
-      <ul className="ticker-list">
-        {tickers.map((ticker) => (
-          <li key={ticker.id}>
-            <div>
-              <strong>{ticker.symbol}</strong>
-              <small>
-                {ticker.companyName} · {ticker.exchange} · {ticker.currency}
-              </small>
-            </div>
-            <div className="field-row">
-              <button
-                type="button"
-                className="button--secondary"
-                onClick={() =>
-                  void update(() =>
-                    api.setTickerActive(ticker.id, !ticker.active),
-                  )
-                }
-              >
-                {ticker.active ? "Disable" : "Enable"}
-              </button>
-              <button
-                type="button"
-                className="button--danger"
-                onClick={() => void update(() => api.removeTicker(ticker.id))}
-              >
-                Remove
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+      {tickers.length > 0 && (
+        <div className="table-scroll">
+          <table
+            className="portfolio-table watchlist-table"
+            aria-label="观察列表数据"
+          >
+            <thead>
+              <tr>
+                <th scope="col">代码</th>
+                <th scope="col">公司</th>
+                <th scope="col">市场</th>
+                <th scope="col">币种</th>
+                <th scope="col">状态</th>
+                <th scope="col">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tickers.map((ticker) => (
+                <tr key={ticker.id}>
+                  <td className="ticker-cell">
+                    <strong>{ticker.symbol}</strong>
+                  </td>
+                  <td>{ticker.companyName}</td>
+                  <td>{ticker.exchange}</td>
+                  <td>{ticker.currency}</td>
+                  <td>{ticker.active ? "已启用" : "已停用"}</td>
+                  <td className="actions-cell">
+                    <button
+                      type="button"
+                      className="button--secondary"
+                      onClick={() =>
+                        void update(() =>
+                          api.setTickerActive(ticker.id, !ticker.active),
+                        )
+                      }
+                    >
+                      {ticker.active ? "停用" : "启用"}
+                    </button>
+                    <button
+                      type="button"
+                      className="button--danger"
+                      onClick={() =>
+                        void update(() => api.removeTicker(ticker.id))
+                      }
+                    >
+                      移除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 };

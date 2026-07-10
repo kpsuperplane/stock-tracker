@@ -9,7 +9,7 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const payload: { error?: { message?: string } } = await response
       .json<{ error?: { message?: string } }>()
       .catch(() => ({}));
-    throw new Error(payload.error?.message ?? "Request failed.");
+    throw new Error(payload.error?.message ?? "请求失败。");
   }
   if (response.status === 204) return undefined as T;
   return response.json<T>();

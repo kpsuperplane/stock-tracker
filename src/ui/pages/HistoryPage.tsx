@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import type { ReportDto, ReportSummaryDto } from "../../shared/contracts";
 import { api } from "../api";
-import { MoverCard } from "../components/MoverCard";
+import { MoverTable } from "../components/MoverTable";
 import { RunSummary } from "../components/RunSummary";
 
 export const HistoryPage = () => {
   const [dates, setDates] = useState<ReportSummaryDto[]>([]);
   const [report, setReport] = useState<ReportDto | null>(null);
+  const [selectedDate, setSelectedDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -17,15 +18,14 @@ export const HistoryPage = () => {
         if (!active) return;
         setDates(reports);
         if (reports[0]) {
+          setSelectedDate(reports[0].tradingDate);
           const value = await api.report(reports[0].tradingDate);
           if (active) setReport(value.report);
         }
       })
-      .catch((cause) => {
+      .catch(() => {
         if (active) {
-          setError(
-            cause instanceof Error ? cause.message : "Could not load history.",
-          );
+          setError("无法加载历史报告。");
         }
       })
       .finally(() => {
@@ -37,14 +37,13 @@ export const HistoryPage = () => {
   }, []);
 
   const selectDate = async (date: string) => {
+    setSelectedDate(date);
     setLoading(true);
     setError(null);
     try {
       setReport((await api.report(date)).report);
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not load report.",
-      );
+    } catch {
+      setError("无法加载报告。");
     } finally {
       setLoading(false);
     }
@@ -54,23 +53,29 @@ export const HistoryPage = () => {
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Published reports</p>
-          <h1>History</h1>
+          <p className="eyebrow">已发布报告</p>
+          <h1>历史报告</h1>
         </div>
-        {dates.length > 0 && (
-          <select
-            aria-label="Report date"
-            value={report?.run.tradingDate ?? dates[0]?.tradingDate ?? ""}
-            onChange={(event) => void selectDate(event.target.value)}
-          >
-            {dates.map((run) => (
-              <option key={run.id} value={run.tradingDate}>
-                {run.tradingDate}
-              </option>
-            ))}
-          </select>
-        )}
       </header>
+      {dates.length > 0 && (
+        <ol className="history-timeline" aria-label="历史报告时间线">
+          {dates.map((run) => (
+            <li key={run.id}>
+              <button
+                type="button"
+                className="timeline-day"
+                aria-label={`${run.tradingDate}，${run.tickersQualified} 个异动`}
+                aria-pressed={selectedDate === run.tradingDate}
+                onClick={() => void selectDate(run.tradingDate)}
+              >
+                <span>{run.tradingDate}</span>
+                <strong>{run.tickersQualified}</strong>
+                <small>个异动</small>
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
       {error && (
         <p className="inline-alert" role="alert">
           {error}
@@ -78,8 +83,8 @@ export const HistoryPage = () => {
       )}
       {loading && (
         <section className="state-panel state-panel--loading" role="status">
-          <p className="eyebrow">Archive</p>
-          <h2>Loading history</h2>
+          <p className="eyebrow">报告归档</p>
+          <h2>正在加载历史报告</h2>
           <div className="skeleton" aria-hidden="true">
             <span />
             <span />
@@ -92,17 +97,16 @@ export const HistoryPage = () => {
             00
           </span>
           <div>
-            <strong>No published reports</strong>
-            <p>Completed daily briefs will collect here.</p>
+            <strong>暂无已发布报告</strong>
+            <p>已完成的每日简报将显示在这里。</p>
           </div>
         </section>
       )}
       {report && <RunSummary run={report.run} />}
-      <section className="mover-grid" aria-label="Historical movers">
-        {report?.movers.map((mover) => (
-          <MoverCard key={mover.screeningId} mover={mover} />
-        ))}
-      </section>
+      {selectedDate && <p className="selection-note">已选择 {selectedDate}</p>}
+      {report && report.movers.length > 0 && (
+        <MoverTable label="历史异动" movers={report.movers} />
+      )}
     </>
   );
 };

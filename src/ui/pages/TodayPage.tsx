@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReportDto, ReportSummaryDto } from "../../shared/contracts";
 import { api } from "../api";
-import { MoverCard } from "../components/MoverCard";
+import { MoverTable } from "../components/MoverTable";
 import { RunSummary } from "../components/RunSummary";
 
 type LatestPayload = {
@@ -22,11 +22,9 @@ export const TodayPage = () => {
         setPayload(value);
         setError(null);
         if (value.currentRun) timer = window.setTimeout(load, 15_000);
-      } catch (cause) {
+      } catch {
         if (!active) return;
-        setError(
-          cause instanceof Error ? cause.message : "Could not load report.",
-        );
+        setError("无法加载报告。");
         timer = window.setTimeout(load, 15_000);
       }
     };
@@ -39,16 +37,16 @@ export const TodayPage = () => {
   if (error)
     return (
       <section className="state-panel state-panel--error" role="alert">
-        <p className="eyebrow">Report unavailable</p>
-        <h1>Couldn’t load the daily brief</h1>
+        <p className="eyebrow">报告暂不可用</p>
+        <h1>无法加载今日简报</h1>
         <p>{error}</p>
       </section>
     );
   if (payload === undefined)
     return (
       <section className="state-panel state-panel--loading" role="status">
-        <p className="eyebrow">Preparing brief</p>
-        <h1>Loading report</h1>
+        <p className="eyebrow">正在准备简报</p>
+        <h1>正在加载报告</h1>
         <div className="skeleton" aria-hidden="true">
           <span />
           <span />
@@ -59,11 +57,11 @@ export const TodayPage = () => {
   if (payload.report === null && payload.currentRun === null) {
     return (
       <section className="state-panel state-panel--spacious">
-        <p className="eyebrow">Daily report</p>
-        <h1>No reports yet</h1>
-        <p>The first brief appears after a completed market-day run.</p>
+        <p className="eyebrow">每日简报</p>
+        <h1>暂无报告</h1>
+        <p>首次市场日处理完成后，简报将显示在这里。</p>
         <a className="text-link" href="#watchlist">
-          Review watchlist
+          查看观察列表
         </a>
       </section>
     );
@@ -74,11 +72,11 @@ export const TodayPage = () => {
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Daily report</p>
+          <p className="eyebrow">每日简报</p>
           <h1>{displayedDate}</h1>
           {payload.currentRun && payload.report && (
             <p className="subtle">
-              Latest published: {payload.report.run.tradingDate}
+              最新已发布报告：{payload.report.run.tradingDate}
             </p>
           )}
         </div>
@@ -94,16 +92,14 @@ export const TodayPage = () => {
             ±
           </span>
           <div>
-            <strong>A quiet close</strong>
-            <p>No tracked ticker moved beyond the 5% threshold.</p>
+            <strong>收盘平静</strong>
+            <p>没有观察标的的涨跌幅超过 5%。</p>
           </div>
         </section>
       )}
-      <section className="mover-grid" aria-label="Qualifying movers">
-        {payload.report?.movers.map((mover) => (
-          <MoverCard key={mover.screeningId} mover={mover} />
-        ))}
-      </section>
+      {payload.report && payload.report.movers.length > 0 && (
+        <MoverTable label="今日异动" movers={payload.report.movers} />
+      )}
     </>
   );
 };

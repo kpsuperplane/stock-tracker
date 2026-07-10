@@ -25,11 +25,9 @@ npm run types:worker
 
 ```bash
 npm run check
-npx playwright install chromium
-npm run test:e2e
 ```
 
-`npm run check` regenerates Worker types, checks formatting/lint and TypeScript, runs unit and local D1/Worker tests, and creates the production build. Browser tests cover phone and desktop report, history, watchlist, and backfill flows.
+`npm run check` regenerates Worker types, checks formatting/lint and TypeScript, runs service and local D1/Worker tests, and creates the production build.
 
 Worker integration tests use the local-only `wrangler.test.jsonc`. Keep that test configuration separate from `wrangler.jsonc`; pointing Vitest at the production configuration can connect remote bindings and mutate deployed Worker state.
 
