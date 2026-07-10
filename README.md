@@ -31,6 +31,50 @@ npm run check
 
 Worker integration tests use the local-only `wrangler.test.jsonc`. Keep that test configuration separate from `wrangler.jsonc`; pointing Vitest at the production configuration can connect remote bindings and mutate deployed Worker state.
 
+## Portfolio-events foundation (development notes)
+
+The ledger API is intentionally available for tests and later UI work, but the
+current dashboard and navigation remain the legacy report experience until the
+Portfolio/Events UI is delivered. Do not link these routes from the existing
+application yet.
+
+- `GET /api/events` returns the reverse-chronological transaction/split timeline
+  and its position-basis revision. It accepts bounded `limit`, `cursor`,
+  `instrumentId`, `symbol`, and `type` filters.
+- `POST /api/events` creates a transaction. `PATCH` and `DELETE`
+  `/api/events/:id` require both the current `X-Position-Basis-Revision` and
+  the transaction `If-Match: "event-N"` revision. A create requires the basis
+  revision; successful mutations return the new basis revision and reconciliation
+  job ID.
+- `POST /api/corporate-actions/confirm` and any transaction confirmation identify
+  only the server-fetched split snapshot by requested range and provider
+  revision. Clients never submit split rows. A historical mutation remains
+  blocked until that exact best-effort snapshot is explicitly confirmed; a
+  changed provider revision requires review again.
+- Every mutation is authenticated and must include a same-origin `Origin`, the
+  matching `Host`, and `X-Stock-Tracker-Request: 1`. Ordinary mutations use
+  JSON and the 64 KiB API body limit.
+
+### CSV events template
+
+`public/templates/portfolio-events.csv` is the only supported UTF-8 import
+shape. Its exact header is
+`trade_date,symbol,side,quantity,price`; dates are `YYYY-MM-DD`, sides are
+case-insensitive `BUY`/`SELL`, and quantity/price are positive canonical
+decimals with at most six fractional digits. Preview accepts at most 5 MiB,
+10,000 data rows, and 40 distinct symbols. The symbol cap keeps synchronous
+split-history checks within a Worker request budget; split larger imports into
+separate files.
+
+Use `POST /api/event-imports/preview` as `multipart/form-data` with one `file`
+part. Preview stages normalized rows and returns any split histories needing
+review without changing transactions. Commit the returned batch with
+`POST /api/event-imports/:id/commit`, JSON confirmations, and the previewed
+`X-Position-Basis-Revision`. Commit reads staged rows rather than reparsing the
+file and is all-or-nothing; a stale revision, expired preview, or changed split
+snapshot requires a new preview/review. Committed-file digests are retained for
+duplicate detection, while staging rows expire.
+
 ## Architecture and guardrails
 
 One Cloudflare Worker protects the React static assets and Hono API with HTTP Basic Authentication. D1 retains ticker snapshots and published report generations, a weekday Cron Trigger starts work at 22:00 UTC, Cloudflare Queues fan out per-ticker screening, and Workers AI is called at most once for each qualifying mover with news.
