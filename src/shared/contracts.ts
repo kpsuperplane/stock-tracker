@@ -48,3 +48,53 @@ export interface ReportDto {
   run: ReportSummaryDto;
   movers: MoverDto[];
 }
+
+export interface SplitConfirmationDto {
+  requestedStartDate: string;
+  requestedEndDate: string;
+  providerRevision: string;
+}
+
+export interface TransactionEventDto {
+  type: "transaction";
+  id: string;
+  instrumentId: string;
+  symbol: string;
+  companyName: string;
+  currency: "USD" | "CAD";
+  tradeDate: string;
+  side: "buy" | "sell";
+  quantityDecimal: string;
+  priceDecimal: string;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SplitEventDto {
+  type: "split";
+  id: string;
+  instrumentId: string;
+  symbol: string;
+  companyName: string;
+  currency: "USD" | "CAD";
+  effectiveDate: string;
+  numerator: string;
+  denominator: string;
+  provider: string;
+  providerEventId: string;
+  providerRevision: string;
+  retrievedAt: string;
+  revision: number;
+  status: "candidate" | "active" | "superseded" | "quarantined";
+  conflictCode: string | null;
+  conflictMessage: string | null;
+}
+
+export type PortfolioEventDto = TransactionEventDto | SplitEventDto;
+
+export interface EventsTimelineDto {
+  events: PortfolioEventDto[];
+  nextCursor: string | null;
+  positionBasisRevision: number;
+}
