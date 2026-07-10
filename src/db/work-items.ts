@@ -159,17 +159,20 @@ export class WorkItemRepository {
     dependencyRevision: string;
     forcedRefreshGeneration?: number | null;
   }): string {
-    return [
+    return JSON.stringify([
       "fact",
       input.workType,
       input.instrumentId,
       input.effectiveDate,
       input.dependencyRevision,
-      String(input.forcedRefreshGeneration ?? 0),
-    ].join(":");
+      input.forcedRefreshGeneration ?? 0,
+    ]);
   }
 
   createGlobalStatement(work: GlobalFactWorkRecord): D1PreparedStatement {
+    if (work.deterministicKey !== WorkItemRepository.globalFactKey(work)) {
+      throw new Error("invalid_global_fact_key");
+    }
     return this.db
       .prepare(
         `INSERT INTO work_items
@@ -215,6 +218,14 @@ export class WorkItemRepository {
     return row ? mapWorkItem(row) : null;
   }
 
+  async findById(id: string): Promise<WorkItemRecord | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM work_items WHERE id = ?1")
+      .bind(id)
+      .first<WorkItemRow>();
+    return row ? mapWorkItem(row) : null;
+  }
+
   linkToJobStatement(input: {
     pipelineJobId: string;
     workItemId: string;
@@ -242,6 +253,14 @@ export class WorkItemRepository {
     outcome?: "pending" | "reused" | "skipped" | "processed" | "failed";
     now: string;
   }): Promise<boolean> {
+    const work = await this.findById(input.workItemId);
+    if (!work) throw new Error("work_item_not_found");
+    if (
+      work.scope === "job_planning" &&
+      work.pipelineJobId !== input.pipelineJobId
+    ) {
+      throw new Error("job_planning_owner_mismatch");
+    }
     const result = await this.db
       .prepare(
         `INSERT INTO job_work_items
@@ -271,6 +290,8 @@ export class WorkItemRepository {
     errorCode?: string | null;
     errorMessage?: string | null;
     retentionUntil?: string | null;
+    expectedDispatchLeaseUntil?: string;
+    expectedProcessingLeaseUntil?: string;
   }): Promise<boolean> {
     if (!allowedTransitions[input.from].includes(input.to)) {
       throw new Error("invalid_work_item_transition");
@@ -281,31 +302,47 @@ export class WorkItemRepository {
     if (input.to !== "terminal" && (input.errorCode || input.errorMessage)) {
       throw new Error("nonterminal_work_item_has_error");
     }
+    if (input.from === "dispatching" && !input.expectedDispatchLeaseUntil) {
+      throw new Error("dispatch_transition_requires_lease");
+    }
+    if (input.from === "processing" && !input.expectedProcessingLeaseUntil) {
+      throw new Error("processing_transition_requires_lease");
+    }
     const completedAt =
       input.to === "complete" || input.to === "terminal" ? input.now : null;
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
+    const leasePredicate =
+      input.from === "dispatching"
+        ? " AND dispatch_lease_until IS ?12"
+        : input.from === "processing"
+          ? " AND processing_lease_until IS ?12"
+          : "";
+    const statement = this.db.prepare(
+      `UPDATE work_items
          SET state = ?1, dispatch_lease_until = ?2, processing_lease_until = ?3,
              result_revision = ?4, terminal_error_code = ?5,
              terminal_error_message = ?6, retention_until = ?7,
              completed_at = ?8, updated_at = ?9
-         WHERE id = ?10 AND state = ?11`,
-      )
-      .bind(
-        input.to,
-        input.dispatchLeaseUntil ?? null,
-        input.processingLeaseUntil ?? null,
-        input.resultRevision ?? null,
-        input.errorCode ?? null,
-        input.errorMessage ?? null,
-        input.retentionUntil ?? null,
-        completedAt,
-        input.now,
-        input.id,
-        input.from,
-      )
-      .run();
+         WHERE id = ?10 AND state = ?11${leasePredicate}`,
+    );
+    const bindings = [
+      input.to,
+      input.dispatchLeaseUntil ?? null,
+      input.processingLeaseUntil ?? null,
+      input.resultRevision ?? null,
+      input.errorCode ?? null,
+      input.errorMessage ?? null,
+      input.retentionUntil ?? null,
+      completedAt,
+      input.now,
+      input.id,
+      input.from,
+    ];
+    const result = await (input.from === "dispatching"
+      ? statement.bind(...bindings, input.expectedDispatchLeaseUntil)
+      : input.from === "processing"
+        ? statement.bind(...bindings, input.expectedProcessingLeaseUntil)
+        : statement.bind(...bindings)
+    ).run();
     return result.meta.changes === 1;
   }
 
@@ -324,6 +361,23 @@ export class WorkItemRepository {
            AND (available_at IS NULL OR available_at <= ?2)`,
       )
       .bind(input.leaseUntil, input.now, input.id)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async recoverExpiredDispatch(input: {
+    id: string;
+    expectedLeaseUntil: string;
+    now: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
+         WHERE id = ?2 AND state = 'dispatching'
+           AND dispatch_lease_until IS ?3 AND dispatch_lease_until <= ?1`,
+      )
+      .bind(input.now, input.id, input.expectedLeaseUntil)
       .run();
     return result.meta.changes === 1;
   }

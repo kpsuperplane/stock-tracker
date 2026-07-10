@@ -64,6 +64,21 @@ const mapBatch = (row: DispatchBatchRow): DispatchBatchRecord => ({
   retentionUntil: row.retention_until,
 });
 
+interface DispatchableWorkRow {
+  id: string;
+  scope: "job_planning" | "global_fact";
+  state:
+    | "pending"
+    | "dispatching"
+    | "queued"
+    | "processing"
+    | "complete"
+    | "terminal";
+  work_type: string;
+  instrument_id: string | null;
+  effective_date: string | null;
+}
+
 const transitions: Readonly<
   Record<DispatchBatchState, readonly DispatchBatchState[]>
 > = {
@@ -82,15 +97,35 @@ export class DispatchBatchRepository {
     work: readonly WorkItemRecord[];
   }): Promise<void> {
     if (input.work.length === 0) throw new Error("dispatch_batch_empty");
-    for (const item of input.work) {
+    if (input.batch.state !== "dispatching") {
+      throw new Error("dispatch_batch_not_dispatching");
+    }
+    const workIds = [...new Set(input.work.map((item) => item.id))];
+    if (workIds.length !== input.work.length) {
+      throw new Error("dispatch_batch_duplicate_work");
+    }
+    const placeholders = workIds
+      .map((_id, index) => `?${index + 1}`)
+      .join(", ");
+    const current = await this.db
+      .prepare(
+        `SELECT id, scope, state, work_type, instrument_id, effective_date
+         FROM work_items WHERE id IN (${placeholders})`,
+      )
+      .bind(...workIds)
+      .all<DispatchableWorkRow>();
+    if (current.results.length !== workIds.length) {
+      throw new Error("dispatch_batch_incompatible_work");
+    }
+    for (const item of current.results) {
       if (
         item.scope !== "global_fact" ||
         item.state !== "dispatching" ||
-        item.workType !== input.batch.workType ||
-        item.instrumentId !== input.batch.instrumentId ||
-        !item.effectiveDate ||
-        item.effectiveDate < input.batch.requestedStartDate ||
-        item.effectiveDate > input.batch.requestedEndDate
+        item.work_type !== input.batch.workType ||
+        item.instrument_id !== input.batch.instrumentId ||
+        !item.effective_date ||
+        item.effective_date < input.batch.requestedStartDate ||
+        item.effective_date > input.batch.requestedEndDate
       ) {
         throw new Error("dispatch_batch_incompatible_work");
       }
@@ -158,6 +193,8 @@ export class DispatchBatchRepository {
     errorCode?: string | null;
     errorMessage?: string | null;
     retentionUntil?: string | null;
+    expectedDispatchLeaseUntil?: string;
+    expectedProcessingLeaseUntil?: string;
   }): Promise<boolean> {
     if (!transitions[input.from].includes(input.to)) {
       throw new Error("invalid_dispatch_batch_transition");
@@ -168,27 +205,61 @@ export class DispatchBatchRepository {
     if (input.to !== "terminal" && (input.errorCode || input.errorMessage)) {
       throw new Error("nonterminal_dispatch_batch_has_error");
     }
+    if (input.from === "dispatching" && !input.expectedDispatchLeaseUntil) {
+      throw new Error("dispatch_batch_transition_requires_lease");
+    }
+    if (input.from === "processing" && !input.expectedProcessingLeaseUntil) {
+      throw new Error("processing_batch_transition_requires_lease");
+    }
     const completedAt =
       input.to === "complete" || input.to === "terminal" ? input.now : null;
-    const result = await this.db
-      .prepare(
-        `UPDATE dispatch_batches
+    const leasePredicate =
+      input.from === "dispatching"
+        ? " AND dispatch_lease_until IS ?10"
+        : input.from === "processing"
+          ? " AND processing_lease_until IS ?10"
+          : "";
+    const statement = this.db.prepare(
+      `UPDATE dispatch_batches
          SET state = ?1, processing_lease_until = ?2,
              terminal_error_code = ?3, terminal_error_message = ?4,
              completed_at = ?5, retention_until = ?6, updated_at = ?7
-         WHERE id = ?8 AND state = ?9`,
+         WHERE id = ?8 AND state = ?9${leasePredicate}`,
+    );
+    const bindings = [
+      input.to,
+      input.processingLeaseUntil ?? null,
+      input.errorCode ?? null,
+      input.errorMessage ?? null,
+      completedAt,
+      input.retentionUntil ?? null,
+      input.now,
+      input.id,
+      input.from,
+    ];
+    const result = await (input.from === "dispatching"
+      ? statement.bind(...bindings, input.expectedDispatchLeaseUntil)
+      : input.from === "processing"
+        ? statement.bind(...bindings, input.expectedProcessingLeaseUntil)
+        : statement.bind(...bindings)
+    ).run();
+    return result.meta.changes === 1;
+  }
+
+  async reclaimExpiredDispatch(input: {
+    id: string;
+    expectedLeaseUntil: string;
+    now: string;
+    leaseUntil: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+         SET dispatch_lease_until = ?1, updated_at = ?2
+         WHERE id = ?3 AND state = 'dispatching'
+           AND dispatch_lease_until IS ?4 AND dispatch_lease_until <= ?2`,
       )
-      .bind(
-        input.to,
-        input.processingLeaseUntil ?? null,
-        input.errorCode ?? null,
-        input.errorMessage ?? null,
-        completedAt,
-        input.retentionUntil ?? null,
-        input.now,
-        input.id,
-        input.from,
-      )
+      .bind(input.leaseUntil, input.now, input.id, input.expectedLeaseUntil)
       .run();
     return result.meta.changes === 1;
   }

@@ -116,7 +116,7 @@ export class PipelineJobRepository {
          SET work_total = ?1, work_reused = ?2, work_skipped = ?3,
              work_fetched = ?4, work_analyzed = ?5, work_processed = ?6,
              work_failed = ?7, updated_at = ?8
-         WHERE id = ?9`,
+         WHERE id = ?9 AND status IN ('pending', 'planning', 'running')`,
       )
       .bind(
         input.progress.workTotal,

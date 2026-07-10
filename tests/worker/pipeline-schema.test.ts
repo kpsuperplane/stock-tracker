@@ -297,6 +297,41 @@ describe("normalized facts and reconciliation schema", () => {
         })
         .run(),
     ).resolves.toBeDefined();
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+           (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+           VALUES ('job-b', 'planner-a', 'required', 'pending', ?1)`,
+      )
+        .bind(now)
+        .run(),
+    ).rejects.toThrow();
+    await expect(
+      work.attachToJob({
+        pipelineJobId: "job-b",
+        workItemId: "planner-a",
+        relationship: "required",
+        now,
+      }),
+    ).rejects.toThrow("job_planning_owner_mismatch");
+    await env.DB.prepare(
+      `INSERT INTO dispatch_batches
+         (id, work_type, instrument_id, requested_start_date, requested_end_date,
+          state, attempt_count, max_attempts, created_at, updated_at)
+         VALUES ('dispatch-guard', 'market_fact', 'instrument-1', '2026-07-10',
+                 '2026-07-10', 'dispatching', 0, 3, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO dispatch_batch_items
+           (dispatch_batch_id, work_item_id, created_at)
+           VALUES ('dispatch-guard', 'planner-a', ?1)`,
+      )
+        .bind(now)
+        .run(),
+    ).rejects.toThrow();
 
     expect(
       await jobs.transition({
@@ -338,6 +373,21 @@ describe("normalized facts and reconciliation schema", () => {
         now,
       }),
     ).rejects.toThrow("invalid_pipeline_job_transition");
+    expect(
+      await jobs.updateProgress({
+        id: "job-a",
+        progress: {
+          workTotal: 99,
+          workReused: 0,
+          workSkipped: 0,
+          workFetched: 0,
+          workAnalyzed: 0,
+          workProcessed: 0,
+          workFailed: 0,
+        },
+        now,
+      }),
+    ).toBe(false);
   });
 
   it("separates forced refresh work and centralizes compatible dispatch transitions", async () => {
@@ -347,6 +397,13 @@ describe("normalized facts and reconciliation schema", () => {
     const base = await work.ensureGlobal(globalWork("global-base"));
     const forced = await work.ensureGlobal(globalWork("global-forced", 1));
     expect(forced.id).not.toBe(base.id);
+    await expect(
+      work.ensureGlobal({
+        ...globalWork("typo"),
+        deterministicKey:
+          "fact:market_fact:instrument-1:2026-07-10:market-r1:0",
+      }),
+    ).rejects.toThrow("invalid_global_fact_key");
     expect(
       await work.claimForDispatch({
         id: base.id,
@@ -380,11 +437,29 @@ describe("normalized facts and reconciliation schema", () => {
       work: [dispatching],
     });
     expect(
+      await dispatch.reclaimExpiredDispatch({
+        id: "dispatch-1",
+        expectedLeaseUntil: "2026-07-10T12:05:00.000Z",
+        now: "2026-07-10T12:06:00.000Z",
+        leaseUntil: "2026-07-10T12:07:00.000Z",
+      }),
+    ).toBe(true);
+    expect(
       await dispatch.transition({
         id: "dispatch-1",
         from: "dispatching",
         to: "queued",
-        now,
+        now: "2026-07-10T12:06:00.000Z",
+        expectedDispatchLeaseUntil: "2026-07-10T12:05:00.000Z",
+      }),
+    ).toBe(false);
+    expect(
+      await dispatch.transition({
+        id: "dispatch-1",
+        from: "dispatching",
+        to: "queued",
+        now: "2026-07-10T12:06:00.000Z",
+        expectedDispatchLeaseUntil: "2026-07-10T12:07:00.000Z",
       }),
     ).toBe(true);
     expect(
@@ -402,6 +477,7 @@ describe("normalized facts and reconciliation schema", () => {
         from: "processing",
         to: "terminal",
         now,
+        expectedProcessingLeaseUntil: "2026-07-10T12:10:00.000Z",
       }),
     ).rejects.toThrow("terminal_dispatch_batch_requires_error");
     await expect(
@@ -427,6 +503,75 @@ describe("normalized facts and reconciliation schema", () => {
         work: [dispatching],
       }),
     ).rejects.toThrow("dispatch_batch_incompatible_work");
+    await env.DB.prepare(
+      "UPDATE work_items SET state = 'pending' WHERE id = ?1",
+    )
+      .bind(forced.id)
+      .run();
+    await expect(
+      dispatch.createForWork({
+        batch: {
+          id: "stale-work-batch",
+          workType: "market_fact",
+          instrumentId: "instrument-1",
+          requestedStartDate: "2026-07-10",
+          requestedEndDate: "2026-07-10",
+          state: "dispatching",
+          dispatchLeaseUntil: "2026-07-10T12:05:00.000Z",
+          processingLeaseUntil: null,
+          attemptCount: 1,
+          maxAttempts: 3,
+          terminalErrorCode: null,
+          terminalErrorMessage: null,
+          createdAt: now,
+          updatedAt: now,
+          completedAt: null,
+          retentionUntil: null,
+        },
+        work: [forced],
+      }),
+    ).rejects.toThrow("dispatch_batch_incompatible_work");
+    const leaseWork = await work.ensureGlobal({
+      ...globalWork("lease-work", 2),
+      effectiveDate: "2026-07-09",
+      deterministicKey: WorkItemRepository.globalFactKey({
+        workType: "market_fact",
+        instrumentId: "instrument-1",
+        effectiveDate: "2026-07-09",
+        dependencyRevision: "market-r1",
+        forcedRefreshGeneration: 2,
+      }),
+    });
+    expect(
+      await work.claimForDispatch({
+        id: leaseWork.id,
+        now,
+        leaseUntil: "2026-07-10T12:01:00.000Z",
+      }),
+    ).toBe(true);
+    expect(
+      await work.recoverExpiredDispatch({
+        id: leaseWork.id,
+        expectedLeaseUntil: "2026-07-10T12:01:00.000Z",
+        now: "2026-07-10T12:02:00.000Z",
+      }),
+    ).toBe(true);
+    expect(
+      await work.claimForDispatch({
+        id: leaseWork.id,
+        now: "2026-07-10T12:02:00.000Z",
+        leaseUntil: "2026-07-10T12:03:00.000Z",
+      }),
+    ).toBe(true);
+    expect(
+      await work.transition({
+        id: leaseWork.id,
+        from: "dispatching",
+        to: "queued",
+        now: "2026-07-10T12:02:00.000Z",
+        expectedDispatchLeaseUntil: "2026-07-10T12:01:00.000Z",
+      }),
+    ).toBe(false);
     await expect(
       work.transition({
         id: forced.id,
