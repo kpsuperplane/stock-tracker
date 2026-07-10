@@ -1,0 +1,15 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
+  "formatter": { "enabled": true, "indentStyle": "space" },
+  "linter": { "enabled": true, "rules": { "recommended": true } },
+  "files": {
+    "includes": [
+      "**",
+      "!!dist",
+      "!!coverage",
+      "!!playwright-report",
+      "!!test-results",
+      "!!worker-configuration.d.ts"
+    ]
+  }
+}

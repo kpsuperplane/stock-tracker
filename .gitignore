@@ -1,2 +1,9 @@
-.superpowers/
-
+node_modules/
+dist/
+coverage/
+.dev.vars
+.wrangler/
+test-results/
+playwright-report/
+docs/
+.superpowers

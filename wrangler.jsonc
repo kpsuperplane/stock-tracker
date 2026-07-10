@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "stock-movement-explainer",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "stock-tracker",
+      "database_id": "local-placeholder",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "ai": { "binding": "AI", "remote": true },
+  "queues": {
+    "producers": [
+      { "binding": "SCREENING_QUEUE", "queue": "stock-tracker-screenings" }
+    ],
+    "consumers": [
+      {
+        "queue": "stock-tracker-screenings",
+        "max_batch_size": 5,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 5
+      }
+    ]
+  },
+  "triggers": { "crons": ["0 22 * * MON-FRI"] },
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}
