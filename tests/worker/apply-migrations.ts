@@ -15,6 +15,19 @@ declare global {
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM job_work_items"),
+    env.DB.prepare("DELETE FROM work_items"),
+    env.DB.prepare("DELETE FROM import_rows"),
+    env.DB.prepare("DELETE FROM import_batches"),
+    env.DB.prepare("DELETE FROM corporate_action_coverage"),
+    env.DB.prepare("DELETE FROM corporate_actions"),
+    env.DB.prepare("DELETE FROM transactions"),
+    env.DB.prepare("DELETE FROM pipeline_jobs"),
+    env.DB.prepare("DELETE FROM ledger_mutations"),
+    env.DB.prepare(
+      "UPDATE position_basis_state SET revision = 0, updated_at = NULL, last_mutation_id = NULL WHERE id = 1",
+    ),
+    env.DB.prepare("DELETE FROM instruments"),
     env.DB.prepare("DELETE FROM dispatch_events"),
     env.DB.prepare("DELETE FROM sources"),
     env.DB.prepare("DELETE FROM analyses"),
