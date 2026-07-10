@@ -1,10 +1,14 @@
 import { createApp } from "./app";
+import type { ScreeningJobMessage } from "../shared/contracts";
 import type { Env } from "./env";
+import { handleQueue } from "./queue";
 
 const app = createApp();
 
 export default {
   fetch: app.fetch,
   async scheduled(): Promise<void> {},
-  async queue(): Promise<void> {},
-} satisfies ExportedHandler<Env>;
+  async queue(batch, env): Promise<void> {
+    await handleQueue(batch, env);
+  },
+} satisfies ExportedHandler<Env, ScreeningJobMessage>;
