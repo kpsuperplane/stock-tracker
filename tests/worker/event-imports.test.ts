@@ -195,6 +195,89 @@ describe("EventImportsService", () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
+  it("keeps a 10,000-distinct-symbol preview under 50 D1 statements with set-based reads", async () => {
+    await env.DB.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+           VALUES(1)
+           UNION ALL SELECT value + 1 FROM sequence WHERE value < 10000
+         )
+         INSERT INTO instruments
+         (id, symbol, company_name, exchange, currency, instrument_type,
+          provider, provider_symbol, created_at, updated_at)
+         SELECT 'bulk-' || value, 'B' || printf('%05d', value),
+                'Bulk Corp', 'NYSE', 'USD', 'stock', 'yahoo',
+                'B' || printf('%05d', value), ?1, ?1
+         FROM sequence`,
+    )
+      .bind(now)
+      .run();
+    const databaseCalls = vi.spyOn(env.DB, "prepare");
+    const result = await service().preview({
+      originalFilename: "diverse.csv",
+      file: new TextEncoder().encode(
+        csv(
+          Array.from(
+            { length: 10_000 },
+            (_, index) =>
+              `2024-01-02,B${String(index + 1).padStart(5, "0")},buy,1,1`,
+          ),
+        ),
+      ),
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        kind: "preview",
+        rows: expect.arrayContaining([
+          expect.objectContaining({ status: "valid" }),
+        ]),
+      }),
+    );
+    if (result.kind === "preview") expect(result.rows).toHaveLength(10_000);
+    expect(databaseCalls.mock.calls).toHaveLength(29);
+  }, 20_000);
+
+  it("commits 100 distinct confirmed instruments without exceeding D1 bind or query limits", async () => {
+    await env.DB.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+         VALUES(1)
+         UNION ALL SELECT value + 1 FROM sequence WHERE value < 100
+       )
+       INSERT INTO instruments
+       (id, symbol, company_name, exchange, currency, instrument_type,
+        provider, provider_symbol, created_at, updated_at)
+       SELECT 'commit-' || value, 'C' || printf('%03d', value),
+              'Commit Corp', 'NYSE', 'USD', 'stock', 'yahoo',
+              'C' || printf('%03d', value), ?1, ?1
+       FROM sequence`,
+    )
+      .bind(now)
+      .run();
+    const rows = Array.from({ length: 100 }, (_, index) => {
+      const symbol = `C${String(index + 1).padStart(3, "0")}`;
+      return [`2024-01-02,${symbol},buy,1,1`, `2024-01-02,${symbol},sell,1,1`];
+    }).flat();
+    const importService = service();
+    const preview = await importService.preview({
+      originalFilename: "hundred.csv",
+      file: new TextEncoder().encode(csv(rows)),
+    });
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    const databaseCalls = vi.spyOn(env.DB, "prepare");
+    const result = await importService.commit({
+      batchId: preview.batchId,
+      expectedPositionBasisRevision: 0,
+      confirmations: preview.reviews.map((review) => ({
+        instrumentId: review.instrumentId,
+        requestedStartDate: review.requestedStartDate,
+        requestedEndDate: review.requestedEndDate,
+        providerRevision: review.providerRevision,
+      })),
+    });
+    expect(result).toEqual(expect.objectContaining({ kind: "committed" }));
+    expect(databaseCalls.mock.calls.length).toBeLessThanOrEqual(25);
+  });
+
   it("requires the previewed split confirmation, rejects a provider revision change, and never reparses staged bytes", async () => {
     const first = await service(provider("snapshot-r1")).preview({
       originalFilename: "portfolio-events.csv",
@@ -342,6 +425,7 @@ describe("EventImportsService", () => {
 
   it.each([
     "active",
+    "superseded",
     "quarantined",
   ] as const)("reactivates an exact fresh snapshot action previously marked %s", async (status) => {
     const event = {

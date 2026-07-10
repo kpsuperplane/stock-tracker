@@ -1,7 +1,6 @@
-import {
-  type CorporateActionRecord,
-  CorporateActionRepository,
-  type CoverageRecord,
+import type {
+  CorporateActionRecord,
+  CoverageRecord,
 } from "../db/corporate-actions";
 import {
   type ImportBatchRecord,
@@ -27,7 +26,8 @@ const HEADER = "trade_date,symbol,side,quantity,price";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_ROWS = 10_000;
 const MAX_CURRENT_POSITIONS = 100;
-const BULK_QUERY_SIZE = 100;
+const STAGING_WRITE_BATCH_SIZE = 500;
+const SNAPSHOT_SYNC_BATCH_SIZE = 1_000;
 const PREVIEW_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const PLANNING_WORK_TYPE = "ledger_reconciliation_plan";
@@ -207,14 +207,6 @@ const confirmationMatches = (
   confirmation.requestedEndDate === snapshot.range.requestedEndDate &&
   confirmation.providerRevision === snapshot.range.providerRevision;
 
-const chunks = <T>(values: readonly T[]): T[][] => {
-  const result: T[][] = [];
-  for (let index = 0; index < values.length; index += BULK_QUERY_SIZE) {
-    result.push(values.slice(index, index + BULK_QUERY_SIZE));
-  }
-  return result;
-};
-
 const parseCsv = (text: string): string[][] | null => {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -284,7 +276,6 @@ const parseCsv = (text: string): string[][] | null => {
 };
 
 export class EventImportsService {
-  private readonly actions: CorporateActionRepository;
   private readonly imports: ImportRepository;
   private readonly jobs: PipelineJobRepository;
   private readonly positionBasis: PositionBasisRepository;
@@ -293,7 +284,6 @@ export class EventImportsService {
   private readonly newId: () => string;
 
   constructor(private readonly dependencies: EventImportsServiceDependencies) {
-    this.actions = new CorporateActionRepository(dependencies.db);
     this.imports = new ImportRepository(dependencies.db);
     this.jobs = new PipelineJobRepository(dependencies.db);
     this.positionBasis = new PositionBasisRepository(dependencies.db);
@@ -462,7 +452,7 @@ export class EventImportsService {
     try {
       await this.dependencies.db.batch([
         this.imports.createBatchStatement(batch),
-        ...rows.map((row) => this.imports.createRowStatement(row)),
+        ...this.stagingRowStatements(batchId, rows),
       ]);
     } catch (error) {
       if (
@@ -664,9 +654,7 @@ export class EventImportsService {
         expectedRevision: input.expectedPositionBasisRevision,
         createdAt: timestamp,
       }),
-      ...refreshed.flatMap(({ instrument, snapshot }) =>
-        this.snapshotStatements(instrument, snapshot, timestamp),
-      ),
+      ...this.snapshotSyncStatements(refreshed, timestamp),
       this.dependencies.db
         .prepare(
           `INSERT INTO transactions
@@ -854,6 +842,26 @@ export class EventImportsService {
     };
   }
 
+  private stagingRowStatements(
+    importBatchId: string,
+    rows: readonly ImportRowRecord[],
+  ): D1PreparedStatement[] {
+    const statements: D1PreparedStatement[] = [];
+    for (
+      let index = 0;
+      index < rows.length;
+      index += STAGING_WRITE_BATCH_SIZE
+    ) {
+      statements.push(
+        this.imports.createRowsFromJsonStatement(
+          importBatchId,
+          rows.slice(index, index + STAGING_WRITE_BATCH_SIZE),
+        ),
+      );
+    }
+    return statements;
+  }
+
   private asNormalized(row: PendingRow): NormalizedImportTransaction {
     if (!row.snapshot) throw new Error("missing_preview_snapshot");
     return {
@@ -889,21 +897,22 @@ export class EventImportsService {
     symbols: readonly string[],
   ): Promise<Map<string, InstrumentRecord>> {
     const result = new Map<string, InstrumentRecord>();
-    for (const group of chunks([...new Set(symbols.filter(Boolean))])) {
-      const placeholders = group.map((_, index) => `?${index + 1}`).join(", ");
-      const rows = await this.dependencies.db
-        .prepare(
-          `SELECT id, symbol, company_name AS companyName, exchange, currency,
-                  instrument_type AS instrumentType, provider,
-                  provider_symbol AS providerSymbol,
-                  provider_metadata_json AS providerMetadataJson,
-                  created_at AS createdAt, updated_at AS updatedAt
-           FROM instruments WHERE symbol IN (${placeholders})`,
-        )
-        .bind(...group)
-        .all<InstrumentRecord>();
-      for (const row of rows.results) result.set(row.symbol, row);
-    }
+    const requestedSymbols = [...new Set(symbols.filter(Boolean))];
+    if (requestedSymbols.length === 0) return result;
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT instruments.id, instruments.symbol,
+                instruments.company_name AS companyName, instruments.exchange,
+                instruments.currency, instruments.instrument_type AS instrumentType,
+                instruments.provider, instruments.provider_symbol AS providerSymbol,
+                instruments.provider_metadata_json AS providerMetadataJson,
+                instruments.created_at AS createdAt, instruments.updated_at AS updatedAt
+         FROM instruments JOIN json_each(?1) AS requested
+           ON instruments.symbol = requested.value`,
+      )
+      .bind(JSON.stringify(requestedSymbols))
+      .all<InstrumentRecord>();
+    for (const row of rows.results) result.set(row.symbol, row);
     return result;
   }
 
@@ -911,21 +920,22 @@ export class EventImportsService {
     instrumentIds: readonly string[],
   ): Promise<Map<string, InstrumentRecord>> {
     const result = new Map<string, InstrumentRecord>();
-    for (const group of chunks([...new Set(instrumentIds)])) {
-      const placeholders = group.map((_, index) => `?${index + 1}`).join(", ");
-      const rows = await this.dependencies.db
-        .prepare(
-          `SELECT id, symbol, company_name AS companyName, exchange, currency,
-                  instrument_type AS instrumentType, provider,
-                  provider_symbol AS providerSymbol,
-                  provider_metadata_json AS providerMetadataJson,
-                  created_at AS createdAt, updated_at AS updatedAt
-           FROM instruments WHERE id IN (${placeholders})`,
-        )
-        .bind(...group)
-        .all<InstrumentRecord>();
-      for (const row of rows.results) result.set(row.id, row);
-    }
+    const requestedIds = [...new Set(instrumentIds)];
+    if (requestedIds.length === 0) return result;
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT instruments.id, instruments.symbol,
+                instruments.company_name AS companyName, instruments.exchange,
+                instruments.currency, instruments.instrument_type AS instrumentType,
+                instruments.provider, instruments.provider_symbol AS providerSymbol,
+                instruments.provider_metadata_json AS providerMetadataJson,
+                instruments.created_at AS createdAt, instruments.updated_at AS updatedAt
+         FROM instruments JOIN json_each(?1) AS requested
+           ON instruments.id = requested.value`,
+      )
+      .bind(JSON.stringify(requestedIds))
+      .all<InstrumentRecord>();
+    for (const row of rows.results) result.set(row.id, row);
     return result;
   }
 
@@ -933,32 +943,33 @@ export class EventImportsService {
     instrumentIds: readonly string[],
   ): Promise<Map<string, LedgerTransaction[]>> {
     const result = new Map<string, LedgerTransaction[]>();
-    for (const group of chunks([...new Set(instrumentIds)])) {
-      const placeholders = group.map((_, index) => `?${index + 1}`).join(", ");
-      const rows = await this.dependencies.db
-        .prepare(
-          `SELECT id, instrument_id, trade_date, side, quantity_decimal
-           FROM transactions WHERE instrument_id IN (${placeholders})
-           ORDER BY instrument_id, trade_date, id`,
-        )
-        .bind(...group)
-        .all<{
-          id: string;
-          instrument_id: string;
-          trade_date: string;
-          side: Side;
-          quantity_decimal: string;
-        }>();
-      for (const row of rows.results) {
-        const transactions = result.get(row.instrument_id) ?? [];
-        transactions.push({
-          id: row.id,
-          tradeDate: row.trade_date,
-          side: row.side,
-          quantityDecimal: row.quantity_decimal,
-        });
-        result.set(row.instrument_id, transactions);
-      }
+    const requestedIds = [...new Set(instrumentIds)];
+    if (requestedIds.length === 0) return result;
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT transactions.id, transactions.instrument_id, transactions.trade_date,
+                transactions.side, transactions.quantity_decimal
+         FROM transactions JOIN json_each(?1) AS requested
+           ON transactions.instrument_id = requested.value
+         ORDER BY transactions.instrument_id, transactions.trade_date, transactions.id`,
+      )
+      .bind(JSON.stringify(requestedIds))
+      .all<{
+        id: string;
+        instrument_id: string;
+        trade_date: string;
+        side: Side;
+        quantity_decimal: string;
+      }>();
+    for (const row of rows.results) {
+      const transactions = result.get(row.instrument_id) ?? [];
+      transactions.push({
+        id: row.id,
+        tradeDate: row.trade_date,
+        side: row.side,
+        quantityDecimal: row.quantity_decimal,
+      });
+      result.set(row.instrument_id, transactions);
     }
     return result;
   }
@@ -967,28 +978,35 @@ export class EventImportsService {
     instrumentIds: readonly string[],
   ): Promise<Map<string, CorporateActionRecord[]>> {
     const result = new Map<string, CorporateActionRecord[]>();
-    for (const group of chunks([...new Set(instrumentIds)])) {
-      const placeholders = group.map((_, index) => `?${index + 1}`).join(", ");
-      const rows = await this.dependencies.db
-        .prepare(
-          `SELECT id, instrument_id AS instrumentId, effective_date AS effectiveDate,
-                  split_numerator AS splitNumerator, split_denominator AS splitDenominator,
-                  provider, provider_event_id AS providerEventId,
-                  provider_revision AS providerRevision, retrieved_at AS retrievedAt,
-                  revision, status, conflict_code AS conflictCode,
-                  conflict_message AS conflictMessage, created_at AS createdAt,
-                  updated_at AS updatedAt
-           FROM corporate_actions
-           WHERE status = 'active' AND instrument_id IN (${placeholders})
-           ORDER BY instrument_id, effective_date, id`,
-        )
-        .bind(...group)
-        .all<CorporateActionRecord>();
-      for (const row of rows.results) {
-        const actions = result.get(row.instrumentId) ?? [];
-        actions.push(row);
-        result.set(row.instrumentId, actions);
-      }
+    const requestedIds = [...new Set(instrumentIds)];
+    if (requestedIds.length === 0) return result;
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT corporate_actions.id, corporate_actions.instrument_id AS instrumentId,
+                corporate_actions.effective_date AS effectiveDate,
+                corporate_actions.split_numerator AS splitNumerator,
+                corporate_actions.split_denominator AS splitDenominator,
+                corporate_actions.provider,
+                corporate_actions.provider_event_id AS providerEventId,
+                corporate_actions.provider_revision AS providerRevision,
+                corporate_actions.retrieved_at AS retrievedAt,
+                corporate_actions.revision, corporate_actions.status,
+                corporate_actions.conflict_code AS conflictCode,
+                corporate_actions.conflict_message AS conflictMessage,
+                corporate_actions.created_at AS createdAt,
+                corporate_actions.updated_at AS updatedAt
+         FROM corporate_actions JOIN json_each(?1) AS requested
+           ON corporate_actions.instrument_id = requested.value
+         WHERE corporate_actions.status = 'active'
+         ORDER BY corporate_actions.instrument_id, corporate_actions.effective_date,
+                  corporate_actions.id`,
+      )
+      .bind(JSON.stringify(requestedIds))
+      .all<CorporateActionRecord>();
+    for (const row of rows.results) {
+      const actions = result.get(row.instrumentId) ?? [];
+      actions.push(row);
+      result.set(row.instrumentId, actions);
     }
     return result;
   }
@@ -1001,36 +1019,43 @@ export class EventImportsService {
     entries: readonly { instrumentId: string; provider: string }[],
   ): Promise<Map<string, CoverageRecord>> {
     const result = new Map<string, CoverageRecord>();
-    const idsByProvider = new Map<string, Set<string>>();
-    for (const { instrumentId, provider } of entries) {
-      const ids = idsByProvider.get(provider) ?? new Set<string>();
-      ids.add(instrumentId);
-      idsByProvider.set(provider, ids);
-    }
-    for (const [provider, ids] of idsByProvider) {
-      for (const group of chunks([...ids])) {
-        const placeholders = group
-          .map((_, index) => `?${index + 2}`)
-          .join(", ");
-        const rows = await this.dependencies.db
-          .prepare(
-            `SELECT instrument_id, provider, requested_start_date, requested_end_date,
-                    snapshot_provider_revision, retrieved_at, confirmed_start_date,
-                    confirmed_end_date, confirmed_provider_revision, confirmed_at,
-                    status, error_code, error_message, updated_at
-             FROM corporate_action_coverage
-             WHERE provider = ?1 AND instrument_id IN (${placeholders})`,
-          )
-          .bind(provider, ...group)
-          .all<Record<string, string | null>>();
-        for (const row of rows.results) {
-          const coverage = this.coverageFromRow(row);
-          result.set(
-            this.coverageKey(coverage.instrumentId, coverage.provider),
-            coverage,
-          );
-        }
-      }
+    const requested = [
+      ...new Map(
+        entries.map((entry) => [
+          this.coverageKey(entry.instrumentId, entry.provider),
+          entry,
+        ]),
+      ).values(),
+    ];
+    if (requested.length === 0) return result;
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT corporate_action_coverage.instrument_id,
+                corporate_action_coverage.provider,
+                corporate_action_coverage.requested_start_date,
+                corporate_action_coverage.requested_end_date,
+                corporate_action_coverage.snapshot_provider_revision,
+                corporate_action_coverage.retrieved_at,
+                corporate_action_coverage.confirmed_start_date,
+                corporate_action_coverage.confirmed_end_date,
+                corporate_action_coverage.confirmed_provider_revision,
+                corporate_action_coverage.confirmed_at,
+                corporate_action_coverage.status,
+                corporate_action_coverage.error_code,
+                corporate_action_coverage.error_message,
+                corporate_action_coverage.updated_at
+         FROM corporate_action_coverage JOIN json_each(?1) AS requested
+           ON corporate_action_coverage.instrument_id = json_extract(requested.value, '$.instrumentId')
+          AND corporate_action_coverage.provider = json_extract(requested.value, '$.provider')`,
+      )
+      .bind(JSON.stringify(requested))
+      .all<Record<string, string | null>>();
+    for (const row of rows.results) {
+      const coverage = this.coverageFromRow(row);
+      result.set(
+        this.coverageKey(coverage.instrumentId, coverage.provider),
+        coverage,
+      );
     }
     return result;
   }
@@ -1230,83 +1255,133 @@ export class EventImportsService {
     return true;
   }
 
-  private snapshotStatements(
-    instrument: InstrumentRecord,
-    snapshot: SplitEventRange,
+  private snapshotSyncStatements(
+    refreshed: readonly {
+      instrument: InstrumentRecord;
+      snapshot: SplitEventRange;
+    }[],
     timestamp: string,
   ): D1PreparedStatement[] {
-    const candidates = snapshot.events.map((event) =>
-      this.dependencies.db
-        .prepare(
-          `INSERT OR IGNORE INTO corporate_actions
-       (id, instrument_id, action_type, effective_date, split_numerator, split_denominator,
-        provider, provider_event_id, provider_revision, retrieved_at, revision, status,
-        conflict_code, conflict_message, created_at, updated_at)
-       VALUES (?1, ?2, 'split', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 'candidate', NULL, NULL, ?10, ?10)`,
-        )
-        .bind(
-          `${event.providerEventId}@${event.providerRevision}`,
-          instrument.id,
-          event.effectiveDate,
-          event.numerator,
-          event.denominator,
-          event.provider,
-          event.providerEventId,
-          event.providerRevision,
-          snapshot.range.observedAt,
-          timestamp,
-        ),
-    );
-    const promotions = snapshot.events.map((event) =>
-      this.dependencies.db
-        .prepare(
-          `UPDATE corporate_actions
-           SET status = 'active', conflict_code = NULL, conflict_message = NULL, updated_at = ?5
-           WHERE instrument_id = ?1 AND provider = ?2 AND provider_event_id = ?3
-             AND provider_revision = ?4
-             AND status IN ('candidate', 'active', 'superseded', 'quarantined')`,
-        )
-        .bind(
-          instrument.id,
-          snapshot.range.provider,
-          event.providerEventId,
-          event.providerRevision,
-          timestamp,
-        ),
-    );
-    return [
-      ...candidates,
-      this.dependencies.db
-        .prepare(
-          `UPDATE corporate_actions SET status = 'superseded', updated_at = ?4
-         WHERE instrument_id = ?1 AND provider = ?2 AND status = 'active'
-           AND effective_date >= ?3 AND effective_date <= ?5`,
-        )
-        .bind(
-          instrument.id,
-          snapshot.range.provider,
-          snapshot.range.requestedStartDate,
-          timestamp,
-          snapshot.range.requestedEndDate,
-        ),
-      ...promotions,
-      this.actions.upsertCoverageStatement({
+    const contexts = refreshed.map(({ instrument, snapshot }) => ({
+      instrumentId: instrument.id,
+      provider: snapshot.range.provider,
+      requestedStartDate: snapshot.range.requestedStartDate,
+      requestedEndDate: snapshot.range.requestedEndDate,
+      providerRevision: snapshot.range.providerRevision,
+      observedAt: snapshot.range.observedAt,
+    }));
+    const events = refreshed.flatMap(({ instrument, snapshot }) =>
+      snapshot.events.map((event) => ({
+        id: `${event.providerEventId}@${event.providerRevision}`,
         instrumentId: instrument.id,
-        provider: snapshot.range.provider,
-        requestedStartDate: snapshot.range.requestedStartDate,
-        requestedEndDate: snapshot.range.requestedEndDate,
-        snapshotProviderRevision: snapshot.range.providerRevision,
+        effectiveDate: event.effectiveDate,
+        numerator: event.numerator,
+        denominator: event.denominator,
+        provider: event.provider,
+        providerEventId: event.providerEventId,
+        providerRevision: event.providerRevision,
         retrievedAt: snapshot.range.observedAt,
-        confirmedStartDate: snapshot.range.requestedStartDate,
-        confirmedEndDate: snapshot.range.requestedEndDate,
-        confirmedProviderRevision: snapshot.range.providerRevision,
-        confirmedAt: timestamp,
-        status: "confirmed",
-        errorCode: null,
-        errorMessage: null,
-        updatedAt: timestamp,
-      }),
-    ];
+      })),
+    );
+    const statements: D1PreparedStatement[] = [];
+    for (
+      let index = 0;
+      index < contexts.length;
+      index += SNAPSHOT_SYNC_BATCH_SIZE
+    ) {
+      const batch = contexts.slice(index, index + SNAPSHOT_SYNC_BATCH_SIZE);
+      statements.push(
+        this.dependencies.db
+          .prepare(
+            `UPDATE corporate_actions
+             SET status = 'superseded', updated_at = ?2
+             WHERE status = 'active' AND EXISTS (
+               SELECT 1 FROM json_each(?1) AS context
+               WHERE corporate_actions.instrument_id = json_extract(context.value, '$.instrumentId')
+                 AND corporate_actions.provider = json_extract(context.value, '$.provider')
+                 AND corporate_actions.effective_date >= json_extract(context.value, '$.requestedStartDate')
+                 AND corporate_actions.effective_date <= json_extract(context.value, '$.requestedEndDate')
+             )`,
+          )
+          .bind(JSON.stringify(batch), timestamp),
+        this.dependencies.db
+          .prepare(
+            `INSERT INTO corporate_action_coverage
+             (instrument_id, provider, requested_start_date, requested_end_date,
+              snapshot_provider_revision, retrieved_at, confirmed_start_date,
+              confirmed_end_date, confirmed_provider_revision, confirmed_at,
+              status, error_code, error_message, updated_at)
+             SELECT json_extract(value, '$.instrumentId'),
+                    json_extract(value, '$.provider'),
+                    json_extract(value, '$.requestedStartDate'),
+                    json_extract(value, '$.requestedEndDate'),
+                    json_extract(value, '$.providerRevision'),
+                    json_extract(value, '$.observedAt'),
+                    json_extract(value, '$.requestedStartDate'),
+                    json_extract(value, '$.requestedEndDate'),
+                    json_extract(value, '$.providerRevision'),
+                    ?2, 'confirmed', NULL, NULL, ?2
+             FROM json_each(?1) WHERE true
+             ON CONFLICT(instrument_id, provider) DO UPDATE SET
+               requested_start_date = excluded.requested_start_date,
+               requested_end_date = excluded.requested_end_date,
+               snapshot_provider_revision = excluded.snapshot_provider_revision,
+               retrieved_at = excluded.retrieved_at,
+               confirmed_start_date = excluded.confirmed_start_date,
+               confirmed_end_date = excluded.confirmed_end_date,
+               confirmed_provider_revision = excluded.confirmed_provider_revision,
+               confirmed_at = excluded.confirmed_at,
+               status = excluded.status, error_code = NULL, error_message = NULL,
+               updated_at = excluded.updated_at`,
+          )
+          .bind(JSON.stringify(batch), timestamp),
+      );
+    }
+    for (
+      let index = 0;
+      index < events.length;
+      index += SNAPSHOT_SYNC_BATCH_SIZE
+    ) {
+      const batch = events.slice(index, index + SNAPSHOT_SYNC_BATCH_SIZE);
+      statements.push(
+        this.dependencies.db
+          .prepare(
+            `INSERT OR IGNORE INTO corporate_actions
+             (id, instrument_id, action_type, effective_date, split_numerator,
+              split_denominator, provider, provider_event_id, provider_revision,
+              retrieved_at, revision, status, conflict_code, conflict_message,
+              created_at, updated_at)
+             SELECT json_extract(value, '$.id'),
+                    json_extract(value, '$.instrumentId'), 'split',
+                    json_extract(value, '$.effectiveDate'),
+                    json_extract(value, '$.numerator'),
+                    json_extract(value, '$.denominator'),
+                    json_extract(value, '$.provider'),
+                    json_extract(value, '$.providerEventId'),
+                    json_extract(value, '$.providerRevision'),
+                    json_extract(value, '$.retrievedAt'), 1, 'candidate',
+                    NULL, NULL, ?2, ?2
+             FROM json_each(?1)`,
+          )
+          .bind(JSON.stringify(batch), timestamp),
+        this.dependencies.db
+          .prepare(
+            `UPDATE corporate_actions
+             SET status = 'active', conflict_code = NULL, conflict_message = NULL,
+                 updated_at = ?2
+             WHERE status IN ('candidate', 'active', 'superseded', 'quarantined')
+               AND EXISTS (
+                 SELECT 1 FROM json_each(?1) AS event
+                 WHERE corporate_actions.instrument_id = json_extract(event.value, '$.instrumentId')
+                   AND corporate_actions.provider = json_extract(event.value, '$.provider')
+                   AND corporate_actions.provider_event_id = json_extract(event.value, '$.providerEventId')
+                   AND corporate_actions.provider_revision = json_extract(event.value, '$.providerRevision')
+               )`,
+          )
+          .bind(JSON.stringify(batch), timestamp),
+      );
+    }
+    return statements;
   }
 
   private proposedSplits(

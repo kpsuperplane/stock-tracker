@@ -84,6 +84,31 @@ export class ImportRepository {
       );
   }
 
+  createRowsFromJsonStatement(
+    importBatchId: string,
+    rows: readonly ImportRowRecord[],
+  ): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `INSERT INTO import_rows
+         (id, import_batch_id, row_number, symbol, trade_date, side,
+          quantity_decimal, price_decimal, status, validation_errors_json,
+          normalized_transaction_json)
+         SELECT json_extract(value, '$.id'), ?1,
+                json_extract(value, '$.rowNumber'),
+                json_extract(value, '$.symbol'),
+                json_extract(value, '$.tradeDate'),
+                json_extract(value, '$.side'),
+                json_extract(value, '$.quantityDecimal'),
+                json_extract(value, '$.priceDecimal'),
+                json_extract(value, '$.status'),
+                json_extract(value, '$.validationErrorsJson'),
+                json_extract(value, '$.normalizedTransactionJson')
+         FROM json_each(?2)`,
+      )
+      .bind(importBatchId, JSON.stringify(rows));
+  }
+
   async findBatchByDigest(
     digest: string,
   ): Promise<{ id: string; status: ImportBatchStatus } | null> {
