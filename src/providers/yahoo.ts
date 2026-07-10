@@ -19,7 +19,7 @@ const resultSchema = z.object({
   }),
   events: z
     .record(z.string(), z.record(z.string(), z.object({ date: z.number() })))
-    .optional(),
+    .nullish(),
 });
 
 const chartSchema = z.object({

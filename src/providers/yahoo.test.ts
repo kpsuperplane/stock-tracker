@@ -28,4 +28,26 @@ describe("YahooMarketDataProvider", () => {
       provider.getInstrument("AAPL", "2026-07-08", "2026-07-10"),
     ).rejects.toThrow();
   });
+
+  it("accepts a null events field when Yahoo reports no corporate actions", async () => {
+    const body = await readFile("tests/fixtures/yahoo/aapl.json", "utf8");
+    const payload = JSON.parse(body) as {
+      chart: { result: Array<{ events: unknown }> };
+    };
+    const result = payload.chart.result[0];
+    if (!result) throw new Error("fixture is missing a chart result");
+    result.events = null;
+    const provider = new YahooMarketDataProvider(async () =>
+      Response.json(payload),
+    );
+
+    const series = await provider.getInstrument(
+      "AAPL",
+      "2026-07-08",
+      "2026-07-10",
+    );
+
+    expect(series.metadata.symbol).toBe("AAPL");
+    expect(series.corporateActionDates.size).toBe(0);
+  });
 });
