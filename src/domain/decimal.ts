@@ -148,3 +148,133 @@ export const canonicalizeDecimal = (value: string, bounds?: DecimalBounds) =>
 
 export const formatDecimal = (value: string, fractionDigits = 6) =>
   DecimalValue.parse(value).toDisplayString(fractionDigits);
+
+const greatestCommonDivisor = (left: bigint, right: bigint): bigint => {
+  let dividend = left < 0n ? -left : left;
+  let divisor = right < 0n ? -right : right;
+  while (divisor !== 0n) {
+    const remainder = dividend % divisor;
+    dividend = divisor;
+    divisor = remainder;
+  }
+  return dividend;
+};
+
+const powerOfTen = (exponent: number): bigint => 10n ** BigInt(exponent);
+
+/**
+ * An exact fraction for operations, such as split ratios, whose decimal
+ * representation may not terminate. It only becomes a decimal string at the
+ * domain output boundary.
+ */
+export class RationalValue {
+  private constructor(
+    private readonly numerator: bigint,
+    private readonly denominator: bigint,
+  ) {}
+
+  static zero(): RationalValue {
+    return new RationalValue(0n, 1n);
+  }
+
+  static fromDecimal(value: string, bounds?: DecimalBounds): RationalValue {
+    const canonical = validateInput(value, bounds);
+    const negative = canonical.startsWith("-");
+    const unsigned = negative ? canonical.slice(1) : canonical;
+    const [integerPart, fractionPart = ""] = unsigned.split(".");
+    const numerator = BigInt(
+      `${negative ? "-" : ""}${integerPart}${fractionPart}`,
+    );
+    return RationalValue.normalize(numerator, powerOfTen(fractionPart.length));
+  }
+
+  static fromRatio(numerator: string, denominator: string): RationalValue {
+    if (!/^[1-9]\d*$/.test(numerator) || !/^[1-9]\d*$/.test(denominator)) {
+      throw new DecimalDomainError(
+        "rational ratio values must be positive integers",
+      );
+    }
+    return RationalValue.normalize(BigInt(numerator), BigInt(denominator));
+  }
+
+  add(value: RationalValue): RationalValue {
+    return RationalValue.normalize(
+      this.numerator * value.denominator + value.numerator * this.denominator,
+      this.denominator * value.denominator,
+    );
+  }
+
+  subtract(value: RationalValue): RationalValue {
+    return RationalValue.normalize(
+      this.numerator * value.denominator - value.numerator * this.denominator,
+      this.denominator * value.denominator,
+    );
+  }
+
+  multiply(value: RationalValue): RationalValue {
+    return RationalValue.normalize(
+      this.numerator * value.numerator,
+      this.denominator * value.denominator,
+    );
+  }
+
+  isNegative(): boolean {
+    return this.numerator < 0n;
+  }
+
+  isPositive(): boolean {
+    return this.numerator > 0n;
+  }
+
+  toString(): string {
+    let remainingDenominator = this.denominator;
+    let twos = 0;
+    let fives = 0;
+    while (remainingDenominator % 2n === 0n) {
+      remainingDenominator /= 2n;
+      twos += 1;
+    }
+    while (remainingDenominator % 5n === 0n) {
+      remainingDenominator /= 5n;
+      fives += 1;
+    }
+
+    if (remainingDenominator === 1n) {
+      const scale = Math.max(twos, fives);
+      if (scale === 0) return this.numerator.toString();
+      const scaledNumerator =
+        this.numerator *
+        2n ** BigInt(scale - twos) *
+        5n ** BigInt(scale - fives);
+      const negative = scaledNumerator < 0n;
+      const digits = (negative ? -scaledNumerator : scaledNumerator)
+        .toString()
+        .padStart(scale + 1, "0");
+      const integer = digits.slice(0, -scale) || "0";
+      const fraction =
+        scale === 0 ? "" : digits.slice(-scale).replace(/0+$/, "");
+      const result = fraction.length > 0 ? `${integer}.${fraction}` : integer;
+      return result === "0" ? "0" : negative ? `-${result}` : result;
+    }
+
+    return DecimalValue.parse(this.numerator.toString())
+      .divide(this.denominator.toString())
+      .toString();
+  }
+
+  private static normalize(
+    numerator: bigint,
+    denominator: bigint,
+  ): RationalValue {
+    if (denominator === 0n)
+      throw new DecimalDomainError("rational division by zero");
+    const positiveDenominator = denominator < 0n ? -denominator : denominator;
+    const signedNumerator = denominator < 0n ? -numerator : numerator;
+    if (signedNumerator === 0n) return RationalValue.zero();
+    const divisor = greatestCommonDivisor(signedNumerator, positiveDenominator);
+    return new RationalValue(
+      signedNumerator / divisor,
+      positiveDenominator / divisor,
+    );
+  }
+}

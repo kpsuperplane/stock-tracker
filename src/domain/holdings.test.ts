@@ -132,6 +132,34 @@ describe("derived holdings", () => {
     expect(reverse.currentQuantity()).toBe("2");
   });
 
+  it("preserves reversible non-terminating split ratios exactly", () => {
+    const holdings = deriveHoldings(
+      input({
+        transactions: [transaction("buy", "2026-07-01", "buy", "10")],
+        activeSplits: [
+          split("one-for-three", "2026-07-02", "1", "3"),
+          split("three-for-one", "2026-07-03", "3", "1"),
+        ],
+      }),
+    );
+
+    expect(holdings.currentQuantity()).toBe("10");
+  });
+
+  it("keeps chained split ratios exact until the decimal output boundary", () => {
+    const holdings = deriveHoldings(
+      input({
+        transactions: [transaction("buy", "2026-07-01", "buy", "21")],
+        activeSplits: [
+          split("one-for-three", "2026-07-02", "1", "3"),
+          split("five-for-two", "2026-07-03", "5", "2"),
+        ],
+      }),
+    );
+
+    expect(holdings.currentQuantity()).toBe("17.5");
+  });
+
   it("uses start-of-day ownership for screening and ex-dividend eligibility", () => {
     const holdings = deriveHoldings(
       input({
@@ -213,5 +241,18 @@ describe("derived holdings", () => {
         false,
       );
     }
+  });
+
+  it("rejects unknown transaction sides instead of interpreting them as sells", () => {
+    const malformedTransaction = {
+      id: "invalid-side",
+      tradeDate: "2026-07-01",
+      side: "transfer",
+      quantityDecimal: "1",
+    } as unknown as LedgerTransaction;
+
+    expect(() =>
+      deriveHoldings(input({ transactions: [malformedTransaction] })),
+    ).toThrow("side");
   });
 });

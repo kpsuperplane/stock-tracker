@@ -1,7 +1,7 @@
 import {
   type DecimalBounds,
-  DecimalValue,
   INPUT_DECIMAL_BOUNDS,
+  RationalValue,
 } from "./decimal";
 
 export interface LedgerTransaction {
@@ -68,25 +68,25 @@ const previousDate = (date: string): string => {
   return result.toISOString().slice(0, 10);
 };
 
-const splitInteger = (value: string): DecimalValue => {
+const splitInteger = (value: string): string => {
   if (!/^[1-9]\d*$/.test(value)) {
     throw new HoldingsDomainError(
       "split ratio values must be positive integers",
     );
   }
-  return DecimalValue.parse(value);
+  return value;
 };
 
 interface NormalizedTransaction {
   id: string;
   tradeDate: string;
-  signedQuantity: DecimalValue;
+  signedQuantity: RationalValue;
 }
 
 interface NormalizedSplit {
   id: string;
   effectiveDate: string;
-  ratio: DecimalValue;
+  ratio: RationalValue;
 }
 
 const normalizeTransactions = (
@@ -99,7 +99,13 @@ const normalizeTransactions = (
     if (transaction.tradeDate > today) {
       throw new HoldingsDomainError("future trade dates are not allowed");
     }
-    const quantity = DecimalValue.parse(transaction.quantityDecimal, bounds);
+    if (transaction.side !== "buy" && transaction.side !== "sell") {
+      throw new HoldingsDomainError("transaction side must be buy or sell");
+    }
+    const quantity = RationalValue.fromDecimal(
+      transaction.quantityDecimal,
+      bounds,
+    );
     if (!quantity.isPositive()) {
       throw new HoldingsDomainError("transaction quantity must be positive");
     }
@@ -109,7 +115,7 @@ const normalizeTransactions = (
       signedQuantity:
         transaction.side === "buy"
           ? quantity
-          : DecimalValue.zero().subtract(quantity),
+          : RationalValue.zero().subtract(quantity),
     };
   });
 
@@ -119,7 +125,8 @@ const normalizeSplits = (splits: readonly ActiveSplit[]): NormalizedSplit[] =>
     return {
       id: split.id,
       effectiveDate: split.effectiveDate,
-      ratio: splitInteger(split.numerator).divide(
+      ratio: RationalValue.fromRatio(
+        splitInteger(split.numerator),
         splitInteger(split.denominator),
       ),
     };
@@ -180,7 +187,8 @@ export class Holdings {
   }
 
   isEligibleForScreening(date: string): boolean {
-    return DecimalValue.parse(this.quantityAtStartOfDay(date)).isPositive();
+    assertDate(date, "query");
+    return this.fold(date, false).isPositive();
   }
 
   quantityForExDividend(exDividendDate: string): string {
@@ -188,9 +196,8 @@ export class Holdings {
   }
 
   isEligibleForExDividend(exDividendDate: string): boolean {
-    return DecimalValue.parse(
-      this.quantityForExDividend(exDividendDate),
-    ).isPositive();
+    assertDate(exDividendDate, "query");
+    return this.fold(exDividendDate, false).isPositive();
   }
 
   heldIntervals(range: { startDate: string; endDate: string }): HeldInterval[] {
@@ -225,7 +232,7 @@ export class Holdings {
   }
 
   private validateHistory(): void {
-    let quantity = DecimalValue.zero();
+    let quantity = RationalValue.zero();
     for (const date of this.eventDates) {
       if (date > this.today) break;
       quantity = this.applySplits(quantity, date);
@@ -238,8 +245,11 @@ export class Holdings {
     }
   }
 
-  private fold(date: string, includeTransactionsOnDate: boolean): DecimalValue {
-    let quantity = DecimalValue.zero();
+  private fold(
+    date: string,
+    includeTransactionsOnDate: boolean,
+  ): RationalValue {
+    let quantity = RationalValue.zero();
     for (const eventDate of this.eventDates) {
       if (eventDate > date) break;
       quantity = this.applySplits(quantity, eventDate);
@@ -250,17 +260,17 @@ export class Holdings {
     return quantity;
   }
 
-  private applySplits(quantity: DecimalValue, date: string): DecimalValue {
+  private applySplits(quantity: RationalValue, date: string): RationalValue {
     return (this.splitsByDate.get(date) ?? []).reduce(
       (current, split) => current.multiply(split.ratio),
       quantity,
     );
   }
 
-  private netTransactions(date: string): DecimalValue {
+  private netTransactions(date: string): RationalValue {
     return (this.transactionsByDate.get(date) ?? []).reduce(
       (current, transaction) => current.add(transaction.signedQuantity),
-      DecimalValue.zero(),
+      RationalValue.zero(),
     );
   }
 }
