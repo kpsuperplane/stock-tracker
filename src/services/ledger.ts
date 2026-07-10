@@ -492,21 +492,13 @@ export class LedgerService {
     const workId = this.newId();
     const mutationId = this.newId();
     const today = timestamp.slice(0, 10);
-    const changedIntervals = this.changedEligibilityIntervals(
+    const intervals = this.splitPromotionIntervals({
       beforeHoldings,
       afterHoldings,
-      snapshot.range.requestedStartDate,
+      activeActions,
+      snapshot,
       today,
-    );
-    const intervals =
-      changedIntervals.length > 0
-        ? changedIntervals
-        : [
-            {
-              startDate: snapshot.range.requestedStartDate,
-              endDate: today,
-            },
-          ];
+    });
     const statements = [
       this.positionBasis.mutationTokenStatement({
         id: mutationId,
@@ -998,6 +990,83 @@ export class LedgerService {
     if (intervalStart)
       intervals.push({ startDate: intervalStart, endDate: today });
     return intervals;
+  }
+
+  private splitPromotionIntervals(input: {
+    beforeHoldings: ReturnType<typeof deriveHoldings>;
+    afterHoldings: ReturnType<typeof deriveHoldings>;
+    activeActions: readonly CorporateActionRecord[];
+    snapshot: SplitEventRange;
+    today: string;
+  }): { startDate: string; endDate: string }[] {
+    const activeInRange = input.activeActions.filter(
+      (action) =>
+        action.provider === input.snapshot.range.provider &&
+        this.isWithinSnapshotRange(action.effectiveDate, input.snapshot),
+    );
+    const activeByIdentity = new Map(
+      activeInRange.map((action) => [
+        `${action.providerEventId}@${action.providerRevision}`,
+        action,
+      ]),
+    );
+    const snapshotByIdentity = new Map(
+      input.snapshot.events.map((event) => [
+        `${event.providerEventId}@${event.providerRevision}`,
+        event,
+      ]),
+    );
+    const changedDates = new Set<string>();
+    for (const event of input.snapshot.events) {
+      const active = activeByIdentity.get(
+        `${event.providerEventId}@${event.providerRevision}`,
+      );
+      if (
+        !active ||
+        active.effectiveDate !== event.effectiveDate ||
+        active.splitNumerator !== event.numerator ||
+        active.splitDenominator !== event.denominator
+      ) {
+        changedDates.add(event.effectiveDate);
+      }
+    }
+    for (const action of activeInRange) {
+      if (
+        !snapshotByIdentity.has(
+          `${action.providerEventId}@${action.providerRevision}`,
+        )
+      ) {
+        changedDates.add(action.effectiveDate);
+      }
+    }
+
+    const intervals: { startDate: string; endDate: string }[] = [];
+    for (const effectiveDate of [...changedDates].sort()) {
+      if (
+        !input.beforeHoldings.isEligibleForScreening(effectiveDate) ||
+        effectiveDate > input.today
+      ) {
+        continue;
+      }
+      const affectedHeldInterval = input.afterHoldings.heldIntervals({
+        startDate: effectiveDate,
+        endDate: input.today,
+      })[0];
+      if (affectedHeldInterval) intervals.push(affectedHeldInterval);
+    }
+
+    return intervals.reduce<{ startDate: string; endDate: string }[]>(
+      (merged, interval) => {
+        const previous = merged.at(-1);
+        if (!previous || interval.startDate > nextDate(previous.endDate)) {
+          merged.push({ ...interval });
+        } else if (interval.endDate > previous.endDate) {
+          previous.endDate = interval.endDate;
+        }
+        return merged;
+      },
+      [],
+    );
   }
 
   private async withinPositionLimit(input: {

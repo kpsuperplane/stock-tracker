@@ -482,6 +482,16 @@ const splitSnapshot = (
   startDate: string,
   endDate: string,
   revision = "snapshot-r1",
+  events: Array<{
+    type: "split";
+    symbol: string;
+    effectiveDate: string;
+    numerator: string;
+    denominator: string;
+    provider: string;
+    providerEventId: string;
+    providerRevision: string;
+  }> = [],
 ) => ({
   symbol: symbol.toUpperCase(),
   range: {
@@ -495,7 +505,7 @@ const splitSnapshot = (
     observedAt: now,
     providerRevision: revision,
   },
-  events: [],
+  events,
 });
 
 const mockSplitProvider = (revision = "snapshot-r1") =>
@@ -753,12 +763,7 @@ describe("portfolio event routes", () => {
     )
       .bind(confirmationPayload.pipelineJobId)
       .first<{ eligibility_intervals_json: string }>();
-    expect(JSON.parse(job?.eligibility_intervals_json ?? "[]")).toEqual([
-      expect.objectContaining({
-        startDate: "2024-01-02",
-        endDate: "2026-07-10",
-      }),
-    ]);
+    expect(JSON.parse(job?.eligibility_intervals_json ?? "[]")).toEqual([]);
 
     const confirmed = await exports.default.fetch(
       new Request("http://local/api/events", {
@@ -788,6 +793,66 @@ describe("portfolio event routes", () => {
     expect(confirmed.headers.get("ETag")).toBe('"event-1"');
     expect(confirmed.headers.get("X-Position-Basis-Revision")).toBe("4");
     expect(confirmed.headers.get("X-Event-Revision")).toBe("1");
+  });
+
+  it("schedules only the held interval affected by a confirmed split", async () => {
+    await insertInstrument();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO transactions
+         (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+          revision, created_at, updated_at)
+         VALUES ('held-before-split', 'instrument-1', '2024-06-01', 'buy', '3', '10', 1, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO corporate_action_coverage
+         (instrument_id, provider, requested_start_date, requested_end_date,
+          snapshot_provider_revision, retrieved_at, status, updated_at)
+         VALUES ('instrument-1', 'yahoo-chart-v8', '2024-01-01', '2026-07-10',
+                 'split-r1', ?1, 'review_required', ?1)`,
+      ).bind(now),
+    ]);
+    const split = {
+      type: "split" as const,
+      symbol: "SHOP.TO",
+      effectiveDate: "2025-01-02",
+      numerator: "2",
+      denominator: "1",
+      provider: "yahoo-chart-v8",
+      providerEventId: "yahoo-chart-v8:SHOP.TO:split:2025-01-02",
+      providerRevision: "2025-01-02|2:1",
+    };
+    vi.spyOn(
+      YahooCorporateActionProvider.prototype,
+      "getSplits",
+    ).mockImplementation(async (symbol, startDate, endDate) =>
+      splitSnapshot(symbol, startDate, endDate, "split-r1", [split]),
+    );
+
+    const confirmation = await exports.default.fetch(
+      new Request("http://local/api/corporate-actions/confirm", {
+        method: "POST",
+        headers: mutationHeaders('"position-basis-0"'),
+        body: JSON.stringify({
+          instrumentId: "instrument-1",
+          confirmation: {
+            requestedStartDate: "2024-01-01",
+            requestedEndDate: "2026-07-10",
+            providerRevision: "split-r1",
+          },
+        }),
+      }),
+    );
+    expect(confirmation.status).toBe(200);
+    const payload = await confirmation.json<{ pipelineJobId: string }>();
+    const job = await env.DB.prepare(
+      "SELECT eligibility_intervals_json FROM pipeline_jobs WHERE id = ?1",
+    )
+      .bind(payload.pipelineJobId)
+      .first<{ eligibility_intervals_json: string }>();
+    expect(JSON.parse(job?.eligibility_intervals_json ?? "[]")).toEqual([
+      { startDate: "2025-01-02", endDate: "2026-07-10" },
+    ]);
   });
 
   it("enforces event and basis revisions, reports provider revision invalidation, and rejects negative holdings", async () => {
