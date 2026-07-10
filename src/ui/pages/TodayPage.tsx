@@ -62,7 +62,7 @@ export const TodayPage = () => {
         <p className="eyebrow">Daily report</p>
         <h1>No reports yet</h1>
         <p>The first brief appears after a completed market-day run.</p>
-        <a className="text-link" href="#/watchlist">
+        <a className="text-link" href="#watchlist">
           Review watchlist
         </a>
       </section>

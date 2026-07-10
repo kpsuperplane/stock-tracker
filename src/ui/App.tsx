@@ -1,54 +1,70 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Nav } from "./components/Nav";
 import { BackfillPage } from "./pages/BackfillPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { TodayPage } from "./pages/TodayPage";
 import { WatchlistPage } from "./pages/WatchlistPage";
 
-const route = () => window.location.hash.replace("#/", "") || "today";
-const routes = new Set(["today", "history", "watchlist", "backfill"]);
-
-const NotFoundPage = () => (
-  <section className="state-panel state-panel--spacious">
-    <p className="eyebrow">Unknown route</p>
-    <h1>Page not found</h1>
-    <p>This view does not exist in the market brief.</p>
-    <a className="text-link" href="#/today">
-      Return to today
-    </a>
-  </section>
-);
-
 export const App = () => {
-  const [current, setCurrent] = useState(route());
   useEffect(() => {
-    const listener = () => setCurrent(route());
-    window.addEventListener("hashchange", listener);
-    return () => window.removeEventListener("hashchange", listener);
+    const sections = document.querySelectorAll<HTMLElement>(".reveal");
+    if (!("IntersectionObserver" in window)) {
+      sections.forEach((section) => {
+        section.classList.add("is-visible");
+      });
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { rootMargin: "0px 0px -8%", threshold: 0.08 },
+    );
+    sections.forEach((section) => {
+      observer.observe(section);
+    });
+    return () => observer.disconnect();
   }, []);
-  const page = !routes.has(current) ? (
-    <NotFoundPage />
-  ) : current === "history" ? (
-    <HistoryPage />
-  ) : current === "watchlist" ? (
-    <WatchlistPage />
-  ) : current === "backfill" ? (
-    <BackfillPage />
-  ) : (
-    <TodayPage />
-  );
+
   return (
     <>
       <a className="skip-link" href="#main-content">
         Skip to report
       </a>
-      <Nav current={current} />
-      <main id="main-content" className="shell" tabIndex={-1}>
-        {page}
+      <Nav />
+      <main id="main-content" className="dashboard" tabIndex={-1}>
+        <section
+          id="today"
+          className="dashboard-section dashboard-section--today reveal"
+        >
+          <TodayPage />
+        </section>
+        <section id="history" className="dashboard-section reveal">
+          <HistoryPage />
+        </section>
+        <div className="operations-grid">
+          <section
+            id="watchlist"
+            className="dashboard-section dashboard-section--operation reveal"
+          >
+            <WatchlistPage />
+          </section>
+          <section
+            id="backfill"
+            className="dashboard-section dashboard-section--operation reveal"
+          >
+            <BackfillPage />
+          </section>
+        </div>
       </main>
       <footer className="site-footer">
         <span className="site-footer__brand">Close Move</span>
-        <span>Personal research aid · Not investment advice</span>
+        <span>Private market notes · Not investment advice</span>
       </footer>
     </>
   );
