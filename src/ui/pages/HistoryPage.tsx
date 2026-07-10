@@ -71,9 +71,32 @@ export const HistoryPage = () => {
           </select>
         )}
       </header>
-      {error && <p role="alert">{error}</p>}
-      {loading && <p role="status">Loading history…</p>}
-      {!loading && dates.length === 0 && <p>No published reports yet.</p>}
+      {error && (
+        <p className="inline-alert" role="alert">
+          {error}
+        </p>
+      )}
+      {loading && (
+        <section className="state-panel state-panel--loading" role="status">
+          <p className="eyebrow">Archive</p>
+          <h2>Loading history</h2>
+          <div className="skeleton" aria-hidden="true">
+            <span />
+            <span />
+          </div>
+        </section>
+      )}
+      {!loading && dates.length === 0 && (
+        <section className="empty-state">
+          <span className="empty-state__mark" aria-hidden="true">
+            00
+          </span>
+          <div>
+            <strong>No published reports</strong>
+            <p>Completed daily briefs will collect here.</p>
+          </div>
+        </section>
+      )}
       {report && <RunSummary run={report.run} />}
       <section className="mover-grid" aria-label="Historical movers">
         {report?.movers.map((mover) => (

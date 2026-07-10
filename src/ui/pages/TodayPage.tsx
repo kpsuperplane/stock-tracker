@@ -36,13 +36,35 @@ export const TodayPage = () => {
       window.clearTimeout(timer);
     };
   }, []);
-  if (error) return <p role="alert">{error}</p>;
-  if (payload === undefined) return <p role="status">Loading report…</p>;
+  if (error)
+    return (
+      <section className="state-panel state-panel--error" role="alert">
+        <p className="eyebrow">Report unavailable</p>
+        <h1>Couldn’t load the daily brief</h1>
+        <p>{error}</p>
+      </section>
+    );
+  if (payload === undefined)
+    return (
+      <section className="state-panel state-panel--loading" role="status">
+        <p className="eyebrow">Preparing brief</p>
+        <h1>Loading report</h1>
+        <div className="skeleton" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+      </section>
+    );
   if (payload.report === null && payload.currentRun === null) {
     return (
-      <section className="empty-state">
-        <h1>Daily movers</h1>
-        <p>No completed reports yet.</p>
+      <section className="state-panel state-panel--spacious">
+        <p className="eyebrow">Daily report</p>
+        <h1>No reports yet</h1>
+        <p>The first brief appears after a completed market-day run.</p>
+        <a className="text-link" href="#/watchlist">
+          Review watchlist
+        </a>
       </section>
     );
   }
@@ -67,7 +89,15 @@ export const TodayPage = () => {
         <RunSummary run={payload.report.run} />
       ) : null}
       {payload.report && payload.report.movers.length === 0 && (
-        <p className="empty-state">No movers met the 5% threshold.</p>
+        <section className="empty-state">
+          <span className="empty-state__mark" aria-hidden="true">
+            ±
+          </span>
+          <div>
+            <strong>A quiet close</strong>
+            <p>No tracked ticker moved beyond the 5% threshold.</p>
+          </div>
+        </section>
       )}
       <section className="mover-grid" aria-label="Qualifying movers">
         {payload.report?.movers.map((mover) => (

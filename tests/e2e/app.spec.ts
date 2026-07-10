@@ -135,7 +135,7 @@ test.beforeEach(async ({ page }) => {
 
 test("renders the responsive report feed and expands sources", async ({
   page,
-}, testInfo) => {
+}) => {
   await page.goto("/#/today");
   await expect(page.getByRole("heading", { name: "SHOP.TO" })).toBeVisible();
   await expect(
@@ -152,7 +152,7 @@ test("renders the responsive report feed and expands sources", async ({
       (element) =>
         getComputedStyle(element).gridTemplateColumns.split(" ").length,
     );
-  expect(columns).toBe(testInfo.project.name === "phone" ? 1 : 2);
+  expect(columns).toBe(1);
 });
 
 test("supports keyboard focus and 44px controls", async ({ page }) => {

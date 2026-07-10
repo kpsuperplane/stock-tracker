@@ -6,15 +6,18 @@ export const WatchlistPage = () => {
   const [symbol, setSymbol] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   const load = useCallback(async () => {
     setTickers((await api.tickers()).tickers);
   }, []);
   useEffect(() => {
-    void load().catch((cause) =>
-      setError(
-        cause instanceof Error ? cause.message : "Could not load watchlist.",
-      ),
-    );
+    void load()
+      .catch((cause) =>
+        setError(
+          cause instanceof Error ? cause.message : "Could not load watchlist.",
+        ),
+      )
+      .finally(() => setLoading(false));
   }, [load]);
 
   const submit = async (event: React.FormEvent) => {
@@ -79,6 +82,28 @@ export const WatchlistPage = () => {
         </p>
         {error && <p role="alert">{error}</p>}
       </form>
+      {loading && (
+        <section className="empty-state" role="status">
+          <span className="empty-state__mark" aria-hidden="true">
+            ···
+          </span>
+          <div>
+            <strong>Loading watchlist</strong>
+            <p>Checking tracked symbols.</p>
+          </div>
+        </section>
+      )}
+      {!loading && tickers.length === 0 && !error && (
+        <section className="empty-state">
+          <span className="empty-state__mark" aria-hidden="true">
+            +
+          </span>
+          <div>
+            <strong>Build your coverage list</strong>
+            <p>Add a US or Canadian Yahoo symbol to begin tracking it.</p>
+          </div>
+        </section>
+      )}
       <ul className="ticker-list">
         {tickers.map((ticker) => (
           <li key={ticker.id}>

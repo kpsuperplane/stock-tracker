@@ -11,6 +11,19 @@ afterEach(() => {
 });
 
 describe("admin pages", () => {
+  it("shows a composed watchlist loading state before the first response", () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      () => new Promise<Response>(() => undefined),
+    );
+
+    render(<WatchlistPage />);
+
+    expect(screen.getByRole("status").textContent).toContain(
+      "Loading watchlist",
+    );
+    expect(screen.queryByText("Build your coverage list")).toBeNull();
+  });
+
   it("uppercases a symbol before submitting", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
