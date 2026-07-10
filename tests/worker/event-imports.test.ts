@@ -195,31 +195,32 @@ describe("EventImportsService", () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  it("keeps a 10,000-distinct-symbol preview under 50 D1 statements with set-based reads", async () => {
+  it("keeps a 10,000-row 40-symbol preview within D1 and provider budgets", async () => {
     await env.DB.prepare(
       `WITH RECURSIVE sequence(value) AS (
            VALUES(1)
-           UNION ALL SELECT value + 1 FROM sequence WHERE value < 10000
+           UNION ALL SELECT value + 1 FROM sequence WHERE value < 40
          )
          INSERT INTO instruments
          (id, symbol, company_name, exchange, currency, instrument_type,
           provider, provider_symbol, created_at, updated_at)
-         SELECT 'bulk-' || value, 'B' || printf('%05d', value),
+         SELECT 'bulk-' || value, 'B' || printf('%03d', value),
                 'Bulk Corp', 'NYSE', 'USD', 'stock', 'yahoo',
-                'B' || printf('%05d', value), ?1, ?1
+                'B' || printf('%03d', value), ?1, ?1
          FROM sequence`,
     )
       .bind(now)
       .run();
+    const getSplits = vi.fn(provider().getSplits);
     const databaseCalls = vi.spyOn(env.DB, "prepare");
-    const result = await service().preview({
+    const result = await service({ getSplits }).preview({
       originalFilename: "diverse.csv",
       file: new TextEncoder().encode(
         csv(
           Array.from(
             { length: 10_000 },
             (_, index) =>
-              `2024-01-02,B${String(index + 1).padStart(5, "0")},buy,1,1`,
+              `2024-01-02,B${String((index % 40) + 1).padStart(3, "0")},buy,1,1`,
           ),
         ),
       ),
@@ -234,13 +235,14 @@ describe("EventImportsService", () => {
     );
     if (result.kind === "preview") expect(result.rows).toHaveLength(10_000);
     expect(databaseCalls.mock.calls).toHaveLength(29);
+    expect(getSplits).toHaveBeenCalledTimes(40);
   }, 20_000);
 
-  it("commits 100 distinct confirmed instruments without exceeding D1 bind or query limits", async () => {
+  it("refetches no more than 40 providers when committing a maximum-symbol preview", async () => {
     await env.DB.prepare(
       `WITH RECURSIVE sequence(value) AS (
          VALUES(1)
-         UNION ALL SELECT value + 1 FROM sequence WHERE value < 100
+         UNION ALL SELECT value + 1 FROM sequence WHERE value < 40
        )
        INSERT INTO instruments
        (id, symbol, company_name, exchange, currency, instrument_type,
@@ -252,17 +254,20 @@ describe("EventImportsService", () => {
     )
       .bind(now)
       .run();
-    const rows = Array.from({ length: 100 }, (_, index) => {
+    const rows = Array.from({ length: 40 }, (_, index) => {
       const symbol = `C${String(index + 1).padStart(3, "0")}`;
       return [`2024-01-02,${symbol},buy,1,1`, `2024-01-02,${symbol},sell,1,1`];
     }).flat();
-    const importService = service();
+    const getSplits = vi.fn(provider().getSplits);
+    const importService = service({ getSplits });
     const preview = await importService.preview({
       originalFilename: "hundred.csv",
       file: new TextEncoder().encode(csv(rows)),
     });
     expect(preview.kind).toBe("preview");
     if (preview.kind !== "preview") return;
+    expect(getSplits).toHaveBeenCalledTimes(40);
+    getSplits.mockClear();
     const databaseCalls = vi.spyOn(env.DB, "prepare");
     const result = await importService.commit({
       batchId: preview.batchId,
@@ -276,6 +281,33 @@ describe("EventImportsService", () => {
     });
     expect(result).toEqual(expect.objectContaining({ kind: "committed" }));
     expect(databaseCalls.mock.calls.length).toBeLessThanOrEqual(25);
+    expect(getSplits).toHaveBeenCalledTimes(40);
+  });
+
+  it("rejects 41 distinct symbols before provider calls or staging", async () => {
+    const getSplits = vi.fn(provider().getSplits);
+    const result = await service({ getSplits }).preview({
+      originalFilename: "over-symbol-cap.csv",
+      file: new TextEncoder().encode(
+        csv(
+          Array.from(
+            { length: 41 },
+            (_, index) =>
+              `2024-01-02,OVER${String(index + 1).padStart(2, "0")},buy,1,1`,
+          ),
+        ),
+      ),
+    });
+    expect(result).toEqual({ kind: "invalid_file", code: "too_many_symbols" });
+    expect(getSplits).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_batches",
+      ).first(),
+    ).toEqual({ count: 0 });
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS count FROM import_rows").first(),
+    ).toEqual({ count: 0 });
   });
 
   it("requires the previewed split confirmation, rejects a provider revision change, and never reparses staged bytes", async () => {

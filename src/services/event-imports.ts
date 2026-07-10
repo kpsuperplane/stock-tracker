@@ -25,6 +25,7 @@ import type {
 const HEADER = "trade_date,symbol,side,quantity,price";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_ROWS = 10_000;
+const MAX_DISTINCT_SYMBOLS = 40;
 const MAX_CURRENT_POSITIONS = 100;
 const STAGING_WRITE_BATCH_SIZE = 500;
 const SNAPSHOT_SYNC_BATCH_SIZE = 1_000;
@@ -340,6 +341,11 @@ export class EventImportsService {
       .filter((row) => row.some((cell) => cell.trim() !== ""));
     if (sourceRows.length > MAX_ROWS)
       return { kind: "invalid_file", code: "too_many_rows" };
+    const sourceSymbols = new Set(
+      sourceRows.map((row) => (row[1] ?? "").trim().toUpperCase()),
+    );
+    if (sourceSymbols.size > MAX_DISTINCT_SYMBOLS)
+      return { kind: "invalid_file", code: "too_many_symbols" };
 
     const digest = await hexDigest(input.file);
     const duplicate = await this.imports.findBatchByDigest(digest);
@@ -544,6 +550,8 @@ export class EventImportsService {
       group.push(row);
       byInstrument.set(row.instrumentId, group);
     }
+    if (byInstrument.size > MAX_DISTINCT_SYMBOLS)
+      return { kind: "validation_error", code: "too_many_symbols" };
     const confirmations = new Map(
       input.confirmations.map((entry) => [entry.instrumentId, entry]),
     );
