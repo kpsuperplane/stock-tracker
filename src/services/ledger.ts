@@ -561,10 +561,24 @@ export class LedgerService {
   ): ActiveSplit[] {
     return [
       ...active
-        .filter((action) => action.provider !== snapshot.range.provider)
+        .filter(
+          (action) =>
+            action.provider !== snapshot.range.provider ||
+            !this.isWithinSnapshotRange(action.effectiveDate, snapshot),
+        )
         .map(toActiveSplit),
       ...snapshot.events.map(splitFromSnapshot),
     ];
+  }
+
+  private isWithinSnapshotRange(
+    effectiveDate: string,
+    snapshot: SplitEventRange,
+  ): boolean {
+    return (
+      effectiveDate >= snapshot.range.requestedStartDate &&
+      effectiveDate <= snapshot.range.requestedEndDate
+    );
   }
 
   private isCandidateRefreshNeeded(
@@ -656,9 +670,16 @@ export class LedgerService {
       this.dependencies.db
         .prepare(
           `UPDATE corporate_actions SET status = 'superseded', updated_at = ?1
-       WHERE instrument_id = ?2 AND provider = ?3 AND status = 'active'`,
+       WHERE instrument_id = ?2 AND provider = ?3 AND status = 'active'
+             AND effective_date >= ?4 AND effective_date <= ?5`,
         )
-        .bind(timestamp, instrumentId, snapshot.range.provider),
+        .bind(
+          timestamp,
+          instrumentId,
+          snapshot.range.provider,
+          snapshot.range.requestedStartDate,
+          snapshot.range.requestedEndDate,
+        ),
     ];
     for (const event of snapshot.events) {
       statements.push(

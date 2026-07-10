@@ -225,6 +225,59 @@ describe("LedgerService", () => {
     ).toEqual({ count: 1 });
   });
 
+  it("preserves same-provider active actions outside a confirmed snapshot range", async () => {
+    await insertInstrument();
+    await seedConfirmedCoverage({
+      instrumentId: "instrument-1",
+      startDate: "2025-01-01",
+    });
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO corporate_actions
+           (id, instrument_id, action_type, effective_date, split_numerator,
+            split_denominator, provider, provider_event_id, provider_revision,
+            retrieved_at, revision, status, created_at, updated_at)
+           VALUES ('old-active', 'instrument-1', 'split', '2024-06-01', '2', '1',
+                   'yahoo-chart-v8', 'old-event', 'old-r1', ?1, 1, 'active', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO corporate_actions
+           (id, instrument_id, action_type, effective_date, split_numerator,
+            split_denominator, provider, provider_event_id, provider_revision,
+            retrieved_at, revision, status, created_at, updated_at)
+           VALUES ('in-range-active', 'instrument-1', 'split', '2025-02-01', '2', '1',
+                   'yahoo-chart-v8', 'in-range-event', 'in-range-r1', ?1, 1,
+                   'active', ?1, ?1)`,
+      ).bind(now),
+    ]);
+
+    const result = await service(dynamicProvider()).apply({
+      expectedPositionBasisRevision: 0,
+      proposal: {
+        kind: "create",
+        instrumentId: "instrument-1",
+        tradeDate: "2025-01-01",
+        side: "buy",
+        quantityDecimal: "1",
+        priceDecimal: "10",
+      },
+    });
+
+    expect(result.kind).toBe("committed");
+    expect(
+      await env.DB.prepare(
+        `SELECT id, status FROM corporate_actions ORDER BY effective_date`,
+      ).all(),
+    ).toEqual({
+      results: [
+        { id: "old-active", status: "active" },
+        { id: "in-range-active", status: "superseded" },
+      ],
+      success: true,
+      meta: expect.anything(),
+    });
+  });
+
   it("requires a new review when a proposal reaches earlier history than its confirmed range", async () => {
     await insertInstrument();
     const provider = dynamicProvider();
