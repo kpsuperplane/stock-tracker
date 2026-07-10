@@ -1,5 +1,34 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
+import type { SplitEventRange } from "./corporate-actions";
+
+const completeSplitCoverage: SplitEventRange["range"] = {
+  requestedStartDate: "2024-01-01",
+  requestedEndDate: "2024-12-31",
+  coverageStartDate: null,
+  coverageEndDate: null,
+  // @ts-expect-error selected split snapshots can never claim completeness
+  isComplete: true,
+  basis: "unverified",
+  provider: "yahoo-chart-v8",
+  observedAt: "2026-07-10T18:00:00.000Z",
+  providerRevision: "unsafe",
+};
+void completeSplitCoverage;
+
+const providerConfirmedSplitCoverage: SplitEventRange["range"] = {
+  requestedStartDate: "2024-01-01",
+  requestedEndDate: "2024-12-31",
+  coverageStartDate: null,
+  coverageEndDate: null,
+  isComplete: false,
+  // @ts-expect-error selected split snapshots can only be unverified
+  basis: "provider-confirmed",
+  provider: "yahoo-chart-v8",
+  observedAt: "2026-07-10T18:00:00.000Z",
+  providerRevision: "unsafe",
+};
+void providerConfirmedSplitCoverage;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -33,6 +62,7 @@ describe("normalized portfolio event provider contracts", () => {
         coverageEndDate: null,
         isComplete: false,
         basis: "unverified",
+        provider: "yahoo-chart-v8",
         observedAt: "2026-07-10T18:00:00.000Z",
         providerRevision:
           "yahoo-chart-v8|CASE|2024-01-01|2024-12-31|2024-06-01|4:1,2024-10-01|1:10",
@@ -65,6 +95,32 @@ describe("normalized portfolio event provider contracts", () => {
     expect(request.searchParams.get("events")).toBe("splits");
     expect(request.searchParams.get("period1")).toBe("1704067200");
     expect(request.searchParams.get("period2")).toBe("1735689600");
+  });
+
+  it("preserves Yahoo provider identity when a split snapshot has no events", async () => {
+    const { YahooCorporateActionProvider } = await import(
+      "./yahoo-corporate-actions"
+    );
+    const cases = await fixture(
+      "tests/fixtures/providers/yahoo-split-cases.json",
+    );
+    const payload = structuredClone(cases.ordinaryAndReverse) as {
+      chart: { result: Array<{ events: { splits?: JsonRecord } }> };
+    };
+    const resultRow = payload.chart.result[0];
+    if (!resultRow) throw new Error("fixture result missing");
+    resultRow.events.splits = {};
+
+    const result = await new YahooCorporateActionProvider(async () =>
+      Response.json(payload),
+    ).getSplits("CASE", "2024-01-01", "2024-12-31");
+
+    expect(result.events).toEqual([]);
+    expect(result.range).toMatchObject({
+      provider: "yahoo-chart-v8",
+      basis: "unverified",
+      isComplete: false,
+    });
   });
 
   it("keeps correction identity stable while changing its split revision", async () => {
@@ -243,6 +299,7 @@ describe("normalized portfolio event provider contracts", () => {
       coverageEndDate: null,
       isComplete: false,
       basis: "source-reported",
+      provider: "alpha-vantage-dividends",
       observedAt: expect.any(String),
       providerRevision: expect.stringContaining("alpha-vantage-dividends"),
     });
@@ -321,6 +378,7 @@ describe("normalized portfolio event provider contracts", () => {
 
     expect(result.events).toEqual([]);
     expect(result.range).toMatchObject({
+      provider: "alpha-vantage-dividends",
       basis: "source-reported",
       isComplete: false,
       observedAt: "2026-07-10T18:00:00.000Z",

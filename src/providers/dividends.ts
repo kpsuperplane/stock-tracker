@@ -1,4 +1,14 @@
-import type { ProviderRangeCoverage } from "./corporate-actions";
+export interface SourceReportedDividendRangeCoverage {
+  requestedStartDate: string;
+  requestedEndDate: string;
+  coverageStartDate: null;
+  coverageEndDate: null;
+  isComplete: false;
+  basis: "source-reported";
+  provider: string;
+  observedAt: string;
+  providerRevision: string;
+}
 
 export interface DividendEventIdentity {
   provider: string;
@@ -16,7 +26,7 @@ export interface NormalizedDividendEvent extends DividendEventIdentity {
 
 export interface DividendEventRange {
   symbol: string;
-  range: ProviderRangeCoverage;
+  range: SourceReportedDividendRangeCoverage;
   events: NormalizedDividendEvent[];
 }
 

@@ -167,6 +167,7 @@ export class YahooCorporateActionProvider implements CorporateActionProvider {
         coverageEndDate: null,
         isComplete: false,
         basis: "unverified",
+        provider,
         observedAt: this.now().toISOString(),
         providerRevision: `${provider}|${normalizedSymbol}|${startDate}|${endDate}|${events
           .map(

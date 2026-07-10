@@ -1,10 +1,11 @@
-export interface ProviderRangeCoverage {
+export interface UnverifiedSplitRangeCoverage {
   requestedStartDate: string;
   requestedEndDate: string;
-  coverageStartDate: string | null;
-  coverageEndDate: string | null;
-  isComplete: boolean;
-  basis: "provider-confirmed" | "source-reported" | "unverified";
+  coverageStartDate: null;
+  coverageEndDate: null;
+  isComplete: false;
+  basis: "unverified";
+  provider: string;
   observedAt: string;
   providerRevision: string;
 }
@@ -25,7 +26,7 @@ export interface NormalizedSplitEvent extends SplitEventIdentity {
 
 export interface SplitEventRange {
   symbol: string;
-  range: ProviderRangeCoverage;
+  range: UnverifiedSplitRangeCoverage;
   events: NormalizedSplitEvent[];
 }
 

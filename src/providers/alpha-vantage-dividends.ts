@@ -161,6 +161,7 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
         coverageEndDate: null,
         isComplete: false,
         basis: "source-reported",
+        provider,
         observedAt: this.now().toISOString(),
         providerRevision: [
           provider,
