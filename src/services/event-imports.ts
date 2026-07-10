@@ -309,7 +309,7 @@ export class EventImportsService {
         .prepare(
           `DELETE FROM import_rows WHERE import_batch_id IN (
              SELECT id FROM import_batches
-             WHERE status = 'expired'
+             WHERE (status = 'expired' AND expires_at <= ?1)
                 OR (status = 'committed' AND committed_at IS NOT NULL AND committed_at <= ?1)
            )`,
         )
@@ -418,6 +418,16 @@ export class EventImportsService {
     }
 
     const projectedHoldings: Record<string, string> = {};
+    const coverageByKey = await this.coverageByInstrumentProvider(
+      [...snapshots].map(([instrumentId, snapshot]) => ({
+        instrumentId,
+        provider: snapshot.range.provider,
+      })),
+    );
+    const blockingSnapshots: {
+      instrument: InstrumentRecord;
+      snapshot: SplitEventRange;
+    }[] = [];
     for (const [instrumentId, group] of validByInstrument) {
       const actions = actionsByInstrument.get(instrumentId) ?? [];
       const snapshot = snapshots.get(instrumentId);
@@ -429,11 +439,21 @@ export class EventImportsService {
             ...(transactionsByInstrument.get(instrumentId) ?? []),
             ...group.rows.map(toLedgerTransaction),
           ],
-          activeSplits: actions.map(toActiveSplit),
+          activeSplits: this.proposedSplits(actions, snapshot),
         });
         projectedHoldings[group.instrument.symbol] = holdings.currentQuantity();
       } catch {
         for (const row of group.rows) row.errors.push("negative_holdings");
+        const coverage =
+          coverageByKey.get(
+            this.coverageKey(instrumentId, snapshot.range.provider),
+          ) ?? null;
+        if (
+          !coverageMatches(coverage, snapshot) &&
+          this.snapshotChangesActions(actions, snapshot)
+        ) {
+          blockingSnapshots.push({ instrument: group.instrument, snapshot });
+        }
       }
     }
 
@@ -460,6 +480,7 @@ export class EventImportsService {
       await this.dependencies.db.batch([
         this.imports.createBatchStatement(batch),
         ...this.stagingRowStatements(batchId, rows),
+        ...this.blockingSnapshotStatements(blockingSnapshots, timestamp),
       ]);
     } catch (error) {
       if (
@@ -478,12 +499,6 @@ export class EventImportsService {
       throw error;
     }
 
-    const coverageByKey = await this.coverageByInstrumentProvider(
-      [...snapshots].map(([instrumentId, snapshot]) => ({
-        instrumentId,
-        provider: snapshot.range.provider,
-      })),
-    );
     const reviews: ImportSplitReview[] = [];
     for (const [instrumentId, snapshot] of snapshots) {
       const coverage =
@@ -1392,6 +1407,138 @@ export class EventImportsService {
       );
     }
     return statements;
+  }
+
+  private blockingSnapshotStatements(
+    blocking: readonly {
+      instrument: InstrumentRecord;
+      snapshot: SplitEventRange;
+    }[],
+    timestamp: string,
+  ): D1PreparedStatement[] {
+    if (blocking.length === 0) return [];
+    const contexts = blocking.map(({ instrument, snapshot }) => ({
+      instrumentId: instrument.id,
+      provider: snapshot.range.provider,
+      requestedStartDate: snapshot.range.requestedStartDate,
+      requestedEndDate: snapshot.range.requestedEndDate,
+      providerRevision: snapshot.range.providerRevision,
+      observedAt: snapshot.range.observedAt,
+    }));
+    const events = blocking.flatMap(({ instrument, snapshot }) =>
+      snapshot.events.map((event) => ({
+        id: `${event.providerEventId}@${event.providerRevision}`,
+        instrumentId: instrument.id,
+        effectiveDate: event.effectiveDate,
+        numerator: event.numerator,
+        denominator: event.denominator,
+        provider: event.provider,
+        providerEventId: event.providerEventId,
+        providerRevision: event.providerRevision,
+        retrievedAt: snapshot.range.observedAt,
+      })),
+    );
+    const statements: D1PreparedStatement[] = [
+      this.dependencies.db
+        .prepare(
+          `INSERT INTO corporate_action_coverage
+           (instrument_id, provider, requested_start_date, requested_end_date,
+            snapshot_provider_revision, retrieved_at, confirmed_start_date,
+            confirmed_end_date, confirmed_provider_revision, confirmed_at,
+            status, error_code, error_message, updated_at)
+           SELECT json_extract(value, '$.instrumentId'),
+                  json_extract(value, '$.provider'),
+                  json_extract(value, '$.requestedStartDate'),
+                  json_extract(value, '$.requestedEndDate'),
+                  json_extract(value, '$.providerRevision'),
+                  json_extract(value, '$.observedAt'),
+                  NULL, NULL, NULL, NULL,
+                  'conflict', 'negative_history',
+                  'candidate split would create negative historical holdings', ?2
+           FROM json_each(?1) WHERE true
+           ON CONFLICT(instrument_id, provider) DO UPDATE SET
+             requested_start_date = excluded.requested_start_date,
+             requested_end_date = excluded.requested_end_date,
+             snapshot_provider_revision = excluded.snapshot_provider_revision,
+             retrieved_at = excluded.retrieved_at,
+             confirmed_start_date = NULL, confirmed_end_date = NULL,
+             confirmed_provider_revision = NULL, confirmed_at = NULL,
+             status = 'conflict', error_code = 'negative_history',
+             error_message = 'candidate split would create negative historical holdings',
+             updated_at = excluded.updated_at`,
+        )
+        .bind(JSON.stringify(contexts), timestamp),
+    ];
+    if (events.length === 0) return statements;
+    statements.unshift(
+      this.dependencies.db
+        .prepare(
+          `INSERT OR IGNORE INTO corporate_actions
+           (id, instrument_id, action_type, effective_date, split_numerator,
+            split_denominator, provider, provider_event_id, provider_revision,
+            retrieved_at, revision, status, conflict_code, conflict_message,
+            created_at, updated_at)
+           SELECT json_extract(value, '$.id'),
+                  json_extract(value, '$.instrumentId'), 'split',
+                  json_extract(value, '$.effectiveDate'),
+                  json_extract(value, '$.numerator'),
+                  json_extract(value, '$.denominator'),
+                  json_extract(value, '$.provider'),
+                  json_extract(value, '$.providerEventId'),
+                  json_extract(value, '$.providerRevision'),
+                  json_extract(value, '$.retrievedAt'), 1, 'candidate',
+                  NULL, NULL, ?2, ?2
+           FROM json_each(?1)`,
+        )
+        .bind(JSON.stringify(events), timestamp),
+      this.dependencies.db
+        .prepare(
+          `UPDATE corporate_actions
+           SET status = 'quarantined', conflict_code = 'negative_history',
+               conflict_message = 'candidate split would create negative historical holdings',
+               updated_at = ?2
+           WHERE status IN ('candidate', 'active', 'superseded', 'quarantined')
+             AND EXISTS (
+               SELECT 1 FROM json_each(?1) AS event
+               WHERE corporate_actions.instrument_id = json_extract(event.value, '$.instrumentId')
+                 AND corporate_actions.provider = json_extract(event.value, '$.provider')
+                 AND corporate_actions.provider_event_id = json_extract(event.value, '$.providerEventId')
+                 AND corporate_actions.provider_revision = json_extract(event.value, '$.providerRevision')
+             )`,
+        )
+        .bind(JSON.stringify(events), timestamp),
+    );
+    return statements;
+  }
+
+  private snapshotChangesActions(
+    active: readonly CorporateActionRecord[],
+    snapshot: SplitEventRange,
+  ): boolean {
+    const activeInRange = active.filter(
+      (action) =>
+        action.provider === snapshot.range.provider &&
+        action.effectiveDate >= snapshot.range.requestedStartDate &&
+        action.effectiveDate <= snapshot.range.requestedEndDate,
+    );
+    const activeIdentities = new Map(
+      activeInRange.map((action) => [
+        `${action.providerEventId}@${action.providerRevision}`,
+        action,
+      ]),
+    );
+    if (activeInRange.length !== snapshot.events.length) return true;
+    return snapshot.events.some((event) => {
+      const activeAction = activeIdentities.get(
+        `${event.providerEventId}@${event.providerRevision}`,
+      );
+      return (
+        !activeAction ||
+        activeAction.effectiveDate !== event.effectiveDate ||
+        activeAction.splitNumerator !== event.numerator ||
+        activeAction.splitDenominator !== event.denominator
+      );
+    });
   }
 
   private proposedSplits(

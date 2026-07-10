@@ -435,6 +435,55 @@ describe("EventImportsService", () => {
     ).resolves.toEqual(expect.objectContaining({ kind: "review_required" }));
   });
 
+  it("uses a corrected split snapshot during preview and quarantines an invalid historical correction", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO transactions
+           (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+            revision, created_at, updated_at)
+           VALUES ('prior-buy', 'instrument-1', '2025-01-01', 'buy', '1', '1', 1, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO transactions
+           (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+            revision, created_at, updated_at)
+           VALUES ('prior-sell', 'instrument-1', '2025-02-01', 'sell', '0.75', '1', 1, ?1, ?1)`,
+      ).bind(now),
+    ]);
+    const reverseSplit = {
+      type: "split" as const,
+      symbol: "SHOP.TO",
+      effectiveDate: "2025-01-15",
+      numerator: "1",
+      denominator: "2",
+      provider: "yahoo-chart-v8",
+      providerEventId: "corrected-reverse-split",
+      providerRevision: "event-r2",
+    };
+    const result = await service(
+      providerWithEvents("snapshot-r2", [reverseSplit]),
+    ).preview({
+      originalFilename: "correction.csv",
+      file: new TextEncoder().encode(csv(["2025-02-02,SHOP.TO,buy,1,1"])),
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        kind: "preview",
+        rows: [expect.objectContaining({ status: "invalid" })],
+      }),
+    );
+    expect(
+      await env.DB.prepare(
+        "SELECT status, conflict_code FROM corporate_actions WHERE provider_event_id = 'corrected-reverse-split'",
+      ).first(),
+    ).toEqual({ status: "quarantined", conflict_code: "negative_history" });
+    expect(
+      await env.DB.prepare(
+        "SELECT status, error_code FROM corporate_action_coverage WHERE instrument_id = 'instrument-1'",
+      ).first(),
+    ).toEqual({ status: "conflict", error_code: "negative_history" });
+  });
+
   it("accepts RFC-style quoted fields but rejects bytes after a closing quote and preserves quoted newlines as one row", async () => {
     const quoted = await service().preview({
       originalFilename: "quoted.csv",
@@ -824,7 +873,7 @@ describe("EventImportsService", () => {
     ).toEqual({ count: 0 });
   });
 
-  it("expires previews after 24 hours, removes staging rows after seven days, and retains digest/status", async () => {
+  it("expires previews after 24 hours and retains staging through the seven-day cleanup boundary", async () => {
     const preview = await service().preview({
       originalFilename: "portfolio-events.csv",
       file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
@@ -832,7 +881,7 @@ describe("EventImportsService", () => {
     expect(preview.kind).toBe("preview");
     if (preview.kind !== "preview") return;
     await env.DB.prepare(
-      "UPDATE import_batches SET expires_at = '2026-07-09T12:00:00.000Z', created_at = '2026-07-02T11:59:59.000Z' WHERE id = ?1",
+      "UPDATE import_batches SET expires_at = '2026-07-09T12:00:00.000Z' WHERE id = ?1",
     )
       .bind(preview.batchId)
       .run();
@@ -848,7 +897,7 @@ describe("EventImportsService", () => {
       )
         .bind(preview.batchId)
         .first(),
-    ).toEqual({ count: 0 });
+    ).toEqual({ count: 1 });
     await expect(
       service().commit({
         batchId: preview.batchId,
@@ -856,9 +905,22 @@ describe("EventImportsService", () => {
         confirmations: [confirmation()],
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "expired" }));
+    await env.DB.prepare(
+      "UPDATE import_batches SET expires_at = '2026-07-02T11:59:59.000Z' WHERE id = ?1",
+    )
+      .bind(preview.batchId)
+      .run();
+    await service().cleanup();
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_rows WHERE import_batch_id = ?1",
+      )
+        .bind(preview.batchId)
+        .first(),
+    ).toEqual({ count: 0 });
   });
 
-  it("purges expired staging immediately and committed staging seven days after commitment", async () => {
+  it("purges expired staging seven days after expiry and committed staging seven days after commitment", async () => {
     const expired = await service().preview({
       originalFilename: "expired.csv",
       file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
@@ -881,20 +943,20 @@ describe("EventImportsService", () => {
       ).bind(committed.batchId),
     ]);
     await service().cleanup();
-    for (const batchId of [expired.batchId, committed.batchId]) {
-      expect(
-        await env.DB.prepare(
-          "SELECT COUNT(*) AS count FROM import_rows WHERE import_batch_id = ?1",
-        )
-          .bind(batchId)
-          .first(),
-      ).toEqual({ count: 0 });
-      expect(
-        await env.DB.prepare("SELECT status FROM import_batches WHERE id = ?1")
-          .bind(batchId)
-          .first(),
-      ).toBeTruthy();
-    }
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_rows WHERE import_batch_id = ?1",
+      )
+        .bind(expired.batchId)
+        .first(),
+    ).toEqual({ count: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_rows WHERE import_batch_id = ?1",
+      )
+        .bind(committed.batchId)
+        .first(),
+    ).toEqual({ count: 0 });
   });
 });
 
