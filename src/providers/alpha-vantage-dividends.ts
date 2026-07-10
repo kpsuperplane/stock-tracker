@@ -4,17 +4,17 @@ import type {
   DividendProvider,
   NormalizedDividendEvent,
 } from "./dividends";
+import { isIsoCalendarDate, readBoundedJson } from "./provider-http";
 
 const provider = "alpha-vantage-dividends";
-const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const amountPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
 const optionalProviderDate = z
   .string()
-  .refine((value) => value === "None" || datePattern.test(value));
+  .refine((value) => value === "None" || isIsoCalendarDate(value));
 
 const dividendSchema = z.object({
-  ex_dividend_date: z.string().regex(datePattern),
+  ex_dividend_date: z.string().refine(isIsoCalendarDate),
   declaration_date: optionalProviderDate,
   record_date: optionalProviderDate,
   payment_date: optionalProviderDate,
@@ -33,10 +33,8 @@ const overviewSchema = z.object({
 
 function assertRange(startDate: string, endDate: string): void {
   if (
-    !datePattern.test(startDate) ||
-    !datePattern.test(endDate) ||
-    !Number.isFinite(Date.parse(`${startDate}T00:00:00Z`)) ||
-    !Number.isFinite(Date.parse(`${endDate}T00:00:00Z`)) ||
+    !isIsoCalendarDate(startDate) ||
+    !isIsoCalendarDate(endDate) ||
     startDate > endDate
   ) {
     throw new Error("provider_invalid_range");
@@ -85,11 +83,7 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
         },
       );
       if (!response.ok) throw new Error(`provider_http_${response.status}`);
-      const contentLength = Number(response.headers.get("content-length") ?? 0);
-      if (contentLength > 2_000_000) {
-        throw new Error("provider_response_too_large");
-      }
-      return response.json() as Promise<unknown>;
+      return readBoundedJson(response);
     };
 
     const [rawDividends, rawOverview] = await Promise.all([
@@ -158,9 +152,10 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
       range: {
         requestedStartDate: startDate,
         requestedEndDate: endDate,
-        coverageStartDate: startDate,
-        coverageEndDate: endDate,
-        isComplete: true,
+        coverageStartDate: null,
+        coverageEndDate: null,
+        isComplete: false,
+        basis: "unverified",
       },
       events: [...byIdentity.values()].sort((left, right) =>
         left.exDate.localeCompare(right.exDate),

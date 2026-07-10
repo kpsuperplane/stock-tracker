@@ -4,9 +4,9 @@ import type {
   NormalizedSplitEvent,
   SplitEventRange,
 } from "./corporate-actions";
+import { isIsoCalendarDate, readBoundedJson } from "./provider-http";
 
 const provider = "yahoo-chart-v8";
-const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const exactNumberPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
 const splitSchema = z.object({
@@ -44,10 +44,8 @@ const isoDate = (seconds: number): string =>
 
 function assertRange(startDate: string, endDate: string): void {
   if (
-    !datePattern.test(startDate) ||
-    !datePattern.test(endDate) ||
-    !Number.isFinite(Date.parse(`${startDate}T00:00:00Z`)) ||
-    !Number.isFinite(Date.parse(`${endDate}T00:00:00Z`)) ||
+    !isIsoCalendarDate(startDate) ||
+    !isIsoCalendarDate(endDate) ||
     startDate > endDate
   ) {
     throw new Error("provider_invalid_range");
@@ -112,13 +110,11 @@ export class YahooCorporateActionProvider implements CorporateActionProvider {
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new Error(`provider_http_${response.status}`);
-    const contentLength = Number(response.headers.get("content-length") ?? 0);
-    if (contentLength > 2_000_000)
-      throw new Error("provider_response_too_large");
+    const rawEnvelope = await readBoundedJson(response);
 
     let envelope: z.infer<typeof chartEnvelopeSchema>;
     try {
-      envelope = chartEnvelopeSchema.parse(await response.json());
+      envelope = chartEnvelopeSchema.parse(rawEnvelope);
     } catch {
       throw new Error("provider_schema");
     }
@@ -155,19 +151,15 @@ export class YahooCorporateActionProvider implements CorporateActionProvider {
       byIdentity.set(providerEventId, event);
     }
 
-    const firstTradeDate = result.meta.firstTradeDate
-      ? isoDate(result.meta.firstTradeDate)
-      : startDate;
-    const coverageStartDate =
-      firstTradeDate > startDate ? firstTradeDate : startDate;
     return {
       symbol: normalizedSymbol,
       range: {
         requestedStartDate: startDate,
         requestedEndDate: endDate,
-        coverageStartDate,
-        coverageEndDate: endDate,
-        isComplete: coverageStartDate === startDate,
+        coverageStartDate: null,
+        coverageEndDate: null,
+        isComplete: false,
+        basis: "unverified",
       },
       events: [...byIdentity.values()].sort((left, right) =>
         left.effectiveDate.localeCompare(right.effectiveDate),

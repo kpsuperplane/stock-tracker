@@ -8,7 +8,7 @@ async function fixture(path: string): Promise<JsonRecord> {
 }
 
 describe("normalized portfolio event provider contracts", () => {
-  it("preserves split identity, exact ratio, effective date, revision, and range coverage that the legacy date Set collapses", async () => {
+  it("preserves split fields and reports unverified coverage that the legacy date Set collapses", async () => {
     const { YahooCorporateActionProvider } = await import(
       "./yahoo-corporate-actions"
     );
@@ -30,9 +30,10 @@ describe("normalized portfolio event provider contracts", () => {
       range: {
         requestedStartDate: "2024-01-01",
         requestedEndDate: "2024-12-31",
-        coverageStartDate: "2024-01-01",
-        coverageEndDate: "2024-12-31",
-        isComplete: true,
+        coverageStartDate: null,
+        coverageEndDate: null,
+        isComplete: false,
+        basis: "unverified",
       },
       events: [
         {
@@ -171,7 +172,20 @@ describe("normalized portfolio event provider contracts", () => {
     ).rejects.toThrow("provider_symbol_unavailable");
   });
 
-  it("normalizes historical and announced future dividends with exact amount, ex-date, currency, identity, and revision", async () => {
+  it("bounds a headerless Yahoo response while streaming the body", async () => {
+    const { YahooCorporateActionProvider } = await import(
+      "./yahoo-corporate-actions"
+    );
+    const provider = new YahooCorporateActionProvider(
+      async () => new Response("x".repeat(2_000_001)),
+    );
+
+    await expect(
+      provider.getSplits("CASE", "2024-01-01", "2024-12-31"),
+    ).rejects.toThrow("provider_response_too_large");
+  });
+
+  it("normalizes provider-shaped historical and future dividends with exact amount, ex-date, currency, identity, and revision", async () => {
     const { AlphaVantageDividendEventProvider } = await import(
       "./alpha-vantage-dividends"
     );
@@ -281,6 +295,76 @@ describe("normalized portfolio event provider contracts", () => {
     await expect(
       provider.getDividends("CASE", "2026-01-01", "2026-12-31"),
     ).rejects.toThrow("provider_schema");
+  });
+
+  it("rejects impossible provider dividend dates", async () => {
+    const { AlphaVantageDividendEventProvider } = await import(
+      "./alpha-vantage-dividends"
+    );
+    const cases = await fixture(
+      "tests/fixtures/providers/alpha-vantage-dividend-cases.json",
+    );
+    const payload = structuredClone(cases.correctionAfter) as {
+      data: Array<{ ex_dividend_date: string }>;
+    };
+    const dividend = payload.data[0];
+    if (!dividend) throw new Error("fixture dividend missing");
+    dividend.ex_dividend_date = "2026-02-30";
+    const provider = new AlphaVantageDividendEventProvider(
+      "key",
+      async (input) =>
+        Response.json(
+          new URL(String(input)).searchParams.get("function") === "OVERVIEW"
+            ? cases.overview
+            : payload,
+        ),
+    );
+
+    await expect(
+      provider.getDividends("CASE", "2026-01-01", "2026-12-31"),
+    ).rejects.toThrow("provider_schema");
+  });
+
+  it("rejects impossible requested dividend range dates", async () => {
+    const { AlphaVantageDividendEventProvider } = await import(
+      "./alpha-vantage-dividends"
+    );
+    const cases = await fixture(
+      "tests/fixtures/providers/alpha-vantage-dividend-cases.json",
+    );
+    const provider = new AlphaVantageDividendEventProvider(
+      "key",
+      async (input) =>
+        Response.json(
+          new URL(String(input)).searchParams.get("function") === "OVERVIEW"
+            ? cases.overview
+            : cases.correctionAfter,
+        ),
+    );
+
+    await expect(
+      provider.getDividends("CASE", "2026-02-30", "2026-12-31"),
+    ).rejects.toThrow("provider_invalid_range");
+  });
+
+  it("bounds a headerless Alpha Vantage response while streaming the body", async () => {
+    const { AlphaVantageDividendEventProvider } = await import(
+      "./alpha-vantage-dividends"
+    );
+    const cases = await fixture(
+      "tests/fixtures/providers/alpha-vantage-dividend-cases.json",
+    );
+    const provider = new AlphaVantageDividendEventProvider(
+      "key",
+      async (input) =>
+        new URL(String(input)).searchParams.get("function") === "OVERVIEW"
+          ? Response.json(cases.overview)
+          : new Response("x".repeat(2_000_001)),
+    );
+
+    await expect(
+      provider.getDividends("CASE", "2026-01-01", "2026-12-31"),
+    ).rejects.toThrow("provider_response_too_large");
   });
 
   it("reports a delisted or unknown Alpha Vantage symbol as unavailable", async () => {

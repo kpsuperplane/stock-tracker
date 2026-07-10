@@ -4,10 +4,19 @@ Date evaluated: 2026-07-10
 
 ## Decision
 
-Select the Yahoo Finance chart v8 adapter for split events and Alpha Vantage
-`DIVIDENDS` plus `OVERVIEW` adapters for dividend events. Keep the existing
-`YahooMarketDataProvider` and its `DailySeries.corporateActionDates` behavior
-unchanged until a later cutover.
+**BLOCKED — no provider is selected for authoritative portfolio events.**
+
+Yahoo Finance chart v8 remains a candidate split parser, but it cannot establish
+that every split in a requested historical interval was retained. Alpha Vantage
+`DIVIDENDS` plus `OVERVIEW` remains a candidate dividend parser, but this
+evaluation did not observe an authentic response row whose ex-date was still in
+the future. Documentation plus a synthetic row is insufficient for the
+announced-future feasibility gate.
+
+Continue to keep the existing `YahooMarketDataProvider` and its
+`DailySeries.corporateActionDates` behavior unchanged. Do not use either new
+candidate to authorize ledger mutations or publish future Calendar events until
+a provider decision supplies the missing evidence.
 
 The selected application boundary is `CorporateActionProvider` and
 `DividendProvider`. Consumers receive only normalized events and range
@@ -19,12 +28,12 @@ metadata; no Yahoo or Alpha Vantage response type crosses that boundary.
 | --- | --- | --- | --- |
 | Ordinary split | `events.splits[*].splitRatio`, `date` | `SPLITS` is available but not needed | Pass: `4:1` |
 | Reverse split | Same fields | Not evaluated because Yahoo passes | Pass: `1:10` |
-| Exact ratio | `splitRatio` is a string; adapter does not derive it from adjusted prices | N/A | Pass: numerator and denominator preserved as decimal strings |
+| Exact ratio | `splitRatio` is a string; adapter does not derive it from adjusted prices | N/A | Parser pass: reduced exact integer strings |
 | Split effective date | Epoch seconds in `date`, normalized in UTC | N/A | Pass, including 00:30 UTC boundary |
-| Split range coverage | `period1` inclusive, `period2` exclusive; `firstTradeDate` bounds pre-listing coverage | N/A | Pass: requested and covered range returned explicitly |
+| Split range coverage | **Fail.** `period1`/`period2` shape a request, but Yahoo supplies no retention/completeness basis; `firstTradeDate` is only listing metadata | N/A | Candidate returns `basis: unverified`, null coverage bounds, and `isComplete: false` |
 | Historical dividend | Chart event has historical date/amount but no documented depth | Documentation says historical distributions | Pass: 2024 event |
-| Announced future dividend | **Fail.** The unofficial chart endpoint has no stability or future-declaration coverage promise | Official documentation says the endpoint returns future declared distributions | Pass: 2026 announced event with future ex-date and amount |
-| Dividend currency | Chart metadata has instrument currency, but future event coverage already fails | `DIVIDENDS` omits currency; `OVERVIEW.Currency` supplies it | Pass: USD normalized on each event |
+| Announced future dividend | **Fail.** The unofficial chart endpoint has no stability or future-declaration coverage promise | **Fail evidence gate.** Documentation promises future declared distributions, but no authentic observed future row was available | Synthetic parser case passes; feasibility does not |
+| Dividend currency | Chart metadata has instrument currency, but future event coverage already fails | `DIVIDENDS` omits currency; `OVERVIEW.Currency` supplies it | Parser pass: USD normalized on each event |
 | Missing fields | Must reject, not infer | Must reject, not infer | Pass for missing split ratio and null amount |
 | Correction | No native revision or durable action ID | No native revision or durable action ID | Pass for stable derived identity and changed derived revision |
 | Duplicate event | Provider records may repeat | Provider rows may repeat | Pass: exact duplicates collapse by identity/revision |
@@ -51,10 +60,10 @@ GET https://www.alphavantage.co/query
     ?function=OVERVIEW&symbol={symbol}&apikey={key}
 ```
 
-Alpha Vantage documents free access at 25 requests per day. At two calls per
-symbol, an uncached refresh is limited to 12 symbols per day before the free
-quota is exhausted. Later pipeline work must cache instrument currency and
-schedule dividend refreshes rather than refreshing all 100 instruments daily.
+If Alpha Vantage is later approved with authentic evidence, its documented 25
+free requests/day means an uncached two-call refresh is limited to 12 symbols
+per day. Later pipeline work would need to cache instrument currency and
+stagger dividend refreshes rather than refreshing all 100 instruments daily.
 
 ## Identity and correction semantics
 
@@ -77,20 +86,20 @@ Neither candidate exposes an immutable event ID or revision token.
 ## Coverage and stability limits
 
 Yahoo Finance's chart endpoint is unofficial and has no public stability or
-retention SLA. During this evaluation, repeated live chart probes returned an
-HTTP 429 response, while recorded chart-shaped fixtures remained deterministic.
-The adapter therefore treats HTTP, schema, symbol, and conflicting-revision
-failures explicitly. A successful response claims split coverage only from the
-later of the requested start and `meta.firstTradeDate`, through the requested
-end.
+retention SLA. During this evaluation, one live endpoint returned HTTP 429;
+another live probe returned individual AAPL and GE split rows. Those rows prove
+event shape, not exhaustive interval retention. `meta.firstTradeDate` is
+listing metadata and cannot establish action-history coverage. The candidate
+therefore returns explicit unverified coverage with null bounds and
+`isComplete: false`. This cannot satisfy the authoritative ledger gate.
 
 Alpha Vantage's documentation promises historical and future declared dividend
 distributions but does not state historical depth or update latency. The demo
 IBM response inspected on 2026-07-10 contained 110 events from 1999-02-08
-through 2026-05-08; this observation is evidence for that response only, not a
-general historical-depth guarantee. Future-dividend feasibility rests on the
-provider's explicit documented contract plus the recorded schema fixture. It
-does not imply that unannounced dividends will be predicted.
+through 2026-05-08; its newest ex-date was already past. This proves the
+historical response shape only. No authorized non-demo key or authentic stored
+future response was available in the workspace. The synthetic future case
+tests parsing behavior and is not provider evidence.
 
 The `DIVIDENDS` endpoint has no date parameters, conditional request token,
 provider revision, or currency field. The adapter filters the full result to the
@@ -100,15 +109,31 @@ correction candidates.
 
 ## Fixture provenance
 
-`tests/fixtures/providers/yahoo-split-cases.json` records chart-v8 response
-shapes for ordinary/reverse splits, a ratio correction, UTC boundary, exact
-duplicate, missing ratio, and delisted response.
+`tests/fixtures/providers/yahoo-split-cases.json` contains minimized chart-v8
+response-shaped cases for ordinary/reverse splits, a ratio correction, UTC
+boundary, exact duplicate, missing ratio, and delisted response. These cases do
+not prove exhaustive range coverage.
 
-`tests/fixtures/providers/alpha-vantage-dividend-cases.json` records the
-documented `DIVIDENDS` and `OVERVIEW` response shapes for historical and
-declared-future rows, an amount correction, exact duplicate, missing amount,
-and unavailable symbol. These are minimized contract fixtures, not claims that
-the synthetic `CASE` symbol exists.
+`tests/fixtures/providers/alpha-vantage-dividend-cases.json` contains minimized
+`DIVIDENDS` and `OVERVIEW` response-shaped cases for historical and synthetic
+future rows, an amount correction, exact duplicate, missing amount, and
+unavailable symbol. These are parser fixtures, not authentic provider captures
+or claims that the synthetic `CASE` symbol exists.
+
+## Authority needed to unblock
+
+The plan needs an explicit provider decision supported by both:
+
+1. An authentic, timestamped free-provider response observed before its
+   dividend ex-date that includes exact ex-date and per-share amount, plus a
+   defensible currency source.
+2. A provider contract or other authoritative basis that establishes complete
+   split retention for a requested date interval, including corrections.
+
+An approved licensed source, user-authorized free API credential for a source
+that exposes these fields, or written approval to change the authoritative
+coverage requirement would provide the necessary authority. Documentation plus
+synthetic fixtures alone will not unblock the plan.
 
 Primary sources:
 
