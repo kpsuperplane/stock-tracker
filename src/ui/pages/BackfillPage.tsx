@@ -1,0 +1,154 @@
+import { useEffect, useState } from "react";
+import { api, type BackfillJob } from "../api";
+
+const inclusiveDays = (start: string, end: string) =>
+  (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) /
+    86_400_000 +
+  1;
+const terminal = new Set(["complete", "complete_with_errors", "paused"]);
+
+export const BackfillPage = () => {
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [reprocessExisting, setReprocessExisting] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<BackfillJob | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const today = new Date().toISOString().slice(0, 10);
+
+  useEffect(() => {
+    if (!jobId || (job && terminal.has(job.status))) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await api.backfill(jobId);
+        if (active) setJob(result.job);
+      } catch (cause) {
+        if (active) {
+          setError(cause instanceof Error ? cause.message : "Could not load progress.");
+        }
+      }
+    };
+    void poll();
+    const interval = window.setInterval(() => void poll(), 5_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [jobId, job?.status]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    const days = inclusiveDays(startDate, endDate);
+    if (
+      !startDate ||
+      !endDate ||
+      endDate > today ||
+      days < 1 ||
+      days > 30
+    ) {
+      setError("Choose a past inclusive range of at most 30 calendar days.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const result = await api.startBackfill({
+        startDate,
+        endDate,
+        reprocessExisting,
+      });
+      setJob(null);
+      setJobId(result.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not start backfill.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Historical processing</p>
+          <h1>Backfill</h1>
+        </div>
+      </header>
+      <form className="admin-form" onSubmit={submit}>
+        <div className="date-grid">
+          <label htmlFor="start-date">
+            Start date
+            <input
+              id="start-date"
+              aria-label="Start date"
+              type="date"
+              max={today}
+              value={startDate}
+              onChange={(event) => setStartDate(event.target.value)}
+              required
+            />
+          </label>
+          <label htmlFor="end-date">
+            End date
+            <input
+              id="end-date"
+              aria-label="End date"
+              type="date"
+              max={today}
+              value={endDate}
+              onChange={(event) => setEndDate(event.target.value)}
+              required
+            />
+          </label>
+        </div>
+        <p className="form-help">Inclusive range · maximum 30 calendar days</p>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={reprocessExisting}
+            onChange={(event) => setReprocessExisting(event.target.checked)}
+          />
+          Reprocess existing reports
+        </label>
+        <button type="submit" disabled={submitting}>
+          {submitting ? "Starting…" : "Start backfill"}
+        </button>
+        {error && <p role="alert">{error}</p>}
+      </form>
+      {job && (
+        <section className="job-status" role="status">
+          <div className="page-header">
+            <h2>{job.status.replaceAll("_", " ")}</h2>
+            <strong>
+              {job.dates_processed}/{job.dates_total} dates
+            </strong>
+          </div>
+          <progress
+            aria-label="Backfill date progress"
+            max={Math.max(job.dates_total, 1)}
+            value={job.dates_processed}
+          />
+          <p>
+            {job.ticker_jobs_processed}/{job.ticker_jobs_total} ticker jobs ·{" "}
+            {job.ticker_jobs_failed} failed
+          </p>
+          <ul className="run-list">
+            {job.runs.map((run) => (
+              <li key={run.tradingDate}>
+                <span>{run.tradingDate}</span>
+                <span>
+                  {run.status.replaceAll("_", " ")}
+                  {run.tickersFailed > 0
+                    ? ` · ${run.tickersFailed} failed`
+                    : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+};
