@@ -17,7 +17,6 @@
   --accent: #245f9e;
   --focus: #245f9e;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  --z-nav: 20;
   --z-skip: 30;
 }
 
@@ -28,7 +27,7 @@
 html {
   min-width: 320px;
   min-height: 100%;
-  scroll-padding-top: 4rem;
+  scroll-padding-top: 1rem;
   background: var(--background);
 }
 
@@ -112,75 +111,6 @@ h3 {
 
 .skip-link:focus {
   transform: translateY(0);
-}
-
-.nav {
-  position: sticky;
-  z-index: var(--z-nav);
-  top: 0;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-}
-
-.nav__inner {
-  display: flex;
-  width: min(100% - 2rem, 90rem);
-  min-height: 3.25rem;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.5rem;
-  margin: 0 auto;
-}
-
-.wordmark {
-  display: flex;
-  min-height: 2.5rem;
-  align-items: center;
-  gap: 0.6rem;
-  color: var(--text);
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.wordmark__mark {
-  display: grid;
-  width: 1.8rem;
-  height: 1.8rem;
-  place-items: center;
-  color: #fff;
-  background: #1b1d20;
-  font-family: var(--mono);
-  font-size: 0.62rem;
-}
-
-.wordmark strong {
-  font-size: 0.9rem;
-  font-weight: 700;
-}
-
-.nav__links {
-  display: flex;
-  align-items: center;
-  gap: 0;
-}
-
-.nav__links a {
-  display: flex;
-  min-height: 3.2rem;
-  align-items: center;
-  padding: 0 0.8rem;
-  color: var(--muted);
-  border-bottom: 2px solid transparent;
-  font-size: 0.8rem;
-  font-weight: 550;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.nav__links a:hover,
-.nav__links a:focus-visible {
-  color: var(--text);
-  border-bottom-color: var(--line-strong);
 }
 
 .dashboard {
@@ -527,8 +457,17 @@ button {
   font-weight: 600;
 }
 
-button:hover:not(:disabled) {
+button:hover:not(:disabled):not(.timeline-day) {
   background: #3b4046;
+}
+
+.timeline-day:hover:not(:disabled) {
+  color: var(--text);
+  background: #eef1f4;
+}
+
+.timeline-day[aria-pressed="true"]:hover:not(:disabled) {
+  background: #e7eef6;
 }
 
 button:active:not(:disabled) {
@@ -772,42 +711,13 @@ input::placeholder {
 }
 
 @media (max-width: 680px) {
-  html {
-    scroll-padding-top: 6rem;
-  }
-
-  .nav__inner {
-    width: 100%;
-    min-height: auto;
-    flex-wrap: wrap;
-    gap: 0;
-    padding: 0.4rem 0.6rem 0;
-  }
-
-  .wordmark {
-    min-height: 2.25rem;
-  }
-
-  .nav__links {
-    width: 100%;
-    overflow-x: auto;
-  }
-
-  .nav__links a {
-    min-height: 2.5rem;
-    flex: 1 0 auto;
-    justify-content: center;
-    padding: 0 0.6rem;
-    font-size: 0.72rem;
-  }
-
   .dashboard {
     width: 100%;
     padding: 0.5rem;
   }
 
   .dashboard-section {
-    scroll-margin-top: 6rem;
+    scroll-margin-top: 1rem;
     padding: 0.75rem;
   }
 

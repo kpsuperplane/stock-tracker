@@ -48,11 +48,6 @@ export type BackfillJob = {
 };
 
 export const api = {
-  latest: () =>
-    request<{
-      report: ReportDto | null;
-      currentRun: ReportSummaryDto | null;
-    }>("/api/reports/latest"),
   history: (cursor?: string) =>
     request<{ reports: ReportSummaryDto[]; nextCursor: string | null }>(
       `/api/reports${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,

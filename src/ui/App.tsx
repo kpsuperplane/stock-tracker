@@ -1,7 +1,5 @@
-import { Nav } from "./components/Nav";
 import { BackfillPage } from "./pages/BackfillPage";
 import { HistoryPage } from "./pages/HistoryPage";
-import { TodayPage } from "./pages/TodayPage";
 import { WatchlistPage } from "./pages/WatchlistPage";
 
 export const App = () => (
@@ -9,11 +7,7 @@ export const App = () => (
     <a className="skip-link" href="#main-content">
       跳至报告
     </a>
-    <Nav />
     <main id="main-content" className="dashboard" tabIndex={-1}>
-      <section id="today" className="dashboard-section">
-        <TodayPage />
-      </section>
       <section id="history" className="dashboard-section">
         <HistoryPage />
       </section>

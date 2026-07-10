@@ -73,7 +73,7 @@ Cloudflare remains the production deployer. The deploy script reruns local gates
 ## Operations
 
 - The scheduled screen runs at 22:00 UTC Monday through Friday.
-- The Today and Backfill pages are the primary progress and partial-error views.
+- The report timeline and Backfill controls are the primary progress and partial-error views.
 - Use Backfill with **Reprocess existing reports** to atomically replace a date.
 - Use a mover's **Retry explanation** action only when price data exists but analysis failed.
 - Stale queued/processing leases are reconciled from D1 before dispatch.
