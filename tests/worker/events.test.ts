@@ -463,13 +463,19 @@ describe("portfolio ledger migration", () => {
 });
 
 const authorization = `Basic ${btoa("owner:password")}`;
-const mutationHeaders = (ifMatch?: string): HeadersInit => ({
-  Authorization: authorization,
-  "Content-Type": "application/json",
-  Origin: "http://local",
-  "X-Stock-Tracker-Request": "1",
-  ...(ifMatch ? { "If-Match": ifMatch } : {}),
-});
+const mutationHeaders = (legacyRevisionTags?: string): HeadersInit => {
+  const basis = /position-basis-(\d+)/.exec(legacyRevisionTags ?? "")?.[1];
+  const event = /event-(\d+)/.exec(legacyRevisionTags ?? "")?.[1];
+  return {
+    Authorization: authorization,
+    "Content-Type": "application/json",
+    Host: "local",
+    Origin: "http://local",
+    "X-Stock-Tracker-Request": "1",
+    ...(basis ? { "X-Position-Basis-Revision": basis } : {}),
+    ...(event ? { "If-Match": `"event-${event}"` } : {}),
+  };
+};
 
 const splitSnapshot = (
   symbol: string,
@@ -542,6 +548,7 @@ describe("portfolio event routes", () => {
       positionBasisRevision: number;
     }>();
     expect(first.headers.get("ETag")).toBe('"position-basis-0"');
+    expect(first.headers.get("X-Position-Basis-Revision")).toBe("0");
     expect(firstPayload.positionBasisRevision).toBe(0);
     expect(firstPayload.events).toEqual([
       expect.objectContaining({
@@ -570,12 +577,9 @@ describe("portfolio event routes", () => {
     ]);
 
     const filtered = await exports.default.fetch(
-      new Request(
-        "http://local/api/events?instrumentId=instrument-1&type=transaction",
-        {
-          headers: { Authorization: authorization },
-        },
-      ),
+      new Request("http://local/api/events?symbol=shop.to&type=transaction", {
+        headers: { Authorization: authorization },
+      }),
     );
     expect(
       (await filtered.json<{ events: Array<{ type: string }> }>()).events,
@@ -590,13 +594,14 @@ describe("portfolio event routes", () => {
 
     await insertInstrument();
     const missingCustomHeader = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+      new Request("http://local/api/events", {
         method: "POST",
         headers: {
           Authorization: authorization,
           "Content-Type": "application/json",
+          Host: "local",
           Origin: "http://local",
-          "If-Match": '"position-basis-0"',
+          "X-Position-Basis-Revision": "0",
         },
         body: JSON.stringify(createBody()),
       }),
@@ -608,7 +613,7 @@ describe("portfolio event routes", () => {
     ).toBe("csrf_rejected");
 
     const crossOrigin = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+      new Request("http://local/api/events", {
         method: "POST",
         headers: {
           ...mutationHeaders('"position-basis-0"'),
@@ -620,7 +625,7 @@ describe("portfolio event routes", () => {
     expect(crossOrigin.status).toBe(403);
 
     const missingPrecondition = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+      new Request("http://local/api/events", {
         method: "POST",
         headers: mutationHeaders(),
         body: JSON.stringify(createBody()),
@@ -631,19 +636,48 @@ describe("portfolio event routes", () => {
       (await missingPrecondition.json<{ error: { code: string } }>()).error
         .code,
     ).toBe("precondition_required");
+
+    const forgedHost = await exports.default.fetch(
+      new Request("http://local/api/events", {
+        method: "POST",
+        headers: {
+          ...mutationHeaders('"position-basis-0"'),
+          Host: "attacker.example",
+          Origin: "http://attacker.example",
+        },
+        body: JSON.stringify(createBody()),
+      }),
+    );
+    expect(forgedHost.status).toBe(403);
+
+    const mismatchedHost = await exports.default.fetch(
+      new Request("http://local/api/events", {
+        method: "POST",
+        headers: {
+          ...mutationHeaders('"position-basis-0"'),
+          Host: "attacker.example",
+          Origin: "http://local",
+        },
+        body: JSON.stringify(createBody()),
+      }),
+    );
+    expect(mismatchedHost.status).toBe(403);
   });
 
   it("returns server-fetched split review data, then commits canonical transaction DTOs after explicit confirmation", async () => {
     await insertInstrument();
     mockSplitProvider();
     const initial = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+      new Request("http://local/api/events", {
         method: "POST",
         headers: mutationHeaders('"position-basis-0"'),
         body: JSON.stringify(createBody()),
       }),
     );
     expect(initial.status).toBe(409);
+    expect(initial.headers.get("ETag")).toBe('"position-basis-1"');
+    const reviewBasis = initial.headers.get("X-Position-Basis-Revision");
+    expect(reviewBasis).toBe("1");
     const review = await initial.json<{
       error: { code: string; message: string };
       review: {
@@ -660,18 +694,29 @@ describe("portfolio event routes", () => {
         "Confirm the displayed split history before changing this transaction.",
     });
 
-    const confirmed = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+    const confirmation = await exports.default.fetch(
+      new Request("http://local/api/corporate-actions/confirm", {
         method: "POST",
-        headers: mutationHeaders('"position-basis-1"'),
+        headers: mutationHeaders(`"position-basis-${reviewBasis}"`),
         body: JSON.stringify({
-          ...createBody(),
+          instrumentId: "instrument-1",
           confirmation: {
             requestedStartDate: review.review.range.requestedStartDate,
             requestedEndDate: review.review.range.requestedEndDate,
             providerRevision: review.review.range.providerRevision,
           },
         }),
+      }),
+    );
+    expect(confirmation.status).toBe(200);
+    expect(confirmation.headers.get("ETag")).toBe('"position-basis-2"');
+    expect(confirmation.headers.get("X-Position-Basis-Revision")).toBe("2");
+
+    const confirmed = await exports.default.fetch(
+      new Request("http://local/api/events", {
+        method: "POST",
+        headers: mutationHeaders('"position-basis-2"'),
+        body: JSON.stringify(createBody()),
       }),
     );
     expect(confirmed.status).toBe(201);
@@ -691,15 +736,17 @@ describe("portfolio event routes", () => {
         revision: 1,
       }),
     );
-    expect(payload.positionBasisRevision).toBe(2);
-    expect(confirmed.headers.get("ETag")).toBe(`"position-basis-2", "event-1"`);
+    expect(payload.positionBasisRevision).toBe(3);
+    expect(confirmed.headers.get("ETag")).toBe('"event-1"');
+    expect(confirmed.headers.get("X-Position-Basis-Revision")).toBe("3");
+    expect(confirmed.headers.get("X-Event-Revision")).toBe("1");
   });
 
   it("enforces event and basis revisions, reports provider revision invalidation, and rejects negative holdings", async () => {
     await insertInstrument();
     const provider = mockSplitProvider();
     const reviewResponse = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+      new Request("http://local/api/events", {
         method: "POST",
         headers: mutationHeaders('"position-basis-0"'),
         body: JSON.stringify(createBody()),
@@ -714,12 +761,12 @@ describe("portfolio event routes", () => {
         };
       };
     }>();
-    const created = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+    const confirmation = await exports.default.fetch(
+      new Request("http://local/api/corporate-actions/confirm", {
         method: "POST",
         headers: mutationHeaders('"position-basis-1"'),
         body: JSON.stringify({
-          ...createBody(),
+          instrumentId: "instrument-1",
           confirmation: {
             requestedStartDate: review.review.range.requestedStartDate,
             requestedEndDate: review.review.range.requestedEndDate,
@@ -728,14 +775,22 @@ describe("portfolio event routes", () => {
         }),
       }),
     );
+    expect(confirmation.status).toBe(200);
+    const created = await exports.default.fetch(
+      new Request("http://local/api/events", {
+        method: "POST",
+        headers: mutationHeaders('"position-basis-2"'),
+        body: JSON.stringify(createBody()),
+      }),
+    );
     const createdPayload = await created.json<{
       transaction: { id: string };
     }>();
 
     const negative = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+      new Request("http://local/api/events", {
         method: "POST",
-        headers: mutationHeaders('"position-basis-2"'),
+        headers: mutationHeaders('"position-basis-3"'),
         body: JSON.stringify(
           createBody({ side: "sell", quantityDecimal: "2" }),
         ),
@@ -747,19 +802,16 @@ describe("portfolio event routes", () => {
     ).toBe("negative_holdings");
 
     const staleEvent = await exports.default.fetch(
-      new Request(
-        `http://local/api/events/transactions/${createdPayload.transaction.id}`,
-        {
-          method: "PATCH",
-          headers: mutationHeaders('"position-basis-2", "event-9"'),
-          body: JSON.stringify({
-            tradeDate: "2024-01-02",
-            side: "buy",
-            quantityDecimal: "2",
-            priceDecimal: "10.500000",
-          }),
-        },
-      ),
+      new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
+        method: "PATCH",
+        headers: mutationHeaders('"position-basis-3", "event-9"'),
+        body: JSON.stringify({
+          tradeDate: "2024-01-02",
+          side: "buy",
+          quantityDecimal: "2",
+          priceDecimal: "10.500000",
+        }),
+      }),
     );
     expect(staleEvent.status).toBe(409);
     expect(
@@ -770,19 +822,16 @@ describe("portfolio event routes", () => {
       splitSnapshot(symbol, startDate, endDate, "snapshot-r2"),
     );
     const invalidated = await exports.default.fetch(
-      new Request(
-        `http://local/api/events/transactions/${createdPayload.transaction.id}`,
-        {
-          method: "PATCH",
-          headers: mutationHeaders('"position-basis-2", "event-1"'),
-          body: JSON.stringify({
-            tradeDate: "2024-01-02",
-            side: "buy",
-            quantityDecimal: "2",
-            priceDecimal: "10.500000",
-          }),
-        },
-      ),
+      new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
+        method: "PATCH",
+        headers: mutationHeaders('"position-basis-3", "event-1"'),
+        body: JSON.stringify({
+          tradeDate: "2024-01-02",
+          side: "buy",
+          quantityDecimal: "2",
+          priceDecimal: "10.500000",
+        }),
+      }),
     );
     expect(invalidated.status).toBe(409);
     const invalidatedPayload = await invalidated.json<{
@@ -795,13 +844,10 @@ describe("portfolio event routes", () => {
     );
 
     const stale = await exports.default.fetch(
-      new Request(
-        `http://local/api/events/transactions/${createdPayload.transaction.id}`,
-        {
-          method: "DELETE",
-          headers: mutationHeaders('"position-basis-2", "event-1"'),
-        },
-      ),
+      new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
+        method: "DELETE",
+        headers: mutationHeaders('"position-basis-3", "event-1"'),
+      }),
     );
     expect(stale.status).toBe(409);
     expect((await stale.json<{ error: { code: string } }>()).error.code).toBe(
@@ -809,9 +855,9 @@ describe("portfolio event routes", () => {
     );
 
     const future = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+      new Request("http://local/api/events", {
         method: "POST",
-        headers: mutationHeaders('"position-basis-3"'),
+        headers: mutationHeaders('"position-basis-4"'),
         body: JSON.stringify(createBody({ tradeDate: "2099-01-01" })),
       }),
     );
@@ -824,7 +870,7 @@ describe("portfolio event routes", () => {
   it("rejects oversized and unsupported event requests without changing report routes", async () => {
     await insertInstrument();
     const oversized = await exports.default.fetch(
-      new Request("http://local/api/events/transactions", {
+      new Request("http://local/api/events", {
         method: "POST",
         headers: mutationHeaders('"position-basis-0"'),
         body: JSON.stringify({ ...createBody(), note: "x".repeat(70_000) }),
@@ -836,14 +882,36 @@ describe("portfolio event routes", () => {
     ).toBe("body_too_large");
 
     const unsupported = await exports.default.fetch(
-      new Request("http://local/api/events/transactions/transaction-1", {
+      new Request("http://local/api/events/transaction-1", {
         method: "PUT",
         headers: mutationHeaders('"position-basis-0", "event-1"'),
         body: JSON.stringify(createBody()),
       }),
     );
     expect(unsupported.status).toBe(405);
-    expect(unsupported.headers.get("Allow")).toBe("GET, POST, PATCH, DELETE");
+    expect(unsupported.headers.get("Allow")).toBe("PATCH, DELETE");
+
+    const rootUnsupported = await exports.default.fetch(
+      new Request("http://local/api/events", {
+        method: "PUT",
+        headers: mutationHeaders('"position-basis-0"'),
+        body: JSON.stringify(createBody()),
+      }),
+    );
+    expect(rootUnsupported.status).toBe(405);
+    expect(rootUnsupported.headers.get("Allow")).toBe("GET, POST");
+
+    const invalidJsonMime = await exports.default.fetch(
+      new Request("http://local/api/events", {
+        method: "POST",
+        headers: {
+          ...mutationHeaders('"position-basis-0"'),
+          "Content-Type": "application/jsonp",
+        },
+        body: JSON.stringify(createBody()),
+      }),
+    );
+    expect(invalidJsonMime.status).toBe(415);
 
     const report = await exports.default.fetch(
       new Request("http://local/api/reports/latest", {

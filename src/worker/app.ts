@@ -5,7 +5,7 @@ import { requireBasicAuth } from "./auth";
 import type { Env } from "./env";
 import { ApiError } from "./errors";
 import { backfillRoutes } from "./routes/backfills";
-import { eventsRoutes } from "./routes/events";
+import { corporateActionRoutes, eventsRoutes } from "./routes/events";
 import { reportRoutes } from "./routes/reports";
 import { retryRoutes } from "./routes/retries";
 import { tickerRoutes } from "./routes/tickers";
@@ -31,10 +31,12 @@ export const createApp = () => {
     }),
   );
   app.use("/api/*", async (context, next) => {
+    const contentType = context.req.header("Content-Type");
+    const mimeType = contentType?.split(";", 1)[0]?.trim().toLowerCase();
     if (
       ["POST", "PATCH", "PUT"].includes(context.req.method) &&
       context.req.raw.body !== null &&
-      !context.req.header("Content-Type")?.includes("application/json")
+      mimeType !== "application/json"
     ) {
       return context.json(
         { error: { code: "content_type", message: "Use application/json." } },
@@ -46,6 +48,7 @@ export const createApp = () => {
 
   app.get("/api/health", (context) => context.json({ ok: true }));
   app.route("/api/backfills", backfillRoutes);
+  app.route("/api/corporate-actions", corporateActionRoutes);
   app.route("/api/events", eventsRoutes);
   app.route("/api/reports", reportRoutes);
   app.route("/api/screenings", retryRoutes);

@@ -67,6 +67,12 @@ export interface ApplyLedgerMutationInput {
   confirmation?: SplitConfirmation;
 }
 
+export interface ConfirmSplitHistoryInput {
+  expectedPositionBasisRevision: number;
+  instrumentId: string;
+  confirmation: SplitConfirmation;
+}
+
 export type LedgerMutationResult =
   | {
       kind: "committed";
@@ -391,6 +397,125 @@ export class LedgerService {
       positionBasisRevision: input.expectedPositionBasisRevision + 1,
       pipelineJobId: jobId,
       transactionId: resolved.transactionToWrite?.id ?? null,
+    };
+  }
+
+  /**
+   * Promotes a previously reviewed, server-fetched split snapshot without
+   * accepting any corporate-action rows from the client. The confirmation is
+   * guarded by the same position-basis revision as transaction mutations.
+   */
+  async confirmSplitHistory(
+    input: ConfirmSplitHistoryInput,
+  ): Promise<LedgerMutationResult> {
+    if (
+      !Number.isInteger(input.expectedPositionBasisRevision) ||
+      input.expectedPositionBasisRevision < 0
+    ) {
+      return {
+        kind: "validation_error",
+        code: "invalid_position_basis_revision",
+      };
+    }
+
+    const timestamp = this.now().toISOString();
+    if (input.confirmation.requestedEndDate !== timestamp.slice(0, 10)) {
+      return { kind: "validation_error", code: "invalid_confirmation" };
+    }
+    const instrument = await this.instruments.findById(input.instrumentId);
+    if (!instrument)
+      return { kind: "validation_error", code: "instrument_not_found" };
+
+    let snapshot: SplitEventRange;
+    try {
+      snapshot = await this.dependencies.corporateActionProvider.getSplits(
+        instrument.providerSymbol,
+        input.confirmation.requestedStartDate,
+        input.confirmation.requestedEndDate,
+      );
+    } catch (error) {
+      return { kind: "provider_unavailable", code: providerErrorCode(error) };
+    }
+    if (
+      snapshot.symbol !== instrument.providerSymbol.toUpperCase() ||
+      !confirmationMatches(input.confirmation, snapshot)
+    ) {
+      return { kind: "review_required", snapshot };
+    }
+
+    const coverage = await this.coverageFor(
+      input.instrumentId,
+      snapshot.range.provider,
+    );
+    if (
+      !snapshotsMatch(coverage, snapshot) ||
+      coverage?.status !== "review_required"
+    ) {
+      return { kind: "review_required", snapshot };
+    }
+
+    const activeActions = (
+      await this.actions.listForInstrument(input.instrumentId)
+    ).filter((action) => action.status === "active");
+    const transactions = await this.transactions.listForInstrument(
+      input.instrumentId,
+    );
+    try {
+      deriveHoldings({
+        today: timestamp.slice(0, 10),
+        transactions: transactions.map(toLedgerTransaction),
+        activeSplits: this.proposedSplits(activeActions, snapshot),
+      });
+    } catch {
+      return { kind: "candidate_conflict", snapshot };
+    }
+
+    const jobId = this.newId();
+    const workId = this.newId();
+    const mutationId = this.newId();
+    const statements = [
+      this.positionBasis.mutationTokenStatement({
+        id: mutationId,
+        expectedRevision: input.expectedPositionBasisRevision,
+        kind: "action_confirmation",
+        createdAt: timestamp,
+      }),
+      ...this.candidateInsertStatements(
+        input.instrumentId,
+        snapshot,
+        timestamp,
+        "candidate",
+        null,
+      ),
+      ...this.promotionStatements(input.instrumentId, snapshot, timestamp),
+      this.actions.upsertCoverageStatement(
+        this.coverageFromSnapshot({
+          instrumentId: input.instrumentId,
+          snapshot,
+          timestamp,
+          status: "confirmed",
+        }),
+      ),
+      ...this.reconciliationStatements({
+        jobId,
+        workId,
+        instrumentId: input.instrumentId,
+        startDate: snapshot.range.requestedStartDate,
+        endDate: snapshot.range.requestedEndDate,
+        intervals: [],
+        timestamp,
+      }),
+    ];
+    try {
+      await this.dependencies.db.batch(statements);
+    } catch (error) {
+      return this.batchFailure(error);
+    }
+    return {
+      kind: "committed",
+      positionBasisRevision: input.expectedPositionBasisRevision + 1,
+      pipelineJobId: jobId,
+      transactionId: null,
     };
   }
 

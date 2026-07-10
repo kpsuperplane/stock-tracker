@@ -50,8 +50,16 @@ const updateSchema = z
   })
   .strict();
 
+const confirmSchema = z
+  .object({
+    instrumentId: z.string().min(1).max(128),
+    confirmation: confirmationSchema,
+  })
+  .strict();
+
 const timelineQuerySchema = z.object({
   instrumentId: z.string().min(1).max(128).optional(),
+  symbol: z.string().min(1).max(32).optional(),
   type: z.enum(["transaction", "split"]).optional(),
   cursor: z.string().min(1).max(1_024).optional(),
   limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).optional(),
@@ -83,11 +91,6 @@ interface TimelineRow {
   updated_at: string | null;
 }
 
-interface EventTagVersions {
-  positionBasisRevision: number;
-  eventRevision?: number;
-}
-
 interface TimelineCursor {
   date: string;
   type: "transaction" | "split";
@@ -105,23 +108,19 @@ const error = (
 const positionBasisTag = (revision: number) => `"position-basis-${revision}"`;
 const eventTag = (revision: number) => `"event-${revision}"`;
 
-const parseIfMatch = (value: string | undefined): EventTagVersions | null => {
-  if (!value || value === "*") return null;
-  const tags = value.split(",").map((part) => part.trim());
-  const positionBasis = tags.find((tag) => /^"position-basis-\d+"$/.test(tag));
-  if (!positionBasis || tags.length !== new Set(tags).size) return null;
-  const positionBasisRevision = Number(
-    positionBasis.slice('"position-basis-'.length, -1),
-  );
-  if (!Number.isSafeInteger(positionBasisRevision)) return null;
-  const event = tags.find((tag) => /^"event-[1-9]\d*"$/.test(tag));
-  if (tags.some((tag) => tag !== positionBasis && tag !== event)) return null;
-  return {
-    positionBasisRevision,
-    ...(event
-      ? { eventRevision: Number(event.slice('"event-'.length, -1)) }
-      : {}),
-  };
+const parsePositionBasisRevision = (
+  value: string | undefined,
+): number | null =>
+  value && /^(?:0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value))
+    ? Number(value)
+    : null;
+
+const parseEventIfMatch = (value: string | undefined): number | null => {
+  if (!value) return null;
+  const match = /^"event-([1-9]\d*)"$/.exec(value);
+  return match && Number.isSafeInteger(Number(match[1]))
+    ? Number(match[1])
+    : null;
 };
 
 const parseCursor = (value: string | undefined): TimelineCursor | null => {
@@ -186,8 +185,29 @@ const toDto = (row: TimelineRow): PortfolioEventDto =>
 
 const sameOriginAndAppRequest = (context: EventContext): Response | null => {
   const origin = context.req.header("Origin");
-  const expectedOrigin = new URL(context.req.url).origin;
-  if (origin !== expectedOrigin) {
+  const host = context.req.header("Host");
+  let requestUrl: URL;
+  let originUrl: URL;
+  try {
+    requestUrl = new URL(context.req.url);
+    originUrl = new URL(origin ?? "");
+  } catch {
+    return error(
+      context,
+      403,
+      "csrf_rejected",
+      "This mutation must come from the same origin.",
+    );
+  }
+  if (
+    !host ||
+    /[\s,/@]/.test(host) ||
+    !["http:", "https:"].includes(requestUrl.protocol) ||
+    host.toLowerCase() !== requestUrl.host.toLowerCase() ||
+    origin !== originUrl.origin ||
+    originUrl.protocol !== requestUrl.protocol ||
+    originUrl.host.toLowerCase() !== host.toLowerCase()
+  ) {
     return error(
       context,
       403,
@@ -221,7 +241,8 @@ const timelineSql = `
     FROM transactions
     JOIN instruments ON instruments.id = transactions.instrument_id
     WHERE (?1 IS NULL OR transactions.instrument_id = ?1)
-      AND (?2 IS NULL OR ?2 = 'transaction')
+      AND (?2 IS NULL OR instruments.symbol = ?2)
+      AND (?3 IS NULL OR ?3 = 'transaction')
     UNION ALL
     SELECT
       'split' AS event_type, corporate_actions.id AS event_id,
@@ -238,16 +259,17 @@ const timelineSql = `
     FROM corporate_actions
     JOIN instruments ON instruments.id = corporate_actions.instrument_id
     WHERE (?1 IS NULL OR corporate_actions.instrument_id = ?1)
-      AND (?2 IS NULL OR ?2 = 'split')
+      AND (?2 IS NULL OR instruments.symbol = ?2)
+      AND (?3 IS NULL OR ?3 = 'split')
   )
   WHERE (
-    ?3 IS NULL
-    OR event_date < ?3
-    OR (event_date = ?3 AND event_type > ?4)
-    OR (event_date = ?3 AND event_type = ?4 AND event_id < ?5)
+    ?4 IS NULL
+    OR event_date < ?4
+    OR (event_date = ?4 AND event_type > ?5)
+    OR (event_date = ?4 AND event_type = ?5 AND event_id < ?6)
   )
   ORDER BY event_date DESC, event_type ASC, event_id DESC
-  LIMIT ?6`;
+  LIMIT ?7`;
 
 const transactionById = async (
   db: D1Database,
@@ -269,27 +291,46 @@ const transactionById = async (
   return row ? toTransactionDto(row) : null;
 };
 
+const currentPositionBasisRevision = async (
+  context: EventContext,
+): Promise<number> =>
+  (
+    await context.env.DB.prepare(
+      "SELECT revision FROM position_basis_state WHERE id = 1",
+    ).first<{ revision: number }>()
+  )?.revision ?? 0;
+
+const setPositionBasisHeaders = (context: EventContext, revision: number) => {
+  context.header("ETag", positionBasisTag(revision));
+  context.header("X-Position-Basis-Revision", String(revision));
+};
+
 const mutationResponse = async (
   context: EventContext,
   result: LedgerMutationResult,
   status: 200 | 201,
+  options: { deleted?: true } = {},
 ): Promise<Response> => {
   if (result.kind === "review_required") {
+    const positionBasisRevision = await currentPositionBasisRevision(context);
+    setPositionBasisHeaders(context, positionBasisRevision);
     return error(
       context,
       409,
       "split_review_required",
       "Confirm the displayed split history before changing this transaction.",
-      { review: result.snapshot },
+      { review: result.snapshot, positionBasisRevision },
     );
   }
   if (result.kind === "candidate_conflict") {
+    const positionBasisRevision = await currentPositionBasisRevision(context);
+    setPositionBasisHeaders(context, positionBasisRevision);
     return error(
       context,
       409,
       "split_correction_conflict",
       "The provider split correction conflicts with historical holdings.",
-      { correction: result.snapshot },
+      { correction: result.snapshot, positionBasisRevision },
     );
   }
   if (result.kind === "provider_unavailable") {
@@ -315,6 +356,7 @@ const mutationResponse = async (
       instrument_not_found: "The selected instrument does not exist.",
       invalid_transaction: "Enter a valid completed transaction.",
       invalid_position_basis_revision: "The portfolio revision is invalid.",
+      invalid_confirmation: "Confirm split history through the current date.",
       negative_holdings:
         "This change would create negative historical holdings.",
       position_limit: "The portfolio is limited to 100 current positions.",
@@ -332,14 +374,20 @@ const mutationResponse = async (
     : null;
   context.header(
     "ETag",
-    [
-      positionBasisTag(result.positionBasisRevision),
-      ...(transaction ? [eventTag(transaction.revision)] : []),
-    ].join(", "),
+    transaction
+      ? eventTag(transaction.revision)
+      : positionBasisTag(result.positionBasisRevision),
   );
+  context.header(
+    "X-Position-Basis-Revision",
+    String(result.positionBasisRevision),
+  );
+  if (transaction)
+    context.header("X-Event-Revision", String(transaction.revision));
   return context.json(
     {
       transaction,
+      ...(options.deleted ? { deleted: true } : {}),
       positionBasisRevision: result.positionBasisRevision,
       pipelineJobId: result.pipelineJobId,
     },
@@ -352,17 +400,15 @@ const missingPrecondition = (context: EventContext) =>
     context,
     422,
     "precondition_required",
-    "Provide a valid If-Match revision tag.",
+    "Provide valid revision preconditions.",
   );
 
 const staleBasis = async (
   context: EventContext,
   expectedRevision: number,
 ): Promise<Response | null> => {
-  const current = await context.env.DB.prepare(
-    "SELECT revision FROM position_basis_state WHERE id = 1",
-  ).first<{ revision: number }>();
-  return current?.revision === expectedRevision
+  const current = await currentPositionBasisRevision(context);
+  return current === expectedRevision
     ? null
     : error(
         context,
@@ -385,9 +431,7 @@ const futureTrade = (
       )
     : null;
 
-export const eventsRoutes = new Hono<{ Bindings: Env }>();
-
-eventsRoutes.get("/", async (context) => {
+const timeline = async (context: EventContext) => {
   const query = timelineQuerySchema.parse(context.req.query());
   const cursor = parseCursor(query.cursor);
   if (query.cursor && !cursor) {
@@ -402,6 +446,7 @@ eventsRoutes.get("/", async (context) => {
   const result = await context.env.DB.prepare(timelineSql)
     .bind(
       query.instrumentId ?? null,
+      query.symbol?.toUpperCase() ?? null,
       query.type ?? null,
       cursor?.date ?? null,
       cursor?.type ?? null,
@@ -411,10 +456,7 @@ eventsRoutes.get("/", async (context) => {
     .all<TimelineRow>();
   const rows = result.results.slice(0, pageSize);
   const tail = result.results.at(pageSize);
-  const basis = await context.env.DB.prepare(
-    "SELECT revision FROM position_basis_state WHERE id = 1",
-  ).first<{ revision: number }>();
-  const positionBasisRevision = basis?.revision ?? 0;
+  const positionBasisRevision = await currentPositionBasisRevision(context);
   const payload: EventsTimelineDto = {
     events: rows.map(toDto),
     nextCursor: tail
@@ -426,17 +468,19 @@ eventsRoutes.get("/", async (context) => {
       : null,
     positionBasisRevision,
   };
-  context.header("ETag", positionBasisTag(positionBasisRevision));
+  setPositionBasisHeaders(context, positionBasisRevision);
   return context.json(payload);
-});
+};
 
-eventsRoutes.post("/transactions", async (context) => {
+const expectedPositionBasis = (context: EventContext): number | null =>
+  parsePositionBasisRevision(context.req.header("X-Position-Basis-Revision"));
+
+const createTransaction = async (context: EventContext) => {
   const rejected = sameOriginAndAppRequest(context);
   if (rejected) return rejected;
-  const tags = parseIfMatch(context.req.header("If-Match"));
-  if (!tags || tags.eventRevision !== undefined)
-    return missingPrecondition(context);
-  const stale = await staleBasis(context, tags.positionBasisRevision);
+  const positionBasisRevision = expectedPositionBasis(context);
+  if (positionBasisRevision === null) return missingPrecondition(context);
+  const stale = await staleBasis(context, positionBasisRevision);
   if (stale) return stale;
   const body = createSchema.parse(await context.req.json());
   const future = futureTrade(context, body.tradeDate);
@@ -445,7 +489,7 @@ eventsRoutes.post("/transactions", async (context) => {
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
   }).apply({
-    expectedPositionBasisRevision: tags.positionBasisRevision,
+    expectedPositionBasisRevision: positionBasisRevision,
     proposal: {
       kind: "create",
       instrumentId: body.instrumentId,
@@ -457,23 +501,27 @@ eventsRoutes.post("/transactions", async (context) => {
     ...(body.confirmation ? { confirmation: body.confirmation } : {}),
   });
   return mutationResponse(context, result, 201);
-});
+};
 
-eventsRoutes.patch("/transactions/:id", async (context) => {
+const updateTransaction = async (context: EventContext) => {
   const rejected = sameOriginAndAppRequest(context);
   if (rejected) return rejected;
-  const tags = parseIfMatch(context.req.header("If-Match"));
-  if (!tags || tags.eventRevision === undefined)
+  const positionBasisRevision = expectedPositionBasis(context);
+  const eventRevision = parseEventIfMatch(context.req.header("If-Match"));
+  if (positionBasisRevision === null || eventRevision === null)
     return missingPrecondition(context);
-  const stale = await staleBasis(context, tags.positionBasisRevision);
+  const stale = await staleBasis(context, positionBasisRevision);
   if (stale) return stale;
   const body = updateSchema.parse(await context.req.json());
   const future = futureTrade(context, body.tradeDate);
   if (future) return future;
+  const eventId = context.req.param("id");
+  if (!eventId)
+    return error(context, 422, "invalid_request", "The request is invalid.");
   const proposal: LedgerProposal = {
     kind: "update",
-    eventId: context.req.param("id"),
-    expectedEventRevision: tags.eventRevision,
+    eventId,
+    expectedEventRevision: eventRevision,
     tradeDate: body.tradeDate,
     side: body.side,
     quantityDecimal: body.quantityDecimal,
@@ -483,41 +531,92 @@ eventsRoutes.patch("/transactions/:id", async (context) => {
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
   }).apply({
-    expectedPositionBasisRevision: tags.positionBasisRevision,
+    expectedPositionBasisRevision: positionBasisRevision,
     proposal,
     ...(body.confirmation ? { confirmation: body.confirmation } : {}),
   });
   return mutationResponse(context, result, 200);
-});
+};
 
-eventsRoutes.delete("/transactions/:id", async (context) => {
+const deleteTransaction = async (context: EventContext) => {
   const rejected = sameOriginAndAppRequest(context);
   if (rejected) return rejected;
-  const tags = parseIfMatch(context.req.header("If-Match"));
-  if (!tags || tags.eventRevision === undefined)
+  const positionBasisRevision = expectedPositionBasis(context);
+  const eventRevision = parseEventIfMatch(context.req.header("If-Match"));
+  if (positionBasisRevision === null || eventRevision === null)
     return missingPrecondition(context);
-  const stale = await staleBasis(context, tags.positionBasisRevision);
+  const stale = await staleBasis(context, positionBasisRevision);
   if (stale) return stale;
+  const eventId = context.req.param("id");
+  if (!eventId)
+    return error(context, 422, "invalid_request", "The request is invalid.");
   const result = await new LedgerService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
   }).apply({
-    expectedPositionBasisRevision: tags.positionBasisRevision,
+    expectedPositionBasisRevision: positionBasisRevision,
     proposal: {
       kind: "delete",
-      eventId: context.req.param("id"),
-      expectedEventRevision: tags.eventRevision,
+      eventId,
+      expectedEventRevision: eventRevision,
     },
   });
-  return mutationResponse(context, result, 200);
-});
+  return mutationResponse(context, result, 200, { deleted: true });
+};
 
-eventsRoutes.all("/*", (context) => {
-  context.header("Allow", "GET, POST, PATCH, DELETE");
+const confirmSplitHistory = async (context: EventContext) => {
+  const rejected = sameOriginAndAppRequest(context);
+  if (rejected) return rejected;
+  const positionBasisRevision = expectedPositionBasis(context);
+  if (positionBasisRevision === null) return missingPrecondition(context);
+  const stale = await staleBasis(context, positionBasisRevision);
+  if (stale) return stale;
+  const body = confirmSchema.parse(await context.req.json());
+  const result = await new LedgerService({
+    db: context.env.DB,
+    corporateActionProvider: new YahooCorporateActionProvider(),
+  }).confirmSplitHistory({
+    expectedPositionBasisRevision: positionBasisRevision,
+    instrumentId: body.instrumentId,
+    confirmation: body.confirmation,
+  });
+  return mutationResponse(context, result, 200);
+};
+
+const methodNotAllowed = (allow: string) => (context: EventContext) => {
+  context.header("Allow", allow);
   return error(
     context,
     405,
     "method_not_allowed",
     "This event method is not supported.",
+  );
+};
+
+export const eventsRoutes = new Hono<{ Bindings: Env }>();
+
+eventsRoutes.get("/", timeline);
+eventsRoutes.post("/", createTransaction);
+eventsRoutes.post("/transactions", createTransaction);
+eventsRoutes.patch("/transactions/:id", updateTransaction);
+eventsRoutes.delete("/transactions/:id", deleteTransaction);
+eventsRoutes.patch("/:id", updateTransaction);
+eventsRoutes.delete("/:id", deleteTransaction);
+eventsRoutes.all("/transactions/:id", methodNotAllowed("PATCH, DELETE"));
+eventsRoutes.all("/:id", methodNotAllowed("PATCH, DELETE"));
+eventsRoutes.all("/transactions", methodNotAllowed("POST"));
+eventsRoutes.all("/", methodNotAllowed("GET, POST"));
+eventsRoutes.all("/*", methodNotAllowed("GET, POST, PATCH, DELETE"));
+
+export const corporateActionRoutes = new Hono<{ Bindings: Env }>();
+
+corporateActionRoutes.post("/confirm", confirmSplitHistory);
+corporateActionRoutes.all("/confirm", (context) => {
+  context.header("Allow", "POST");
+  return error(
+    context,
+    405,
+    "method_not_allowed",
+    "This corporate-action method is not supported.",
   );
 });
