@@ -45,7 +45,6 @@ export const WatchlistPage = () => {
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">跟踪标的</p>
           <h1>观察列表</h1>
         </div>
         <span>

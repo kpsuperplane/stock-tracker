@@ -14,13 +14,19 @@ beforeEach(async () => {
       "INSERT INTO tickers (id,symbol,company_name,exchange,currency,active,created_at,updated_at) VALUES ('nvda','NVDA','NVIDIA','NMS','USD',1,?1,?1)",
     ).bind(now),
     env.DB.prepare(
-      "INSERT INTO report_runs (id,trading_date,generation,origin,published,status,tickers_total,tickers_processed,tickers_qualified,created_at) VALUES ('run','2026-07-09',1,'scheduled',1,'complete',2,2,2,?1)",
+      "INSERT INTO tickers (id,symbol,company_name,exchange,currency,active,created_at,updated_at) VALUES ('aapl','AAPL','Apple Inc.','NMS','USD',1,?1,?1)",
+    ).bind(now),
+    env.DB.prepare(
+      "INSERT INTO report_runs (id,trading_date,generation,origin,published,status,tickers_total,tickers_processed,tickers_qualified,created_at) VALUES ('run','2026-07-09',1,'scheduled',1,'complete',3,3,2,?1)",
     ).bind(now),
     env.DB.prepare(
       "INSERT INTO screenings (id,report_run_id,ticker_id,symbol,company_name,exchange,currency,target_date,current_price,change_amount,change_pct,qualified,status) VALUES ('s-shop','run','shop','SHOP.TO','Shopify Inc.','TOR','CAD','2026-07-09',107,7,7,1,'complete')",
     ),
     env.DB.prepare(
       "INSERT INTO screenings (id,report_run_id,ticker_id,symbol,company_name,exchange,currency,target_date,current_price,change_amount,change_pct,qualified,status) VALUES ('s-nvda','run','nvda','NVDA','NVIDIA','NMS','USD','2026-07-09',91,-9,-9,1,'complete')",
+    ),
+    env.DB.prepare(
+      "INSERT INTO screenings (id,report_run_id,ticker_id,symbol,company_name,exchange,currency,target_date,current_price,change_amount,change_pct,qualified,status) VALUES ('s-aapl','run','aapl','AAPL','Apple Inc.','NMS','USD','2026-07-09',201,1,0.5,0,'complete')",
     ),
     env.DB.prepare(
       "INSERT INTO analyses (id,screening_id,explanation_zh_cn,confidence,clear_catalyst,model,status,created_at) VALUES ('a-shop','s-shop','企业增长可能支持上涨。','high',1,'test','complete',?1)",
@@ -35,7 +41,7 @@ beforeEach(async () => {
 });
 
 describe("report routes", () => {
-  it("orders movers by absolute percentage change and hydrates sources", async () => {
+  it("returns every checked stock, ordered by absolute change, and hydrates abnormal sources", async () => {
     const response = await exports.default.fetch(
       new Request("http://local/api/reports/latest", { headers }),
     );
@@ -44,8 +50,18 @@ describe("report routes", () => {
     expect(payload.report.movers.map((mover) => mover.symbol)).toEqual([
       "NVDA",
       "SHOP.TO",
+      "AAPL",
     ]);
     expect(payload.report.movers[1]?.sources[0]?.publisher).toBe("Reuters");
+    expect(payload.report.movers[2]).toEqual(
+      expect.objectContaining({
+        symbol: "AAPL",
+        changePct: 0.5,
+        qualified: false,
+        explanationZhCn: null,
+        sources: [],
+      }),
+    );
   });
 
   it("lists history and reads a report by date", async () => {
@@ -61,7 +77,7 @@ describe("report routes", () => {
     );
     expect(
       (await dated.json<{ report: ReportDto }>()).report.movers,
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it("preserves the visible report and requeues a failed qualifying screening", async () => {

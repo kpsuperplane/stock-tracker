@@ -696,17 +696,19 @@ export class RunRepository {
         `SELECT s.id AS screeningId, s.symbol,
          s.company_name AS companyName, s.exchange, s.currency,
          s.current_price AS currentPrice, s.change_amount AS changeAmount,
-         s.change_pct AS changePct,
+         s.change_pct AS changePct, s.qualified,
          a.explanation_zh_cn AS explanationZhCn, a.confidence,
          a.clear_catalyst AS clearCatalyst, a.status AS analysisStatus
          FROM screenings s LEFT JOIN analyses a ON a.screening_id = s.id
-         WHERE s.report_run_id = ?1 AND s.qualified = 1
-         ORDER BY ABS(s.change_pct) DESC, s.symbol`,
+         WHERE s.report_run_id = ?1
+         ORDER BY CASE WHEN s.change_pct IS NULL THEN 1 ELSE 0 END,
+         ABS(s.change_pct) DESC, s.symbol`,
       )
       .bind(run.id)
       .all<
-        Omit<MoverDto, "sources" | "clearCatalyst"> & {
+        Omit<MoverDto, "sources" | "clearCatalyst" | "qualified"> & {
           clearCatalyst: number | null;
+          qualified: number | null;
         }
       >();
     const hydrated: MoverDto[] = [];
@@ -720,6 +722,7 @@ export class RunRepository {
         .all<Omit<SourceDto, "cited"> & { cited: number }>();
       hydrated.push({
         ...mover,
+        qualified: mover.qualified === null ? null : mover.qualified === 1,
         clearCatalyst:
           mover.clearCatalyst === null ? null : mover.clearCatalyst === 1,
         sources: sources.results.map((source) => ({

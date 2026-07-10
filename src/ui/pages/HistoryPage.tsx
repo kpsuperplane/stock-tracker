@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import type { ReportDto, ReportSummaryDto } from "../../shared/contracts";
 import { api } from "../api";
 import { MoverTable } from "../components/MoverTable";
-import { RunSummary } from "../components/RunSummary";
 
 export const HistoryPage = () => {
   const [dates, setDates] = useState<ReportSummaryDto[]>([]);
@@ -53,7 +52,6 @@ export const HistoryPage = () => {
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">已发布报告</p>
           <h1>历史报告</h1>
         </div>
       </header>
@@ -83,7 +81,6 @@ export const HistoryPage = () => {
       )}
       {loading && (
         <section className="state-panel state-panel--loading" role="status">
-          <p className="eyebrow">报告归档</p>
           <h2>正在加载历史报告</h2>
           <div className="skeleton" aria-hidden="true">
             <span />
@@ -102,10 +99,8 @@ export const HistoryPage = () => {
           </div>
         </section>
       )}
-      {report && <RunSummary run={report.run} />}
-      {selectedDate && <p className="selection-note">已选择 {selectedDate}</p>}
       {report && report.movers.length > 0 && (
-        <MoverTable label="历史异动" movers={report.movers} />
+        <MoverTable label="每日行情" movers={report.movers} />
       )}
     </>
   );

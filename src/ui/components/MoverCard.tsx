@@ -12,9 +12,10 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
   const [expanded, setExpanded] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
-  const gain = mover.changePct >= 0;
+  const gain = mover.changePct !== null && mover.changePct >= 0;
+  const qualified = mover.qualified === true;
   const sourceLabel = `${expanded ? "收起" : "查看"} ${mover.sources.length} 条来源`;
-  const unavailable = mover.analysisStatus === "unavailable";
+  const unavailable = qualified && mover.analysisStatus === "unavailable";
 
   const retry = async () => {
     setRetrying(true);
@@ -39,21 +40,27 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
           </small>
         </td>
         <td className="number-cell">
-          {mover.currentPrice.toFixed(2)}
-          <small>{mover.currency}</small>
+          {mover.currentPrice === null ? "—" : mover.currentPrice.toFixed(2)}
+          {mover.currentPrice !== null && <small>{mover.currency}</small>}
         </td>
         <td className="number-cell">
-          <strong className={gain ? "move move--up" : "move move--down"}>
-            {gain ? "↑ +" : "↓ "}
-            {mover.changePct.toFixed(2)}%
-          </strong>
-          <small>
-            {gain ? "+" : ""}
-            {mover.changeAmount.toFixed(2)}
-          </small>
+          {mover.changePct === null ? (
+            <span className="muted-value">—</span>
+          ) : (
+            <strong className={gain ? "move move--up" : "move move--down"}>
+              {gain ? "↑ +" : "↓ "}
+              {mover.changePct.toFixed(2)}%
+            </strong>
+          )}
+          {mover.changeAmount !== null && (
+            <small>
+              {gain ? "+" : ""}
+              {mover.changeAmount.toFixed(2)}
+            </small>
+          )}
         </td>
         <td>
-          {mover.confidence ? (
+          {qualified && mover.confidence ? (
             <span className={`confidence confidence--${mover.confidence}`}>
               {confidenceLabel[mover.confidence]}
             </span>
@@ -62,22 +69,25 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
           )}
         </td>
         <td className="explanation-cell">
-          {unavailable ? (
+          {!qualified ? (
+            <span className="muted-value">—</span>
+          ) : unavailable ? (
             <span className="explanation--unavailable">暂无异动说明</span>
           ) : (
-            <span lang="zh-CN">
-              {mover.explanationZhCn ?? "暂时无法确定明确催化因素。"}
-            </span>
+            <span lang="zh-CN">{mover.explanationZhCn ?? "暂无异动说明"}</span>
           )}
         </td>
         <td className="actions-cell">
-          {mover.sources.length === 0 && (
+          {!qualified && <span className="muted-value">—</span>}
+          {qualified && mover.sources.length === 0 && (
             <span className="state-label">未找到相关来源</span>
           )}
-          {mover.sources.length > 0 && mover.clearCatalyst === false && (
-            <span className="state-label">无明确催化因素</span>
-          )}
-          {mover.sources.length > 0 && (
+          {qualified &&
+            mover.sources.length > 0 &&
+            mover.clearCatalyst === false && (
+              <span className="state-label">无明确催化因素</span>
+            )}
+          {qualified && mover.sources.length > 0 && (
             <button
               type="button"
               className="link-button"
@@ -87,7 +97,7 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
               {sourceLabel}
             </button>
           )}
-          {unavailable && (
+          {qualified && unavailable && (
             <button
               type="button"
               className="button--secondary"

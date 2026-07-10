@@ -87,7 +87,6 @@ export const BackfillPage = () => {
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">历史数据处理</p>
           <h1>历史回补</h1>
         </div>
       </header>

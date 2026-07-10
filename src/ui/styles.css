@@ -156,63 +156,11 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 
-.eyebrow {
-  margin-bottom: 0.15rem;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 500;
-}
-
 .subtle,
-.form-help,
-.selection-note {
+.form-help {
   margin: 0.3rem 0 0;
   color: var(--muted);
   font-size: 0.72rem;
-}
-
-.selection-note {
-  margin: 0.65rem 0 0.35rem;
-}
-
-.run-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 0 0 0.75rem;
-  background: var(--surface-subtle);
-  border: 1px solid var(--line);
-}
-
-.summary-metric {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.65rem 0.75rem;
-  border-right: 1px solid var(--line);
-}
-
-.summary-metric:last-child {
-  border-right: 0;
-}
-
-.summary-metric span {
-  color: var(--muted);
-  font-size: 0.7rem;
-  white-space: nowrap;
-}
-
-.summary-metric strong {
-  font-family: var(--mono);
-  font-size: 1rem;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.summary-metric--status strong {
-  font-family: inherit;
-  font-size: 0.76rem;
 }
 
 .history-timeline {
@@ -457,7 +405,9 @@ button {
   font-weight: 600;
 }
 
-button:hover:not(:disabled):not(.timeline-day) {
+button:hover:not(:disabled):not(.timeline-day):not(.button--secondary):not(
+  .link-button
+):not(.button--danger) {
   background: #3b4046;
 }
 
@@ -618,7 +568,7 @@ input::placeholder {
   margin-bottom: 0.35rem;
 }
 
-.state-panel > p:not(.eyebrow) {
+.state-panel > p {
   margin-bottom: 0;
   color: var(--muted);
 }
@@ -686,24 +636,6 @@ input::placeholder {
   width: 48%;
 }
 
-.site-footer {
-  display: flex;
-  width: min(100% - 2rem, 90rem);
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  margin: 0 auto;
-  padding: 0.8rem 0 1.25rem;
-  color: var(--muted);
-  border-top: 1px solid var(--line);
-  font-size: 0.68rem;
-}
-
-.site-footer__brand {
-  color: var(--text);
-  font-weight: 650;
-}
-
 @media (max-width: 1100px) {
   .operations-grid {
     grid-template-columns: 1fr;
@@ -735,18 +667,6 @@ input::placeholder {
     margin-bottom: 0.6rem;
   }
 
-  .run-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .summary-metric:nth-child(2) {
-    border-right: 0;
-  }
-
-  .summary-metric:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--line);
-  }
-
   .timeline-day {
     min-width: 7rem;
   }
@@ -757,13 +677,6 @@ input::placeholder {
 
   .field-row button {
     flex: 0 0 auto;
-  }
-
-  .site-footer {
-    width: calc(100% - 1rem);
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 0.15rem;
   }
 }
 

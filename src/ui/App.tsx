@@ -26,9 +26,5 @@ export const App = () => (
         </section>
       </div>
     </main>
-    <footer className="site-footer">
-      <span className="site-footer__brand">收盘异动</span>
-      <span>私人市场研究笔记 · 不构成投资建议</span>
-    </footer>
   </>
 );

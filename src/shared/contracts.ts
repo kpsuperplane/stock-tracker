@@ -26,9 +26,10 @@ export interface MoverDto {
   companyName: string;
   exchange: string;
   currency: string;
-  currentPrice: number;
-  changeAmount: number;
-  changePct: number;
+  currentPrice: number | null;
+  changeAmount: number | null;
+  changePct: number | null;
+  qualified: boolean | null;
   explanationZhCn: string | null;
   confidence: Confidence | null;
   clearCatalyst: boolean | null;
