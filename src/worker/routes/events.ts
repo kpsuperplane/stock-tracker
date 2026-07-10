@@ -598,13 +598,13 @@ export const eventsRoutes = new Hono<{ Bindings: Env }>();
 eventsRoutes.get("/", timeline);
 eventsRoutes.post("/", createTransaction);
 eventsRoutes.post("/transactions", createTransaction);
+eventsRoutes.all("/transactions", methodNotAllowed("POST"));
 eventsRoutes.patch("/transactions/:id", updateTransaction);
 eventsRoutes.delete("/transactions/:id", deleteTransaction);
+eventsRoutes.all("/transactions/:id", methodNotAllowed("PATCH, DELETE"));
 eventsRoutes.patch("/:id", updateTransaction);
 eventsRoutes.delete("/:id", deleteTransaction);
-eventsRoutes.all("/transactions/:id", methodNotAllowed("PATCH, DELETE"));
 eventsRoutes.all("/:id", methodNotAllowed("PATCH, DELETE"));
-eventsRoutes.all("/transactions", methodNotAllowed("POST"));
 eventsRoutes.all("/", methodNotAllowed("GET, POST"));
 eventsRoutes.all("/*", methodNotAllowed("GET, POST, PATCH, DELETE"));
 

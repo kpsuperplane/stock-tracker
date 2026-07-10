@@ -436,17 +436,28 @@ export class LedgerService {
     } catch (error) {
       return { kind: "provider_unavailable", code: providerErrorCode(error) };
     }
-    if (
-      snapshot.symbol !== instrument.providerSymbol.toUpperCase() ||
-      !confirmationMatches(input.confirmation, snapshot)
-    ) {
-      return { kind: "review_required", snapshot };
-    }
-
     const coverage = await this.coverageFor(
       input.instrumentId,
       snapshot.range.provider,
     );
+    if (snapshot.symbol !== instrument.providerSymbol.toUpperCase()) {
+      return {
+        kind: "provider_unavailable",
+        code: "provider_snapshot_mismatch",
+      };
+    }
+    if (!confirmationMatches(input.confirmation, snapshot)) {
+      if (this.isCandidateRefreshNeeded(coverage, snapshot)) {
+        const persisted = await this.persistConfirmationReviewState({
+          expectedPositionBasisRevision: input.expectedPositionBasisRevision,
+          instrumentId: input.instrumentId,
+          snapshot,
+          timestamp,
+        });
+        if (persisted) return persisted;
+      }
+      return { kind: "review_required", snapshot };
+    }
     if (
       !snapshotsMatch(coverage, snapshot) ||
       coverage?.status !== "review_required"
@@ -460,8 +471,15 @@ export class LedgerService {
     const transactions = await this.transactions.listForInstrument(
       input.instrumentId,
     );
+    let beforeHoldings: ReturnType<typeof deriveHoldings>;
+    let afterHoldings: ReturnType<typeof deriveHoldings>;
     try {
-      deriveHoldings({
+      beforeHoldings = deriveHoldings({
+        today: timestamp.slice(0, 10),
+        transactions: transactions.map(toLedgerTransaction),
+        activeSplits: activeActions.map(toActiveSplit),
+      });
+      afterHoldings = deriveHoldings({
         today: timestamp.slice(0, 10),
         transactions: transactions.map(toLedgerTransaction),
         activeSplits: this.proposedSplits(activeActions, snapshot),
@@ -473,6 +491,22 @@ export class LedgerService {
     const jobId = this.newId();
     const workId = this.newId();
     const mutationId = this.newId();
+    const today = timestamp.slice(0, 10);
+    const changedIntervals = this.changedEligibilityIntervals(
+      beforeHoldings,
+      afterHoldings,
+      snapshot.range.requestedStartDate,
+      today,
+    );
+    const intervals =
+      changedIntervals.length > 0
+        ? changedIntervals
+        : [
+            {
+              startDate: snapshot.range.requestedStartDate,
+              endDate: today,
+            },
+          ];
     const statements = [
       this.positionBasis.mutationTokenStatement({
         id: mutationId,
@@ -502,7 +536,7 @@ export class LedgerService {
         instrumentId: input.instrumentId,
         startDate: snapshot.range.requestedStartDate,
         endDate: snapshot.range.requestedEndDate,
-        intervals: [],
+        intervals,
         timestamp,
       }),
     ];
@@ -1071,6 +1105,55 @@ export class LedgerService {
         workId,
         instrumentId: input.instrumentId,
         startDate: input.changedStartDate,
+        endDate: input.snapshot.range.requestedEndDate,
+        intervals: [],
+        timestamp: input.timestamp,
+      }),
+    ];
+    try {
+      await this.dependencies.db.batch(statements);
+      return null;
+    } catch (error) {
+      return this.batchFailure(error);
+    }
+  }
+
+  private async persistConfirmationReviewState(input: {
+    expectedPositionBasisRevision: number;
+    instrumentId: string;
+    snapshot: SplitEventRange;
+    timestamp: string;
+  }): Promise<LedgerMutationResult | null> {
+    const jobId = this.newId();
+    const workId = this.newId();
+    const mutationId = this.newId();
+    const statements = [
+      this.positionBasis.mutationTokenStatement({
+        id: mutationId,
+        expectedRevision: input.expectedPositionBasisRevision,
+        kind: "candidate_refresh",
+        createdAt: input.timestamp,
+      }),
+      ...this.candidateInsertStatements(
+        input.instrumentId,
+        input.snapshot,
+        input.timestamp,
+        "candidate",
+        null,
+      ),
+      this.actions.upsertCoverageStatement(
+        this.coverageFromSnapshot({
+          instrumentId: input.instrumentId,
+          snapshot: input.snapshot,
+          timestamp: input.timestamp,
+          status: "review_required",
+        }),
+      ),
+      ...this.reconciliationStatements({
+        jobId,
+        workId,
+        instrumentId: input.instrumentId,
+        startDate: input.snapshot.range.requestedStartDate,
         endDate: input.snapshot.range.requestedEndDate,
         intervals: [],
         timestamp: input.timestamp,

@@ -666,7 +666,7 @@ describe("portfolio event routes", () => {
 
   it("returns server-fetched split review data, then commits canonical transaction DTOs after explicit confirmation", async () => {
     await insertInstrument();
-    mockSplitProvider();
+    const provider = mockSplitProvider();
     const initial = await exports.default.fetch(
       new Request("http://local/api/events", {
         method: "POST",
@@ -694,7 +694,10 @@ describe("portfolio event routes", () => {
         "Confirm the displayed split history before changing this transaction.",
     });
 
-    const confirmation = await exports.default.fetch(
+    provider.mockImplementation(async (symbol, startDate, endDate) =>
+      splitSnapshot(symbol, startDate, endDate, "snapshot-r2"),
+    );
+    const refreshedReview = await exports.default.fetch(
       new Request("http://local/api/corporate-actions/confirm", {
         method: "POST",
         headers: mutationHeaders(`"position-basis-${reviewBasis}"`),
@@ -708,14 +711,59 @@ describe("portfolio event routes", () => {
         }),
       }),
     );
+    expect(refreshedReview.status).toBe(409);
+    const refreshedBasis = refreshedReview.headers.get(
+      "X-Position-Basis-Revision",
+    );
+    expect(refreshedBasis).toBe("2");
+    const refreshedPayload = await refreshedReview.json<{
+      review: {
+        range: {
+          requestedStartDate: string;
+          requestedEndDate: string;
+          providerRevision: string;
+        };
+      };
+    }>();
+    expect(refreshedPayload.review.range.providerRevision).toBe("snapshot-r2");
+
+    const confirmation = await exports.default.fetch(
+      new Request("http://local/api/corporate-actions/confirm", {
+        method: "POST",
+        headers: mutationHeaders(`"position-basis-${refreshedBasis}"`),
+        body: JSON.stringify({
+          instrumentId: "instrument-1",
+          confirmation: {
+            requestedStartDate:
+              refreshedPayload.review.range.requestedStartDate,
+            requestedEndDate: refreshedPayload.review.range.requestedEndDate,
+            providerRevision: refreshedPayload.review.range.providerRevision,
+          },
+        }),
+      }),
+    );
     expect(confirmation.status).toBe(200);
-    expect(confirmation.headers.get("ETag")).toBe('"position-basis-2"');
-    expect(confirmation.headers.get("X-Position-Basis-Revision")).toBe("2");
+    expect(confirmation.headers.get("ETag")).toBe('"position-basis-3"');
+    expect(confirmation.headers.get("X-Position-Basis-Revision")).toBe("3");
+    const confirmationPayload = await confirmation.json<{
+      pipelineJobId: string;
+    }>();
+    const job = await env.DB.prepare(
+      "SELECT eligibility_intervals_json FROM pipeline_jobs WHERE id = ?1",
+    )
+      .bind(confirmationPayload.pipelineJobId)
+      .first<{ eligibility_intervals_json: string }>();
+    expect(JSON.parse(job?.eligibility_intervals_json ?? "[]")).toEqual([
+      expect.objectContaining({
+        startDate: "2024-01-02",
+        endDate: "2026-07-10",
+      }),
+    ]);
 
     const confirmed = await exports.default.fetch(
       new Request("http://local/api/events", {
         method: "POST",
-        headers: mutationHeaders('"position-basis-2"'),
+        headers: mutationHeaders('"position-basis-3"'),
         body: JSON.stringify(createBody()),
       }),
     );
@@ -736,9 +784,9 @@ describe("portfolio event routes", () => {
         revision: 1,
       }),
     );
-    expect(payload.positionBasisRevision).toBe(3);
+    expect(payload.positionBasisRevision).toBe(4);
     expect(confirmed.headers.get("ETag")).toBe('"event-1"');
-    expect(confirmed.headers.get("X-Position-Basis-Revision")).toBe("3");
+    expect(confirmed.headers.get("X-Position-Basis-Revision")).toBe("4");
     expect(confirmed.headers.get("X-Event-Revision")).toBe("1");
   });
 
@@ -890,6 +938,16 @@ describe("portfolio event routes", () => {
     );
     expect(unsupported.status).toBe(405);
     expect(unsupported.headers.get("Allow")).toBe("PATCH, DELETE");
+
+    const aliasUnsupported = await exports.default.fetch(
+      new Request("http://local/api/events/transactions", {
+        method: "PUT",
+        headers: mutationHeaders('"position-basis-0"'),
+        body: JSON.stringify(createBody()),
+      }),
+    );
+    expect(aliasUnsupported.status).toBe(405);
+    expect(aliasUnsupported.headers.get("Allow")).toBe("POST");
 
     const rootUnsupported = await exports.default.fetch(
       new Request("http://local/api/events", {
