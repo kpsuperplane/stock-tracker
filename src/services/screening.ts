@@ -36,8 +36,7 @@ type Repository = Pick<
   RunRepository,
   | "claimScreening"
   | "savePrice"
-  | "saveSources"
-  | "saveAnalysis"
+  | "saveScreeningResult"
   | "completeWithoutAnalysis"
   | "markNoTradingData"
   | "markFailed"
@@ -65,14 +64,13 @@ export class ScreeningService {
         Date.parse(easternCloseUtc(work.targetDate)) + 2 * 3_600_000,
       ).toISOString(),
     });
-    await this.repository.saveSources(work.id, sources);
     const result = await this.explanations.explain({
       symbol: work.symbol,
       companyName: work.companyName,
       changePct,
       sources,
     });
-    await this.repository.saveAnalysis(work.id, result, now);
+    await this.repository.saveScreeningResult(work.id, sources, result, now);
   }
 
   async process(screeningId: string, now: string): Promise<string | null> {

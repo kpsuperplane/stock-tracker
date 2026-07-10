@@ -256,6 +256,60 @@ export class RunRepository {
     ]);
   }
 
+  async saveScreeningResult(
+    screeningId: string,
+    sources: NewsItem[],
+    result: ExplanationResult,
+    now: string,
+  ): Promise<void> {
+    const citedIndexes = new Set(result.sourceIndexes);
+    await this.db.batch([
+      this.db
+        .prepare("DELETE FROM sources WHERE screening_id = ?1")
+        .bind(screeningId),
+      ...sources.slice(0, 10).map((source, index) =>
+        this.db
+          .prepare(
+            `INSERT OR REPLACE INTO sources
+             (id, screening_id, source_index, title, publisher, published_at, url, cited)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            screeningId,
+            index,
+            source.title,
+            source.publisher,
+            source.publishedAt,
+            source.url,
+            citedIndexes.has(index) ? 1 : 0,
+          ),
+      ),
+      this.db
+        .prepare(
+          `INSERT OR REPLACE INTO analyses
+           (id, screening_id, explanation_zh_cn, confidence, clear_catalyst,
+            model, status, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'complete', ?7)`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          screeningId,
+          result.explanationZhCn,
+          result.confidence,
+          result.clearCatalyst ? 1 : 0,
+          result.model,
+          now,
+        ),
+      this.db
+        .prepare(
+          `UPDATE screenings SET status = 'complete', error_code = NULL,
+           error_message = NULL WHERE id = ?1`,
+        )
+        .bind(screeningId),
+    ]);
+  }
+
   async completeWithoutAnalysis(id: string): Promise<void> {
     await this.db
       .prepare("UPDATE screenings SET status = 'complete' WHERE id = ?1")
@@ -753,12 +807,6 @@ export class RunRepository {
       return "daily_dispatch_limit";
     }
     await this.db.batch([
-      this.db
-        .prepare("DELETE FROM sources WHERE screening_id = ?1")
-        .bind(screeningId),
-      this.db
-        .prepare("DELETE FROM analyses WHERE screening_id = ?1")
-        .bind(screeningId),
       this.db
         .prepare(
           `UPDATE screenings SET status = 'queued', attempt_count = 0,

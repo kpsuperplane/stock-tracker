@@ -64,7 +64,7 @@ describe("report routes", () => {
     ).toHaveLength(2);
   });
 
-  it("clears stale analysis and requeues a failed qualifying screening", async () => {
+  it("preserves the visible report and requeues a failed qualifying screening", async () => {
     await env.DB.prepare(
       "UPDATE screenings SET status = 'failed' WHERE id = 's-shop'",
     ).run();
@@ -84,12 +84,12 @@ describe("report routes", () => {
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM analyses WHERE screening_id = 's-shop'",
       ).first(),
-    ).toEqual({ count: 0 });
+    ).toEqual({ count: 1 });
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM sources WHERE screening_id = 's-shop'",
       ).first(),
-    ).toEqual({ count: 0 });
+    ).toEqual({ count: 1 });
   });
 
   it("rejects retry for a successful or non-qualifying screening", async () => {

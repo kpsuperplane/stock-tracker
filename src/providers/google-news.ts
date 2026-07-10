@@ -78,7 +78,8 @@ export class GoogleNewsProvider implements NewsProvider {
     url.searchParams.set("hl", "en-CA");
     url.searchParams.set("gl", "CA");
     url.searchParams.set("ceid", "CA:en");
-    const response = await this.fetcher(url, {
+    const fetcher = this.fetcher;
+    const response = await fetcher(url, {
       headers: { "User-Agent": "stock-movement-explainer/1.0" },
       signal: AbortSignal.timeout(10_000),
     });

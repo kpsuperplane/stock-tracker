@@ -174,22 +174,22 @@ describe("RunRepository", () => {
       priceBasis: "adjusted",
       qualified: true,
     });
-    await repository.saveSources(screeningId, [
-      {
-        title: "Shopify rises",
-        publisher: "Reuters",
-        publishedAt: now,
-        url: "https://news/one",
-      },
-      {
-        title: "Shopify target raised",
-        publisher: "BNN",
-        publishedAt: now,
-        url: "https://news/two",
-      },
-    ]);
-    await repository.saveAnalysis(
+    await repository.saveScreeningResult(
       screeningId,
+      [
+        {
+          title: "Shopify rises",
+          publisher: "Reuters",
+          publishedAt: now,
+          url: "https://news/one",
+        },
+        {
+          title: "Shopify target raised",
+          publisher: "BNN",
+          publishedAt: now,
+          url: "https://news/two",
+        },
+      ],
       {
         explanationZhCn: "企业客户增长可能推动股价上涨。",
         confidence: "high",
@@ -285,6 +285,62 @@ describe("RunRepository", () => {
         .bind(screeningId)
         .first(),
     ).toEqual({ count: 0 });
+  });
+
+  it("preserves the published analysis and sources while a retry is queued", async () => {
+    const ticker = await insertTicker("retry-meta", "META", "Meta Platforms");
+    const repository = new RunRepository(env.DB);
+    const run = await repository.createRun({
+      tradingDate: "2026-07-01",
+      origin: "backfill",
+      backfillJobId: null,
+      tickers: [ticker],
+      now,
+    });
+    const [screeningId] = run.screeningIds;
+    if (!screeningId) throw new Error("screening_missing");
+    await repository.savePrice(screeningId, {
+      previousDate: "2026-06-30",
+      previousPrice: 563.29,
+      currentPrice: 612.91,
+      changeAmount: 49.62,
+      changePct: 8.81,
+      priceBasis: "adjusted",
+      qualified: true,
+    });
+    await repository.saveSources(screeningId, [
+      {
+        title: "Existing source",
+        publisher: "Reuters",
+        publishedAt: now,
+        url: "https://news/existing",
+      },
+    ]);
+    await repository.markFailed(screeningId, "screening_failed", "old error");
+    const queue = {
+      send: vi.fn(async () => undefined),
+    } as unknown as Queue<ScreeningJobMessage>;
+
+    expect(await repository.retryAnalysis(screeningId, queue, now)).toBe(
+      "queued",
+    );
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM analyses WHERE screening_id = ?1",
+      )
+        .bind(screeningId)
+        .first(),
+    ).toEqual({ status: "unavailable" });
+    expect(
+      await env.DB.prepare("SELECT title FROM sources WHERE screening_id = ?1")
+        .bind(screeningId)
+        .first(),
+    ).toEqual({ title: "Existing source" });
+    expect(
+      await env.DB.prepare("SELECT status FROM screenings WHERE id = ?1")
+        .bind(screeningId)
+        .first(),
+    ).toEqual({ status: "queued" });
   });
 
   it("accounts conservatively when Queue dispatch fails after leasing work", async () => {

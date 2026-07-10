@@ -24,6 +24,7 @@ const repository = () => ({
   savePrice: vi.fn(),
   saveSources: vi.fn(),
   saveAnalysis: vi.fn(),
+  saveScreeningResult: vi.fn(),
   completeWithoutAnalysis: vi.fn(),
   markNoTradingData: vi.fn(),
   markFailed: vi.fn(),
@@ -84,12 +85,14 @@ describe("ScreeningService", () => {
         publishedBefore: "2026-07-09T22:00:00.000Z",
       }),
     );
-    expect(repo.saveSources).toHaveBeenCalledWith("screen-1", sources);
-    expect(repo.saveAnalysis).toHaveBeenCalledWith(
+    expect(repo.saveScreeningResult).toHaveBeenCalledWith(
       "screen-1",
+      sources,
       result,
       "2026-07-09T22:10:00.000Z",
     );
+    expect(repo.saveSources).not.toHaveBeenCalled();
+    expect(repo.saveAnalysis).not.toHaveBeenCalled();
   });
 
   it("records no trading data without calling news", async () => {
@@ -169,6 +172,49 @@ describe("ScreeningService", () => {
     );
     expect(market.getInstrument).not.toHaveBeenCalled();
     expect(repo.savePrice).not.toHaveBeenCalled();
-    expect(repo.saveAnalysis).toHaveBeenCalledOnce();
+    expect(repo.saveScreeningResult).toHaveBeenCalledOnce();
+  });
+
+  it("keeps persisted sources untouched when explanation generation fails", async () => {
+    const repo = {
+      ...repository(),
+      claimScreening: vi.fn(async () => ({
+        ...work,
+        previousDate: "2026-07-08",
+        previousPrice: 100,
+        currentPrice: 107,
+        changeAmount: 7,
+        changePct: 7,
+        priceBasis: "adjusted" as const,
+        qualified: true,
+      })),
+    };
+    const news = {
+      search: vi.fn(async () => [
+        {
+          title: "New source",
+          publisher: "Reuters",
+          publishedAt: "2026-07-09T18:00:00.000Z",
+          url: "https://news/new",
+        },
+      ]),
+    };
+    const explanation = {
+      explain: vi.fn(async () => {
+        throw new Error("ai_unavailable");
+      }),
+    };
+
+    await expect(
+      new ScreeningService(
+        repo,
+        { getInstrument: vi.fn() },
+        news,
+        explanation,
+      ).process("screen-1", "2026-07-10T22:10:00.000Z"),
+    ).rejects.toThrow("ai_unavailable");
+
+    expect(repo.saveSources).not.toHaveBeenCalled();
+    expect(repo.saveScreeningResult).not.toHaveBeenCalled();
   });
 });

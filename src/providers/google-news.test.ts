@@ -34,4 +34,21 @@ describe("GoogleNewsProvider", () => {
       }),
     ).rejects.toThrow("news_schema");
   });
+
+  it("does not rebind the fetcher this value", async () => {
+    const xml = await readFile("tests/fixtures/google-news/shop.xml", "utf8");
+    const fetcher = vi.fn(function (this: unknown) {
+      if (this !== undefined) throw new TypeError("illegal invocation");
+      return Promise.resolve(new Response(xml, { status: 200 }));
+    });
+
+    const items = await new GoogleNewsProvider(fetcher).search({
+      symbol: "SHOP.TO",
+      companyName: "Shopify Inc.",
+      publishedAfter: "2026-07-08T20:00:00.000Z",
+      publishedBefore: "2026-07-09T22:00:00.000Z",
+    });
+
+    expect(items).toHaveLength(2);
+  });
 });
