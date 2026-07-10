@@ -709,7 +709,8 @@ export class RunRepository {
         `SELECT id, trading_date AS tradingDate, status,
          tickers_total AS tickersTotal, tickers_processed AS tickersProcessed,
          tickers_qualified AS tickersQualified, tickers_failed AS tickersFailed
-         FROM report_runs WHERE published = 0 AND status IN ('pending','running')
+         FROM report_runs WHERE origin = 'scheduled' AND published = 0
+         AND status IN ('pending','running')
          ORDER BY created_at DESC LIMIT 1`,
       )
       .first<ReportSummaryDto>();

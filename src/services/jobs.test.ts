@@ -71,6 +71,42 @@ describe("backfill jobs", () => {
     ).rejects.toMatchObject({ code: "backfill_dates" });
   });
 
+  it("rejects today's date because the scheduled run owns the current session", async () => {
+    const service = new JobsService(
+      repository(),
+      { listActive: vi.fn(async () => []) },
+      {} as Queue<ScreeningJobMessage>,
+    );
+    await expect(
+      service.createBackfill(
+        {
+          startDate: "2026-07-09",
+          endDate: "2026-07-09",
+          reprocessExisting: false,
+        },
+        "2026-07-09T22:00:00.000Z",
+      ),
+    ).rejects.toMatchObject({ code: "backfill_dates" });
+  });
+
+  it("keeps using the Eastern market date after UTC midnight", async () => {
+    const service = new JobsService(
+      repository(),
+      { listActive: vi.fn(async () => []) },
+      {} as Queue<ScreeningJobMessage>,
+    );
+    await expect(
+      service.createBackfill(
+        {
+          startDate: "2026-07-09",
+          endDate: "2026-07-09",
+          reprocessExisting: false,
+        },
+        "2026-07-10T00:30:00.000Z",
+      ),
+    ).rejects.toMatchObject({ code: "backfill_dates" });
+  });
+
   it("skips published dates and snapshots the same active ticker set", async () => {
     const runs = repository();
     runs.hasPublishedDate.mockImplementation(

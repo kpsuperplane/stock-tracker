@@ -1,6 +1,7 @@
 import type { CreateRunInput, RunRepository } from "../db/runs";
 import type { TickerRecord, TickerRepository } from "../db/tickers";
 import type { ScreeningJobMessage } from "../shared/contracts";
+import { easternMarketDate } from "../shared/dates";
 import { ApiError } from "../worker/errors";
 
 const dayMs = 86_400_000;
@@ -80,17 +81,17 @@ export class JobsService {
   ): Promise<string> {
     const start = Date.parse(`${input.startDate}T00:00:00Z`);
     const end = Date.parse(`${input.endDate}T00:00:00Z`);
-    const today = Date.parse(`${now.slice(0, 10)}T00:00:00Z`);
+    const today = Date.parse(`${easternMarketDate(now)}T00:00:00Z`);
     if (
       !Number.isFinite(start) ||
       !Number.isFinite(end) ||
       start > end ||
-      end > today
+      end >= today
     ) {
       throw new ApiError(
         422,
         "backfill_dates",
-        "Choose a valid past date range.",
+        "Choose a valid date range ending before today.",
       );
     }
     if ((end - start) / dayMs + 1 > 30) {

@@ -32,8 +32,8 @@ describe("backfill routes", () => {
         method: "POST",
         headers,
         body: JSON.stringify({
-          startDate: "2026-07-01",
-          endDate: "2026-07-09",
+          startDate: "2026-06-30",
+          endDate: "2026-07-08",
           reprocessExisting: false,
         }),
       }),

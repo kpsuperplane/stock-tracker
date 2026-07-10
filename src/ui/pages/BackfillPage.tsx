@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { easternMarketDate, previousCalendarDate } from "../../shared/dates";
 import { api, type BackfillJob } from "../api";
 
 const inclusiveDays = (start: string, end: string) =>
@@ -16,7 +17,8 @@ export const BackfillPage = () => {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = easternMarketDate(new Date());
+  const latestDate = previousCalendarDate(today);
   const jobStatus = job?.status;
 
   useEffect(() => {
@@ -46,7 +48,13 @@ export const BackfillPage = () => {
     event.preventDefault();
     setError(null);
     const days = inclusiveDays(startDate, endDate);
-    if (!startDate || !endDate || endDate > today || days < 1 || days > 30) {
+    if (
+      !startDate ||
+      !endDate ||
+      endDate > latestDate ||
+      days < 1 ||
+      days > 30
+    ) {
       setError("Choose a past inclusive range of at most 30 calendar days.");
       return;
     }
@@ -84,7 +92,7 @@ export const BackfillPage = () => {
               id="start-date"
               aria-label="Start date"
               type="date"
-              max={today}
+              max={latestDate}
               value={startDate}
               onChange={(event) => setStartDate(event.target.value)}
               required
@@ -96,14 +104,16 @@ export const BackfillPage = () => {
               id="end-date"
               aria-label="End date"
               type="date"
-              max={today}
+              max={latestDate}
               value={endDate}
               onChange={(event) => setEndDate(event.target.value)}
               required
             />
           </label>
         </div>
-        <p className="form-help">Inclusive range · maximum 30 calendar days</p>
+        <p className="form-help">
+          Past dates only · inclusive range · maximum 30 calendar days
+        </p>
         <label className="check-row">
           <input
             type="checkbox"

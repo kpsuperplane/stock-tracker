@@ -6,4 +6,5 @@ coverage/
 test-results/
 playwright-report/
 docs/
-.superpowers
+.superpowers/
+worker-startup.cpuprofile

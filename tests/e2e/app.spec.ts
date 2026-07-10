@@ -116,12 +116,12 @@ test.beforeEach(async ({ page }) => {
           ticker_jobs_failed: 1,
           runs: [
             {
-              tradingDate: "2026-07-08",
+              tradingDate: "2026-07-07",
               status: "complete",
               tickersFailed: 0,
             },
             {
-              tradingDate: "2026-07-09",
+              tradingDate: "2026-07-08",
               status: "complete_with_errors",
               tickersFailed: 1,
             },
@@ -182,14 +182,14 @@ test("starts a backfill and shows date and failure progress", async ({
   page,
 }) => {
   await page.goto("/#/backfill");
-  await page.getByLabel("Start date").fill("2026-07-08");
-  await page.getByLabel("End date").fill("2026-07-09");
+  await page.getByLabel("Start date").fill("2026-07-07");
+  await page.getByLabel("End date").fill("2026-07-08");
   await page.getByRole("button", { name: "Start backfill" }).click();
   await expect(
     page.getByRole("heading", { name: "complete with errors" }),
   ).toBeVisible();
   await expect(page.getByText("4/4 ticker jobs · 1 failed")).toBeVisible();
-  await expect(page.getByText("2026-07-09")).toBeVisible();
+  await expect(page.getByText("2026-07-08")).toBeVisible();
 });
 
 test("opens a historical report", async ({ page }) => {

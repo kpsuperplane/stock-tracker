@@ -26,6 +26,25 @@ const insertTicker = async (
 };
 
 describe("RunRepository", () => {
+  it("returns the active scheduled run instead of a newer backfill run", async () => {
+    const repository = new RunRepository(env.DB);
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO report_runs (id, trading_date, generation, origin, published, status, created_at) VALUES ('scheduled-current', '2026-07-09', 1, 'scheduled', 0, 'running', '2026-07-09T22:00:00.000Z')",
+      ),
+      env.DB.prepare(
+        "INSERT INTO report_runs (id, trading_date, generation, origin, published, status, created_at) VALUES ('backfill-newer', '2026-07-08', 1, 'backfill', 0, 'running', '2026-07-09T22:01:00.000Z')",
+      ),
+    ]);
+
+    expect(await repository.currentRun()).toEqual(
+      expect.objectContaining({
+        id: "scheduled-current",
+        tradingDate: "2026-07-09",
+      }),
+    );
+  });
+
   it("creates one screening per ticker and claims it once", async () => {
     const ticker = await insertTicker("aapl", "AAPL", "Apple Inc.");
     const repository = new RunRepository(env.DB);
