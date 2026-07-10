@@ -243,6 +243,16 @@ h3 {
   border: 1px solid var(--line);
 }
 
+.report-table-state {
+  opacity: 1;
+  transition: opacity 120ms ease;
+}
+
+.report-table-state.is-loading {
+  opacity: 0.28;
+  pointer-events: none;
+}
+
 .portfolio-table {
   width: 100%;
   border-collapse: collapse;

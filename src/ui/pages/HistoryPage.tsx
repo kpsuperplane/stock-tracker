@@ -93,7 +93,7 @@ export const HistoryPage = () => {
           {error}
         </p>
       )}
-      {loading && (
+      {loading && !report && (
         <section className="state-panel state-panel--loading" role="status">
           <h2>正在加载历史报告</h2>
           <div className="skeleton" aria-hidden="true">
@@ -114,7 +114,12 @@ export const HistoryPage = () => {
         </section>
       )}
       {report && report.movers.length > 0 && (
-        <MoverTable label="每日行情" movers={report.movers} />
+        <div
+          className={`report-table-state${loading ? " is-loading" : ""}`}
+          aria-busy={loading}
+        >
+          <MoverTable label="每日行情" movers={report.movers} />
+        </div>
       )}
     </>
   );
