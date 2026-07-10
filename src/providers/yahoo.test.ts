@@ -50,4 +50,20 @@ describe("YahooMarketDataProvider", () => {
     expect(series.metadata.symbol).toBe("AAPL");
     expect(series.corporateActionDates.size).toBe(0);
   });
+
+  it("does not rebind the fetcher this value", async () => {
+    const body = await readFile("tests/fixtures/yahoo/aapl.json", "utf8");
+    const fetcher = vi.fn(function (this: unknown) {
+      if (this !== undefined) throw new TypeError("illegal invocation");
+      return Promise.resolve(new Response(body, { status: 200 }));
+    });
+
+    const series = await new YahooMarketDataProvider(fetcher).getInstrument(
+      "AAPL",
+      "2026-07-08",
+      "2026-07-10",
+    );
+
+    expect(series.metadata.symbol).toBe("AAPL");
+  });
 });

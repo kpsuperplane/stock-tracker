@@ -46,7 +46,8 @@ export class YahooMarketDataProvider implements MarketDataProvider {
     url.searchParams.set("period2", String(epoch(endDate) + 86_400));
     url.searchParams.set("interval", "1d");
     url.searchParams.set("events", "div,splits");
-    const response = await this.fetcher(url, {
+    const fetcher = this.fetcher;
+    const response = await fetcher(url, {
       headers: { "User-Agent": "stock-movement-explainer/1.0" },
       signal: AbortSignal.timeout(10_000),
     });
