@@ -12,9 +12,7 @@ const resultSchema = z.object({
   }),
   timestamp: z.array(z.number()),
   indicators: z.object({
-    quote: z
-      .array(z.object({ close: z.array(z.number().nullable()) }))
-      .min(1),
+    quote: z.array(z.object({ close: z.array(z.number().nullable()) })).min(1),
     adjclose: z
       .array(z.object({ adjclose: z.array(z.number().nullable()) }))
       .optional(),

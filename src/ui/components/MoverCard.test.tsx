@@ -38,7 +38,9 @@ describe("MoverCard", () => {
     render(<MoverCard mover={mover} />);
     expect(screen.getByText("↑ +7.40%")).toBeTruthy();
     expect(screen.queryByText(/Shopify shares jump/)).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Show 1 source" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show 1 source" }),
+    );
     expect(
       screen
         .getByRole("link", { name: /Shopify shares jump/ })
@@ -70,17 +72,21 @@ describe("MoverCard", () => {
       />,
     );
     expect(screen.getByText("Explanation unavailable")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry explanation" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Retry explanation" }),
+    ).toBeTruthy();
   });
 
   it("invokes retry for unavailable analysis", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({ queued: true }), { status: 202 }));
-    render(
-      <MoverCard mover={{ ...mover, analysisStatus: "unavailable" }} />,
+      .mockResolvedValue(
+        new Response(JSON.stringify({ queued: true }), { status: 202 }),
+      );
+    render(<MoverCard mover={{ ...mover, analysisStatus: "unavailable" }} />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Retry explanation" }),
     );
-    await userEvent.click(screen.getByRole("button", { name: "Retry explanation" }));
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/screenings/shop/retry",
       expect.objectContaining({ method: "POST" }),

@@ -44,18 +44,16 @@ export const handleQueue = async (
           : text.includes("news_")
             ? "google-news"
             : "workers-ai";
-        const row = await env.DB
-          .prepare(
-            "SELECT attempt_count AS attemptCount FROM screenings WHERE id = ?1",
-          )
+        const row = await env.DB.prepare(
+          "SELECT attempt_count AS attemptCount FROM screenings WHERE id = ?1",
+        )
           .bind(message.body.screeningId)
           .first<{ attemptCount: number }>();
         if (retryable(error) && (row?.attemptCount ?? 0) < 3) {
-          await env.DB
-            .prepare(
-              `UPDATE screenings SET status = 'queued', processing_started_at = NULL
+          await env.DB.prepare(
+            `UPDATE screenings SET status = 'queued', processing_started_at = NULL
                WHERE id = ?1 AND status = 'processing'`,
-            )
+          )
             .bind(message.body.screeningId)
             .run();
           logEvent("screening_retry", {

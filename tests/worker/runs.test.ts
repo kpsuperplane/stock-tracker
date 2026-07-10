@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { RunRepository } from "../../src/db/runs";
 import { TickerRepository } from "../../src/db/tickers";
+import type { ScreeningJobMessage } from "../../src/shared/contracts";
 
 const now = "2026-07-09T22:00:00.000Z";
 
@@ -35,31 +36,27 @@ describe("RunRepository", () => {
       tickers: [ticker],
       now,
     });
-    const screening = await repository.claimScreening(run.screeningIds[0]!, now);
+    const [screeningId] = run.screeningIds;
+    if (!screeningId) throw new Error("screening_missing");
+    const screening = await repository.claimScreening(screeningId, now);
     expect(screening?.symbol).toBe("AAPL");
-    expect(await repository.claimScreening(run.screeningIds[0]!, now)).toBeNull();
+    expect(await repository.claimScreening(screeningId, now)).toBeNull();
   });
 
   it("keeps an old generation published until replacement completes", async () => {
     const repository = new RunRepository(env.DB);
     await env.DB.batch([
-      env.DB
-        .prepare(
-          "INSERT INTO report_runs (id, trading_date, generation, origin, published, status, created_at) VALUES ('old', '2026-07-08', 1, 'backfill', 1, 'complete', ?1)",
-        )
-        .bind(now),
-      env.DB
-        .prepare(
-          "INSERT INTO report_runs (id, trading_date, generation, origin, published, status, created_at) VALUES ('new', '2026-07-08', 2, 'backfill', 0, 'complete', ?1)",
-        )
-        .bind(now),
+      env.DB.prepare(
+        "INSERT INTO report_runs (id, trading_date, generation, origin, published, status, created_at) VALUES ('old', '2026-07-08', 1, 'backfill', 1, 'complete', ?1)",
+      ).bind(now),
+      env.DB.prepare(
+        "INSERT INTO report_runs (id, trading_date, generation, origin, published, status, created_at) VALUES ('new', '2026-07-08', 2, 'backfill', 0, 'complete', ?1)",
+      ).bind(now),
     ]);
     await repository.publishGeneration("new", now);
-    const rows = await env.DB
-      .prepare(
-        "SELECT id, published FROM report_runs WHERE trading_date = '2026-07-08' ORDER BY generation",
-      )
-      .all<{ id: string; published: number }>();
+    const rows = await env.DB.prepare(
+      "SELECT id, published FROM report_runs WHERE trading_date = '2026-07-08' ORDER BY generation",
+    ).all<{ id: string; published: number }>();
     expect(rows.results).toEqual([
       { id: "old", published: 0 },
       { id: "new", published: 1 },
@@ -76,14 +73,12 @@ describe("RunRepository", () => {
       tickers: [ticker],
       now,
     });
-    await repository.markNoTradingData(
-      run.screeningIds[0]!,
-      "no_trading_data",
-    );
+    const [screeningId] = run.screeningIds;
+    if (!screeningId) throw new Error("screening_missing");
+    await repository.markNoTradingData(screeningId, "no_trading_data");
     expect(await repository.finalizeRun(run.runId, now)).toBe("no_market_data");
     expect(
-      await env.DB
-        .prepare("SELECT published FROM report_runs WHERE id = ?1")
+      await env.DB.prepare("SELECT published FROM report_runs WHERE id = ?1")
         .bind(run.runId)
         .first(),
     ).toEqual({ published: 0 });
@@ -99,18 +94,16 @@ describe("RunRepository", () => {
       tickers: [ticker],
       now,
     });
-    await env.DB
-      .prepare(
-        "UPDATE screenings SET status = 'queued', queued_at = '2026-07-09T20:00:00.000Z' WHERE id = ?1",
-      )
+    await env.DB.prepare(
+      "UPDATE screenings SET status = 'queued', queued_at = '2026-07-09T20:00:00.000Z' WHERE id = ?1",
+    )
       .bind(run.screeningIds[0])
       .run();
     expect(
       await repository.reconcileStaleLeases("2026-07-09T21:40:00.000Z"),
     ).toBe(1);
     expect(
-      await env.DB
-        .prepare("SELECT status FROM screenings WHERE id = ?1")
+      await env.DB.prepare("SELECT status FROM screenings WHERE id = ?1")
         .bind(run.screeningIds[0])
         .first(),
     ).toEqual({ status: "pending" });
@@ -135,11 +128,9 @@ describe("RunRepository", () => {
     });
     expect(duplicate.runId).toBe(first.runId);
     expect(
-      await env.DB
-        .prepare(
-          "SELECT COUNT(*) AS count FROM report_runs WHERE trading_date = '2026-07-01'",
-        )
-        .first(),
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM report_runs WHERE trading_date = '2026-07-01'",
+      ).first(),
     ).toEqual({ count: 1 });
   });
 
@@ -153,7 +144,8 @@ describe("RunRepository", () => {
       tickers: [ticker],
       now,
     });
-    const screeningId = run.screeningIds[0]!;
+    const [screeningId] = run.screeningIds;
+    if (!screeningId) throw new Error("screening_missing");
     await repository.savePrice(screeningId, {
       previousDate: "2026-06-29",
       previousPrice: 100,
@@ -189,19 +181,17 @@ describe("RunRepository", () => {
       now,
     );
     expect(
-      await env.DB
-        .prepare(
-          "SELECT status, qualified, change_pct FROM screenings WHERE id = ?1",
-        )
+      await env.DB.prepare(
+        "SELECT status, qualified, change_pct FROM screenings WHERE id = ?1",
+      )
         .bind(screeningId)
         .first(),
     ).toEqual({ status: "complete", qualified: 1, change_pct: 7 });
     expect(
       (
-        await env.DB
-          .prepare(
-            "SELECT source_index, cited FROM sources WHERE screening_id = ?1 ORDER BY source_index",
-          )
+        await env.DB.prepare(
+          "SELECT source_index, cited FROM sources WHERE screening_id = ?1 ORDER BY source_index",
+        )
           .bind(screeningId)
           .all()
       ).results,
@@ -221,17 +211,90 @@ describe("RunRepository", () => {
       tickers: [ticker],
       now,
     });
-    const queue = { sendBatch: vi.fn(async () => undefined) } as unknown as Queue<{
-      screeningId: string;
-    }>;
+    const queue = {
+      sendBatch: vi.fn(async () => undefined),
+    } as unknown as Queue<ScreeningJobMessage>;
     expect(await repository.dispatchPending(queue, 10, now)).toBe(1);
     expect(queue.sendBatch).toHaveBeenCalledOnce();
+    expect(queue.sendBatch).toHaveBeenCalledWith([
+      {
+        body: {
+          screeningId: run.screeningIds[0],
+          reportRunId: run.runId,
+          tickerId: "tsla",
+        },
+      },
+    ]);
     expect(await repository.dispatchPending(queue, 10, now)).toBe(0);
+    expect(await repository.countDispatchedSince("2026-07-09T00:00:00Z")).toBe(
+      1,
+    );
     expect(
-      await env.DB
-        .prepare("SELECT status, queued_at FROM screenings WHERE id = ?1")
+      await env.DB.prepare(
+        "SELECT status, queued_at FROM screenings WHERE id = ?1",
+      )
         .bind(run.screeningIds[0])
         .first(),
     ).toEqual({ status: "queued", queued_at: now });
+  });
+
+  it("replaces stale sources when an analysis retry finds none", async () => {
+    const ticker = await insertTicker("amd", "AMD", "Advanced Micro Devices");
+    const repository = new RunRepository(env.DB);
+    const run = await repository.createRun({
+      tradingDate: "2026-06-26",
+      origin: "backfill",
+      backfillJobId: null,
+      tickers: [ticker],
+      now,
+    });
+    const [screeningId] = run.screeningIds;
+    if (!screeningId) throw new Error("screening_missing");
+    await repository.saveSources(screeningId, [
+      {
+        title: "Old source",
+        publisher: "Reuters",
+        publishedAt: now,
+        url: "https://news/old",
+      },
+    ]);
+    await repository.saveSources(screeningId, []);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM sources WHERE screening_id = ?1",
+      )
+        .bind(screeningId)
+        .first(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("accounts conservatively when Queue dispatch fails after leasing work", async () => {
+    const ticker = await insertTicker("intc", "INTC", "Intel Corporation");
+    const repository = new RunRepository(env.DB);
+    const run = await repository.createRun({
+      tradingDate: "2026-06-25",
+      origin: "backfill",
+      backfillJobId: null,
+      tickers: [ticker],
+      now,
+    });
+    const [screeningId] = run.screeningIds;
+    if (!screeningId) throw new Error("screening_missing");
+    const queue = {
+      sendBatch: vi.fn(async () => {
+        throw new Error("queue quota exceeded");
+      }),
+    } as unknown as Queue<ScreeningJobMessage>;
+    await expect(repository.dispatchPending(queue, 10, now)).rejects.toThrow(
+      "queue quota exceeded",
+    );
+    expect(await repository.countDispatchedSince("2026-07-09T00:00:00Z")).toBe(
+      1,
+    );
+    expect(
+      await env.DB.prepare("SELECT status FROM screenings WHERE id = ?1")
+        .bind(screeningId)
+        .first(),
+    ).toEqual({ status: "queued" });
   });
 });

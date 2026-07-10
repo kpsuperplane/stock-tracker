@@ -1,1 +1,21 @@
-{"chart":{"result":[{"meta":{"symbol":"AAPL","longName":"Apple Inc.","exchangeName":"NMS","currency":"USD","instrumentType":"EQUITY"},"timestamp":[1783517400,1783603800],"indicators":{"quote":[{"close":[313.39,316.22]}],"adjclose":[{"adjclose":[313.39,316.22]}]},"events":{}}]}}
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "symbol": "AAPL",
+          "longName": "Apple Inc.",
+          "exchangeName": "NMS",
+          "currency": "USD",
+          "instrumentType": "EQUITY"
+        },
+        "timestamp": [1783517400, 1783603800],
+        "indicators": {
+          "quote": [{ "close": [313.39, 316.22] }],
+          "adjclose": [{ "adjclose": [313.39, 316.22] }]
+        },
+        "events": {}
+      }
+    ]
+  }
+}

@@ -34,10 +34,7 @@ export const selectComparison = (
   const current = bars[currentIndex];
   if (!previous || !current) return { ok: false, code: "no_previous_bar" };
 
-  if (
-    previous.adjustedClose !== null &&
-    current.adjustedClose !== null
-  ) {
+  if (previous.adjustedClose !== null && current.adjustedClose !== null) {
     if (
       !validPrice(previous.adjustedClose) ||
       !validPrice(current.adjustedClose)

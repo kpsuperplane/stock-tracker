@@ -22,8 +22,8 @@ describe("GoogleNewsProvider", () => {
   });
 
   it("fails visibly when the feed is malformed", async () => {
-    const provider = new GoogleNewsProvider(async () =>
-      new Response("<rss><broken>", { status: 200 }),
+    const provider = new GoogleNewsProvider(
+      async () => new Response("<rss><broken>", { status: 200 }),
     );
     await expect(
       provider.search({

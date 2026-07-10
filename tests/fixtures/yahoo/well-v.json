@@ -1,1 +1,21 @@
-{"chart":{"result":[{"meta":{"symbol":"WELL.V","longName":"WELL Health Technologies Corp.","exchangeName":"VAN","currency":"CAD","instrumentType":"EQUITY"},"timestamp":[1783517400,1783603800],"indicators":{"quote":[{"close":[4.5,4.8]}],"adjclose":[{"adjclose":[4.5,4.8]}]},"events":{}}]}}
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "symbol": "WELL.V",
+          "longName": "WELL Health Technologies Corp.",
+          "exchangeName": "VAN",
+          "currency": "CAD",
+          "instrumentType": "EQUITY"
+        },
+        "timestamp": [1783517400, 1783603800],
+        "indicators": {
+          "quote": [{ "close": [4.5, 4.8] }],
+          "adjclose": [{ "adjclose": [4.5, 4.8] }]
+        },
+        "events": {}
+      }
+    ]
+  }
+}

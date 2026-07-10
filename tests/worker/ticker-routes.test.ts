@@ -9,9 +9,9 @@ const headers = {
 
 describe("ticker routes", () => {
   it("blocks unauthenticated access", async () => {
-    expect((await exports.default.fetch("http://local/api/tickers")).status).toBe(
-      401,
-    );
+    expect(
+      (await exports.default.fetch("http://local/api/tickers")).status,
+    ).toBe(401);
   });
 
   it("validates, inserts, disables, and lists SHOP.TO", async () => {
@@ -26,9 +26,7 @@ describe("ticker routes", () => {
         currency: "CAD",
         instrumentType: "EQUITY",
       },
-      bars: [
-        { date: "2026-07-09", close: 174.45, adjustedClose: 174.45 },
-      ],
+      bars: [{ date: "2026-07-09", close: 174.45, adjustedClose: 174.45 }],
       corporateActionDates: new Set<string>(),
     });
     const created = await exports.default.fetch(
@@ -52,11 +50,12 @@ describe("ticker routes", () => {
       new Request("http://local/api/tickers", { headers }),
     );
     expect(
-      (await listed.json<{ tickers: Array<{ symbol: string; active: boolean }> }>())
-        .tickers,
-    ).toEqual([
-      expect.objectContaining({ symbol: "SHOP.TO", active: false }),
-    ]);
+      (
+        await listed.json<{
+          tickers: Array<{ symbol: string; active: boolean }>;
+        }>()
+      ).tickers,
+    ).toEqual([expect.objectContaining({ symbol: "SHOP.TO", active: false })]);
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS count FROM tickers").first<{
         count: number;

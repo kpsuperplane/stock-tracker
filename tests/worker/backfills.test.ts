@@ -41,14 +41,14 @@ describe("backfill routes", () => {
     expect(response.status).toBe(202);
     const { id } = await response.json<{ id: string }>();
     expect(
-      await env.DB.prepare("SELECT COUNT(*) AS count FROM backfill_jobs").first(),
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM backfill_jobs",
+      ).first(),
     ).toEqual({ count: 1 });
     expect(
-      await env.DB
-        .prepare(
-          "SELECT COUNT(*) AS count FROM report_runs WHERE origin = 'backfill'",
-        )
-        .first(),
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM report_runs WHERE origin = 'backfill'",
+      ).first(),
     ).toEqual({ count: 7 });
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS count FROM screenings").first(),
@@ -57,13 +57,28 @@ describe("backfill routes", () => {
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS count FROM screenings").first(),
     ).toEqual({ count: 14 });
+    await env.DB.prepare(
+      `UPDATE screenings SET status = 'failed', qualified = 1,
+       current_price = 174.45, error_code = 'news_schema',
+       error_message = 'News feed unavailable'
+       WHERE id = (SELECT id FROM screenings ORDER BY target_date, symbol LIMIT 1)`,
+    ).run();
     const status = await exports.default.fetch(
       new Request(`http://local/api/backfills/${id}`, { headers }),
     );
     expect(status.status).toBe(200);
-    expect((await status.json<{ job: { runs: unknown[] } }>()).job.runs).toHaveLength(
-      7,
-    );
+    const job = (
+      await status.json<{
+        job: {
+          runs: unknown[];
+          errors: Array<{ errorCode: string; retryable: boolean }>;
+        };
+      }>()
+    ).job;
+    expect(job.runs).toHaveLength(7);
+    expect(job.errors).toEqual([
+      expect.objectContaining({ errorCode: "news_schema", retryable: true }),
+    ]);
   });
 
   it("rejects 31 inclusive calendar days", async () => {
@@ -79,8 +94,8 @@ describe("backfill routes", () => {
       }),
     );
     expect(response.status).toBe(422);
-    expect((await response.json<{ error: { code: string } }>()).error.code).toBe(
-      "backfill_range",
-    );
+    expect(
+      (await response.json<{ error: { code: string } }>()).error.code,
+    ).toBe("backfill_range");
   });
 });

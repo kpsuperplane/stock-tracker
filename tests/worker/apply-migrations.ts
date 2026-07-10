@@ -1,7 +1,4 @@
-import {
-  applyD1Migrations,
-  type D1Migration,
-} from "cloudflare:test";
+import { applyD1Migrations, type D1Migration } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach } from "vitest";
 
@@ -18,6 +15,7 @@ declare global {
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM dispatch_events"),
     env.DB.prepare("DELETE FROM sources"),
     env.DB.prepare("DELETE FROM analyses"),
     env.DB.prepare("DELETE FROM screenings"),

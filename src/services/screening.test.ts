@@ -10,6 +10,13 @@ const work = {
   currency: "CAD",
   targetDate: "2026-07-09",
   attemptCount: 1,
+  previousDate: null,
+  previousPrice: null,
+  currentPrice: null,
+  changeAmount: null,
+  changePct: null,
+  priceBasis: null,
+  qualified: null,
 };
 
 const repository = () => ({
@@ -87,7 +94,9 @@ describe("ScreeningService", () => {
 
   it("records no trading data without calling news", async () => {
     const repo = repository();
-    const market = { getInstrument: vi.fn(async () => ({ ...series(), bars: [] })) };
+    const market = {
+      getInstrument: vi.fn(async () => ({ ...series(), bars: [] })),
+    };
     const news = { search: vi.fn() };
     const explanation = { explain: vi.fn() };
     await new ScreeningService(repo, market, news, explanation).process(
@@ -127,5 +136,39 @@ describe("ScreeningService", () => {
     ).process("screen-1", "2026-07-09T22:10:00.000Z");
     expect(result).toBeNull();
     expect(market.getInstrument).not.toHaveBeenCalled();
+  });
+
+  it("retries only news and analysis when a qualifying price result is stored", async () => {
+    const repo = {
+      ...repository(),
+      claimScreening: vi.fn(async () => ({
+        ...work,
+        previousDate: "2026-07-08",
+        previousPrice: 100,
+        currentPrice: 107,
+        changeAmount: 7,
+        changePct: 7,
+        priceBasis: "adjusted" as const,
+        qualified: true,
+      })),
+    };
+    const market = { getInstrument: vi.fn() };
+    const news = { search: vi.fn(async () => []) };
+    const explanation = {
+      explain: vi.fn(async () => ({
+        explanationZhCn: "未找到相关新闻，因此无法确定明确催化因素。",
+        confidence: "low" as const,
+        clearCatalyst: false,
+        sourceIndexes: [],
+        model: "deterministic-no-sources",
+      })),
+    };
+    await new ScreeningService(repo, market, news, explanation).process(
+      "screen-1",
+      "2026-07-10T22:10:00.000Z",
+    );
+    expect(market.getInstrument).not.toHaveBeenCalled();
+    expect(repo.savePrice).not.toHaveBeenCalled();
+    expect(repo.saveAnalysis).toHaveBeenCalledOnce();
   });
 });

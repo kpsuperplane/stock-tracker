@@ -63,7 +63,9 @@ describe("admin pages", () => {
     render(<BackfillPage />);
     await userEvent.type(screen.getByLabelText("Start date"), "2026-06-01");
     await userEvent.type(screen.getByLabelText("End date"), "2026-07-01");
-    await userEvent.click(screen.getByRole("button", { name: "Start backfill" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start backfill" }),
+    );
     expect(screen.getByRole("alert").textContent).toContain("30 calendar days");
   });
 });

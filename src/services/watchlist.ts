@@ -1,5 +1,5 @@
 import type { TickerRepository } from "../db/tickers";
-import type { MarketDataProvider } from "../providers/market-data";
+import type { DailySeries, MarketDataProvider } from "../providers/market-data";
 import { ApiError } from "../worker/errors";
 
 type Repository = Pick<
@@ -40,14 +40,11 @@ export class WatchlistService {
       );
     }
 
-    let series;
+    let series: DailySeries;
+    const today = now.slice(0, 10);
+    const validationStart = addDays(today, -10);
     try {
-      const today = now.slice(0, 10);
-      series = await this.market.getInstrument(
-        symbol,
-        addDays(today, -10),
-        today,
-      );
+      series = await this.market.getInstrument(symbol, validationStart, today);
     } catch {
       throw new ApiError(
         422,
@@ -57,6 +54,7 @@ export class WatchlistService {
     }
     const hasRecentBar = series.bars.some(
       (bar) =>
+        bar.date >= validationStart &&
         bar.date <= now.slice(0, 10) &&
         ((bar.adjustedClose !== null && bar.adjustedClose > 0) ||
           (bar.close !== null && bar.close > 0)),

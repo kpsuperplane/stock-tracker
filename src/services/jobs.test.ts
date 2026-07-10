@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ScreeningJobMessage } from "../shared/contracts";
 import { JobsService, weekdaysInRange } from "./jobs";
 
 const repository = () => ({
@@ -10,6 +11,7 @@ const repository = () => ({
   countDispatchedSince: vi.fn(async () => 0),
   dispatchPending: vi.fn(async () => 0),
   finalizeRun: vi.fn(async () => "no_market_data" as const),
+  pauseRunningBackfills: vi.fn(async () => undefined),
 });
 
 describe("backfill jobs", () => {
@@ -27,7 +29,7 @@ describe("backfill jobs", () => {
     const service = new JobsService(
       repository(),
       { listActive: vi.fn(async () => []) },
-      {} as Queue<{ screeningId: string }>,
+      {} as Queue<ScreeningJobMessage>,
     );
     await expect(
       service.createBackfill(
@@ -45,7 +47,7 @@ describe("backfill jobs", () => {
     const service = new JobsService(
       repository(),
       { listActive: vi.fn(async () => []) },
-      {} as Queue<{ screeningId: string }>,
+      {} as Queue<ScreeningJobMessage>,
     );
     await expect(
       service.createBackfill(
@@ -71,7 +73,9 @@ describe("backfill jobs", () => {
 
   it("skips published dates and snapshots the same active ticker set", async () => {
     const runs = repository();
-    runs.hasPublishedDate.mockImplementation(async (date) => date === "2026-07-07");
+    runs.hasPublishedDate.mockImplementation(
+      async (date) => date === "2026-07-07",
+    );
     const tickers = [
       {
         id: "aapl",
@@ -86,7 +90,7 @@ describe("backfill jobs", () => {
     const service = new JobsService(
       runs,
       { listActive: vi.fn(async () => tickers) },
-      {} as Queue<{ screeningId: string }>,
+      {} as Queue<ScreeningJobMessage>,
     );
     await service.createBackfill(
       {
@@ -117,12 +121,26 @@ describe("backfill jobs", () => {
     const service = new JobsService(
       runs,
       { listActive: vi.fn(async () => []) },
-      {} as Queue<{ screeningId: string }>,
+      {} as Queue<ScreeningJobMessage>,
     );
     expect(await service.dispatch("2026-07-09T22:00:00.000Z")).toBe(1);
     expect(runs.dispatchPending).toHaveBeenCalledWith(
       expect.anything(),
       1,
+      "2026-07-09T22:00:00.000Z",
+    );
+  });
+
+  it("pauses active backfills when the queue reports a quota error", async () => {
+    const runs = repository();
+    runs.dispatchPending.mockRejectedValue(new Error("queue quota exceeded"));
+    const service = new JobsService(
+      runs,
+      { listActive: vi.fn(async () => []) },
+      {} as Queue<ScreeningJobMessage>,
+    );
+    expect(await service.dispatch("2026-07-09T22:00:00.000Z")).toBe(0);
+    expect(runs.pauseRunningBackfills).toHaveBeenCalledWith(
       "2026-07-09T22:00:00.000Z",
     );
   });

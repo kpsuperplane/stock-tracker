@@ -1,5 +1,5 @@
-import { createApp } from "./app";
 import type { ScreeningJobMessage } from "../shared/contracts";
+import { createApp } from "./app";
 import type { Env } from "./env";
 import { handleQueue } from "./queue";
 import { handleScheduled } from "./scheduled";

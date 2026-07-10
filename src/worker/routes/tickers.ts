@@ -9,17 +9,38 @@ import { ApiError } from "../errors";
 const bodySchema = z.object({ symbol: z.string().max(20) }).strict();
 export const tickerRoutes = new Hono<{ Bindings: Env }>();
 
+const mapWatchlistLimit = (error: unknown): never => {
+  if (String(error).includes("watchlist_limit")) {
+    throw new ApiError(
+      422,
+      "watchlist_limit",
+      "The watchlist is limited to 100 active symbols.",
+    );
+  }
+  throw error;
+};
+
+const withWatchlistLimit = async <T>(operation: () => Promise<T>) => {
+  try {
+    return await operation();
+  } catch (error) {
+    return mapWatchlistLimit(error);
+  }
+};
+
 tickerRoutes.get("/", async (context) =>
   context.json({ tickers: await new TickerRepository(context.env.DB).list() }),
 );
 
 tickerRoutes.post("/", async (context) => {
   const body = bodySchema.parse(await context.req.json());
-  const ticker = await new WatchlistService(
-    new TickerRepository(context.env.DB),
-    new YahooMarketDataProvider(),
-    () => crypto.randomUUID(),
-  ).add(body.symbol, new Date().toISOString());
+  const ticker = await withWatchlistLimit(() =>
+    new WatchlistService(
+      new TickerRepository(context.env.DB),
+      new YahooMarketDataProvider(),
+      () => crypto.randomUUID(),
+    ).add(body.symbol, new Date().toISOString()),
+  );
   return context.json({ ticker }, 201);
 });
 
@@ -28,10 +49,12 @@ tickerRoutes.patch("/:id", async (context) => {
     .object({ active: z.boolean() })
     .strict()
     .parse(await context.req.json());
-  const changed = await new TickerRepository(context.env.DB).setActive(
-    context.req.param("id"),
-    body.active,
-    new Date().toISOString(),
+  const changed = await withWatchlistLimit(() =>
+    new TickerRepository(context.env.DB).setActive(
+      context.req.param("id"),
+      body.active,
+      new Date().toISOString(),
+    ),
   );
   if (!changed) {
     throw new ApiError(404, "ticker_not_found", "Ticker not found.");

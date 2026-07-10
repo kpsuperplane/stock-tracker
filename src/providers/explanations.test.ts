@@ -103,4 +103,36 @@ describe("WorkersAiExplanationProvider", () => {
       new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
     ).rejects.toThrow("missing_catalyst_source");
   });
+
+  it("requires low confidence when no clear catalyst is found", async () => {
+    const ai = {
+      run: vi.fn(async () => ({
+        response: {
+          explanation_zh_cn: "现有报道相互矛盾。没有找到明确催化因素。",
+          confidence: "medium",
+          clear_catalyst: false,
+          source_indexes: [],
+        },
+      })),
+    } as unknown as Ai;
+    await expect(
+      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
+    ).rejects.toThrow("invalid_no_catalyst_confidence");
+  });
+
+  it("rejects model output outside the requested two-to-four sentences", async () => {
+    const ai = {
+      run: vi.fn(async () => ({
+        response: {
+          explanation_zh_cn: "报道可能解释本次上涨。",
+          confidence: "low",
+          clear_catalyst: false,
+          source_indexes: [],
+        },
+      })),
+    } as unknown as Ai;
+    await expect(
+      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
+    ).rejects.toThrow("invalid_explanation_sentence_count");
+  });
 });

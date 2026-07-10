@@ -37,6 +37,14 @@ export type BackfillJob = {
     status: string;
     tickersFailed: number;
   }>;
+  errors: Array<{
+    screeningId: string;
+    symbol: string;
+    tradingDate: string;
+    errorCode: string | null;
+    errorMessage: string | null;
+    retryable: boolean;
+  }>;
 };
 
 export const api = {

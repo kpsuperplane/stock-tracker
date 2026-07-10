@@ -15,10 +15,12 @@ export const BackfillPage = () => {
   const [job, setJob] = useState<BackfillJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [retrying, setRetrying] = useState<string | null>(null);
   const today = new Date().toISOString().slice(0, 10);
+  const jobStatus = job?.status;
 
   useEffect(() => {
-    if (!jobId || (job && terminal.has(job.status))) return;
+    if (!jobId || (jobStatus && terminal.has(jobStatus))) return;
     let active = true;
     const poll = async () => {
       try {
@@ -26,7 +28,9 @@ export const BackfillPage = () => {
         if (active) setJob(result.job);
       } catch (cause) {
         if (active) {
-          setError(cause instanceof Error ? cause.message : "Could not load progress.");
+          setError(
+            cause instanceof Error ? cause.message : "Could not load progress.",
+          );
         }
       }
     };
@@ -36,19 +40,13 @@ export const BackfillPage = () => {
       active = false;
       window.clearInterval(interval);
     };
-  }, [jobId, job?.status]);
+  }, [jobId, jobStatus]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
     const days = inclusiveDays(startDate, endDate);
-    if (
-      !startDate ||
-      !endDate ||
-      endDate > today ||
-      days < 1 ||
-      days > 30
-    ) {
+    if (!startDate || !endDate || endDate > today || days < 1 || days > 30) {
       setError("Choose a past inclusive range of at most 30 calendar days.");
       return;
     }
@@ -62,7 +60,9 @@ export const BackfillPage = () => {
       setJob(null);
       setJobId(result.id);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not start backfill.");
+      setError(
+        cause instanceof Error ? cause.message : "Could not start backfill.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -147,6 +147,50 @@ export const BackfillPage = () => {
               </li>
             ))}
           </ul>
+          {job.errors.length > 0 && (
+            <div className="job-errors">
+              <h3>Errors</h3>
+              <ul className="run-list">
+                {job.errors.map((jobError) => (
+                  <li key={jobError.screeningId}>
+                    <span>
+                      <strong>{jobError.symbol}</strong> ·{" "}
+                      {jobError.tradingDate}
+                      <small>
+                        {jobError.errorMessage ??
+                          jobError.errorCode ??
+                          "Screening failed"}
+                      </small>
+                    </span>
+                    {jobError.retryable && (
+                      <button
+                        type="button"
+                        disabled={retrying === jobError.screeningId}
+                        onClick={() => {
+                          setRetrying(jobError.screeningId);
+                          void api
+                            .retry(jobError.screeningId)
+                            .then(() => setRetrying(null))
+                            .catch((cause) => {
+                              setRetrying(null);
+                              setError(
+                                cause instanceof Error
+                                  ? cause.message
+                                  : "Could not retry analysis.",
+                              );
+                            });
+                        }}
+                      >
+                        {retrying === jobError.screeningId
+                          ? "Retrying…"
+                          : "Retry analysis"}
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
     </>

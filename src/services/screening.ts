@@ -1,4 +1,4 @@
-import type { RunRepository } from "../db/runs";
+import type { RunRepository, ScreeningWork } from "../db/runs";
 import { calculateMovement, selectComparison } from "../domain/market";
 import type { ExplanationProvider } from "../providers/explanations";
 import type { MarketDataProvider } from "../providers/market-data";
@@ -51,9 +51,45 @@ export class ScreeningService {
     private readonly explanations: ExplanationProvider,
   ) {}
 
+  private async analyze(
+    work: ScreeningWork,
+    previousDate: string,
+    changePct: number,
+    now: string,
+  ) {
+    const sources = await this.news.search({
+      symbol: work.symbol,
+      companyName: work.companyName,
+      publishedAfter: easternCloseUtc(previousDate),
+      publishedBefore: new Date(
+        Date.parse(easternCloseUtc(work.targetDate)) + 2 * 3_600_000,
+      ).toISOString(),
+    });
+    await this.repository.saveSources(work.id, sources);
+    const result = await this.explanations.explain({
+      symbol: work.symbol,
+      companyName: work.companyName,
+      changePct,
+      sources,
+    });
+    await this.repository.saveAnalysis(work.id, result, now);
+  }
+
   async process(screeningId: string, now: string): Promise<string | null> {
     const work = await this.repository.claimScreening(screeningId, now);
     if (!work) return null;
+    if (
+      work.qualified === true &&
+      work.previousDate !== null &&
+      work.previousPrice !== null &&
+      work.currentPrice !== null &&
+      work.changeAmount !== null &&
+      work.changePct !== null &&
+      work.priceBasis !== null
+    ) {
+      await this.analyze(work, work.previousDate, work.changePct, now);
+      return work.reportRunId;
+    }
     const series = await this.market.getInstrument(
       work.symbol,
       addDays(work.targetDate, -10),
@@ -78,22 +114,7 @@ export class ScreeningService {
       await this.repository.completeWithoutAnalysis(work.id);
       return work.reportRunId;
     }
-    const sources = await this.news.search({
-      symbol: work.symbol,
-      companyName: work.companyName,
-      publishedAfter: easternCloseUtc(comparison.previousDate),
-      publishedBefore: new Date(
-        Date.parse(easternCloseUtc(work.targetDate)) + 2 * 3_600_000,
-      ).toISOString(),
-    });
-    await this.repository.saveSources(work.id, sources);
-    const result = await this.explanations.explain({
-      symbol: work.symbol,
-      companyName: work.companyName,
-      changePct: movement.changePct,
-      sources,
-    });
-    await this.repository.saveAnalysis(work.id, result, now);
+    await this.analyze(work, comparison.previousDate, movement.changePct, now);
     return work.reportRunId;
   }
 }

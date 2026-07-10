@@ -42,11 +42,7 @@ describe("WatchlistService", () => {
       restore: vi.fn(),
     };
     const market = { getInstrument: vi.fn() };
-    const service = new WatchlistService(
-      repository,
-      market,
-      crypto.randomUUID,
-    );
+    const service = new WatchlistService(repository, market, crypto.randomUUID);
     await expect(
       service.add("AAPL", "2026-07-09T22:00:00.000Z"),
     ).rejects.toMatchObject({ code: "watchlist_limit" });
@@ -66,6 +62,27 @@ describe("WatchlistService", () => {
     const service = new WatchlistService(repository, market, crypto.randomUUID);
     await expect(
       service.add("SHOP.TO", "2026-07-09T22:00:00.000Z"),
+    ).rejects.toMatchObject({ code: "symbol_not_found" });
+  });
+
+  it("rejects a stale daily bar returned outside the requested validation window", async () => {
+    const repository = {
+      countActive: vi.fn(async () => 0),
+      findBySymbol: vi.fn(async () => null),
+      insert: vi.fn(),
+      restore: vi.fn(),
+    };
+    const market = {
+      getInstrument: vi.fn(async () => ({
+        ...shopSeries,
+        bars: [{ date: "2026-01-02", close: 100, adjustedClose: 100 }],
+      })),
+    };
+    await expect(
+      new WatchlistService(repository, market, () => crypto.randomUUID()).add(
+        "SHOP.TO",
+        "2026-07-09T22:00:00.000Z",
+      ),
     ).rejects.toMatchObject({ code: "symbol_not_found" });
   });
 

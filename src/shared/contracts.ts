@@ -1,5 +1,7 @@
 export interface ScreeningJobMessage {
   screeningId: string;
+  reportRunId: string;
+  tickerId: string;
 }
 
 export type RunStatus =

@@ -4,6 +4,7 @@ import type {
   MoverDto,
   ReportDto,
   ReportSummaryDto,
+  ScreeningJobMessage,
   SourceDto,
 } from "../shared/contracts";
 import type { TickerRecord } from "./tickers";
@@ -17,6 +18,13 @@ export interface ScreeningWork {
   currency: string;
   targetDate: string;
   attemptCount: number;
+  previousDate: string | null;
+  previousPrice: number | null;
+  currentPrice: number | null;
+  changeAmount: number | null;
+  changePct: number | null;
+  priceBasis: "adjusted" | "close" | null;
+  qualified: boolean | null;
 }
 
 export interface CreateRunInput {
@@ -132,15 +140,24 @@ export class RunRepository {
       .bind(now, id)
       .run();
     if (result.meta.changes !== 1) return null;
-    return this.db
+    const row = await this.db
       .prepare(
         `SELECT id, report_run_id AS reportRunId, symbol,
          company_name AS companyName, exchange, currency,
-         target_date AS targetDate, attempt_count AS attemptCount
+         target_date AS targetDate, attempt_count AS attemptCount,
+         previous_bar_date AS previousDate, previous_price AS previousPrice,
+         current_price AS currentPrice, change_amount AS changeAmount,
+         change_pct AS changePct, price_basis AS priceBasis, qualified
          FROM screenings WHERE id = ?1`,
       )
       .bind(id)
-      .first<ScreeningWork>();
+      .first<Omit<ScreeningWork, "qualified"> & { qualified: number | null }>();
+    return row
+      ? {
+          ...row,
+          qualified: row.qualified === null ? null : row.qualified === 1,
+        }
+      : null;
   }
 
   async savePrice(
@@ -175,9 +192,11 @@ export class RunRepository {
   }
 
   async saveSources(screeningId: string, sources: NewsItem[]): Promise<void> {
-    if (sources.length === 0) return;
-    await this.db.batch(
-      sources.slice(0, 10).map((source, index) =>
+    await this.db.batch([
+      this.db
+        .prepare("DELETE FROM sources WHERE screening_id = ?1")
+        .bind(screeningId),
+      ...sources.slice(0, 10).map((source, index) =>
         this.db
           .prepare(
             `INSERT OR REPLACE INTO sources
@@ -194,7 +213,7 @@ export class RunRepository {
             source.url,
           ),
       ),
-    );
+    ]);
   }
 
   async saveAnalysis(
@@ -276,9 +295,7 @@ export class RunRepository {
 
   async runIdForScreening(id: string): Promise<string | null> {
     const row = await this.db
-      .prepare(
-        "SELECT report_run_id AS runId FROM screenings WHERE id = ?1",
-      )
+      .prepare("SELECT report_run_id AS runId FROM screenings WHERE id = ?1")
       .bind(id)
       .first<{ runId: string }>();
     return row?.runId ?? null;
@@ -324,7 +341,7 @@ export class RunRepository {
   async countDispatchedSince(dayStart: string): Promise<number> {
     const row = await this.db
       .prepare(
-        "SELECT COUNT(*) AS count FROM screenings WHERE queued_at >= ?1",
+        "SELECT COUNT(*) AS count FROM dispatch_events WHERE dispatched_at >= ?1",
       )
       .bind(dayStart)
       .first<{ count: number }>();
@@ -332,33 +349,56 @@ export class RunRepository {
   }
 
   async dispatchPending(
-    queue: Queue<{ screeningId: string }>,
+    queue: Queue<ScreeningJobMessage>,
     limit: number,
     now: string,
   ): Promise<number> {
     if (limit <= 0) return 0;
     const rows = await this.db
       .prepare(
-        `SELECT id FROM screenings WHERE status = 'pending'
+        `SELECT id, report_run_id AS reportRunId, ticker_id AS tickerId
+         FROM screenings WHERE status = 'pending'
          ORDER BY target_date, id LIMIT ?1`,
       )
       .bind(limit)
-      .all<{ id: string }>();
+      .all<{ id: string; reportRunId: string; tickerId: string }>();
     if (rows.results.length === 0) return 0;
     for (let offset = 0; offset < rows.results.length; offset += 100) {
       const chunk = rows.results.slice(offset, offset + 100);
-      await queue.sendBatch(
-        chunk.map((row) => ({ body: { screeningId: row.id } })),
+      const ids = JSON.stringify(chunk.map((row) => row.id));
+      const events = JSON.stringify(
+        chunk.map((row) => ({
+          id: crypto.randomUUID(),
+          screeningId: row.id,
+          dispatchedAt: now,
+        })),
       );
-      await this.db.batch(
-        chunk.map((row) =>
-          this.db
-            .prepare(
-              `UPDATE screenings SET status = 'queued', queued_at = ?1
-               WHERE id = ?2 AND status = 'pending'`,
-            )
-            .bind(now, row.id),
-        ),
+      await this.db.batch([
+        this.db
+          .prepare(
+            `UPDATE screenings SET status = 'queued', queued_at = ?1
+             WHERE id IN (SELECT value FROM json_each(?2))
+               AND status = 'pending'`,
+          )
+          .bind(now, ids),
+        this.db
+          .prepare(
+            `INSERT INTO dispatch_events (id, screening_id, dispatched_at)
+             SELECT json_extract(value, '$.id'),
+                    json_extract(value, '$.screeningId'),
+                    json_extract(value, '$.dispatchedAt')
+             FROM json_each(?1)`,
+          )
+          .bind(events),
+      ]);
+      await queue.sendBatch(
+        chunk.map((row) => ({
+          body: {
+            screeningId: row.id,
+            reportRunId: row.reportRunId,
+            tickerId: row.tickerId,
+          },
+        })),
       );
     }
     return rows.results.length;
@@ -396,13 +436,7 @@ export class RunRepository {
            tickers_qualified = ?2, tickers_failed = ?3,
            started_at = COALESCE(started_at, ?4) WHERE id = ?5`,
         )
-        .bind(
-          counts.processed,
-          counts.qualified,
-          counts.failed,
-          now,
-          runId,
-        )
+        .bind(counts.processed, counts.qualified, counts.failed, now, runId)
         .run();
       return "running";
     }
@@ -561,7 +595,42 @@ export class RunRepository {
         status: string;
         tickersFailed: number;
       }>();
-    return { ...job, runs: runs.results };
+    const errors = await this.db
+      .prepare(
+        `SELECT s.id AS screeningId, s.symbol,
+         r.trading_date AS tradingDate, s.error_code AS errorCode,
+         s.error_message AS errorMessage,
+         CASE WHEN s.qualified = 1 THEN 1 ELSE 0 END AS retryable
+         FROM screenings s JOIN report_runs r ON r.id = s.report_run_id
+         WHERE r.backfill_job_id = ?1 AND s.status = 'failed'
+         ORDER BY r.trading_date, s.symbol`,
+      )
+      .bind(id)
+      .all<{
+        screeningId: string;
+        symbol: string;
+        tradingDate: string;
+        errorCode: string | null;
+        errorMessage: string | null;
+        retryable: number;
+      }>();
+    return {
+      ...job,
+      runs: runs.results,
+      errors: errors.results.map((error) => ({
+        ...error,
+        retryable: error.retryable === 1,
+      })),
+    };
+  }
+
+  async pauseRunningBackfills(_now: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE backfill_jobs SET status = 'paused'
+         WHERE status IN ('pending', 'running')`,
+      )
+      .run();
   }
 
   private async hydrateReport(
@@ -666,17 +735,22 @@ export class RunRepository {
 
   async retryAnalysis(
     screeningId: string,
-    queue: Queue<{ screeningId: string }>,
+    queue: Queue<ScreeningJobMessage>,
     now: string,
-  ): Promise<boolean> {
+  ): Promise<"queued" | "not_retryable" | "daily_dispatch_limit"> {
     const row = await this.db
       .prepare(
-        `SELECT qualified FROM screenings
+        `SELECT qualified, report_run_id AS reportRunId, ticker_id AS tickerId
+         FROM screenings
          WHERE id = ?1 AND status = 'failed'`,
       )
       .bind(screeningId)
-      .first<{ qualified: number }>();
-    if (row?.qualified !== 1) return false;
+      .first<{ qualified: number; reportRunId: string; tickerId: string }>();
+    if (row?.qualified !== 1) return "not_retryable";
+    const dayStart = `${now.slice(0, 10)}T00:00:00.000Z`;
+    if ((await this.countDispatchedSince(dayStart)) >= 2_500) {
+      return "daily_dispatch_limit";
+    }
     await this.db.batch([
       this.db
         .prepare("DELETE FROM sources WHERE screening_id = ?1")
@@ -691,8 +765,18 @@ export class RunRepository {
            error_message = NULL WHERE id = ?2`,
         )
         .bind(now, screeningId),
+      this.db
+        .prepare(
+          `INSERT INTO dispatch_events (id, screening_id, dispatched_at)
+           VALUES (?1, ?2, ?3)`,
+        )
+        .bind(crypto.randomUUID(), screeningId, now),
     ]);
-    await queue.send({ screeningId });
-    return true;
+    await queue.send({
+      screeningId,
+      reportRunId: row.reportRunId,
+      tickerId: row.tickerId,
+    });
+    return "queued";
   }
 }

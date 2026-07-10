@@ -14,10 +14,7 @@ describe("TickerRepository", () => {
       now: "2026-07-09T22:00:00.000Z",
     });
     expect(await repository.countActive()).toBe(1);
-    await repository.softDelete(
-      "ticker-shop",
-      "2026-07-10T12:00:00.000Z",
-    );
+    await repository.softDelete("ticker-shop", "2026-07-10T12:00:00.000Z");
     expect(await repository.countActive()).toBe(0);
     expect((await repository.findBySymbol("SHOP.TO"))?.deletedAt).toBe(
       "2026-07-10T12:00:00.000Z",
@@ -34,7 +31,9 @@ describe("TickerRepository", () => {
       currency: "USD",
       now: "2026-07-09T22:00:00.000Z",
     });
-    expect(await repository.setActive("ticker-aapl", false, "2026-07-10T00:00:00Z")).toBe(true);
+    expect(
+      await repository.setActive("ticker-aapl", false, "2026-07-10T00:00:00Z"),
+    ).toBe(true);
     expect(await repository.countActive()).toBe(0);
     await repository.softDelete("ticker-aapl", "2026-07-10T01:00:00Z");
     await repository.restore({
@@ -51,5 +50,29 @@ describe("TickerRepository", () => {
       deletedAt: null,
       companyName: "Apple Incorporated",
     });
+  });
+
+  it("enforces the 100-active-ticker limit in D1", async () => {
+    const repository = new TickerRepository(env.DB);
+    for (let index = 0; index < 100; index += 1) {
+      await repository.insert({
+        id: `ticker-${index}`,
+        symbol: `T${index}`,
+        companyName: `Ticker ${index}`,
+        exchange: "NMS",
+        currency: "USD",
+        now: "2026-07-09T22:00:00.000Z",
+      });
+    }
+    await expect(
+      repository.insert({
+        id: "ticker-101",
+        symbol: "OVER",
+        companyName: "Over Limit",
+        exchange: "NMS",
+        currency: "USD",
+        now: "2026-07-09T22:00:00.000Z",
+      }),
+    ).rejects.toThrow("watchlist_limit");
   });
 });

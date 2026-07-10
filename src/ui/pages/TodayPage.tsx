@@ -24,7 +24,9 @@ export const TodayPage = () => {
         if (value.currentRun) timer = window.setTimeout(load, 15_000);
       } catch (cause) {
         if (!active) return;
-        setError(cause instanceof Error ? cause.message : "Could not load report.");
+        setError(
+          cause instanceof Error ? cause.message : "Could not load report.",
+        );
         timer = window.setTimeout(load, 15_000);
       }
     };

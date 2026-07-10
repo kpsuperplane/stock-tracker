@@ -40,15 +40,22 @@ const normalizeUrl = (raw: string) => {
 };
 
 const textOnly = (value: string) =>
-  value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1_000);
+  value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1_000);
 
 const relevant = (item: RssItem, request: NewsSearchRequest) => {
-  const haystack = `${item.title ?? ""} ${item.description ?? ""}`.toLowerCase();
+  const haystack =
+    `${item.title ?? ""} ${item.description ?? ""}`.toLowerCase();
   const symbol = request.symbol.split(".")[0]?.toLowerCase() ?? "";
   const companyWords = request.companyName
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((word) => word.length >= 4 && !["inc", "corp", "ltd"].includes(word));
+    .filter(
+      (word) => word.length >= 4 && !["inc", "corp", "ltd"].includes(word),
+    );
   return Boolean(
     (symbol && haystack.includes(symbol)) ||
       companyWords.some((word) => haystack.includes(word)),
@@ -60,7 +67,9 @@ export class GoogleNewsProvider implements NewsProvider {
 
   async search(request: NewsSearchRequest): Promise<NewsItem[]> {
     const after = request.publishedAfter.slice(0, 10);
-    const beforeDate = new Date(Date.parse(request.publishedBefore) + 86_400_000)
+    const beforeDate = new Date(
+      Date.parse(request.publishedBefore) + 86_400_000,
+    )
       .toISOString()
       .slice(0, 10);
     const query = `"${request.companyName}" OR ${request.symbol} after:${after} before:${beforeDate}`;
@@ -87,7 +96,12 @@ export class GoogleNewsProvider implements NewsProvider {
     const seenUrls = new Set<string>();
     const results: NewsItem[] = [];
     for (const item of asArray(parsed.rss.channel.item)) {
-      if (!item.title || !item.link || !item.pubDate || !relevant(item, request)) {
+      if (
+        !item.title ||
+        !item.link ||
+        !item.pubDate ||
+        !relevant(item, request)
+      ) {
         continue;
       }
       const timestamp = Date.parse(item.pubDate);

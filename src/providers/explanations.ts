@@ -110,12 +110,20 @@ export class WorkersAiExplanationProvider implements ExplanationProvider {
     if (!/\p{Script=Han}/u.test(parsed.explanation_zh_cn)) {
       throw new Error("invalid_explanation_language");
     }
+    const sentenceCount =
+      parsed.explanation_zh_cn.match(/[。！？!?]+/g)?.length ?? 0;
+    if (sentenceCount < 2 || sentenceCount > 4) {
+      throw new Error("invalid_explanation_sentence_count");
+    }
     const uniqueIndexes = [...new Set(parsed.source_indexes)];
     if (uniqueIndexes.some((index) => index >= input.sources.length)) {
       throw new Error("invalid_source_index");
     }
     if (parsed.clear_catalyst && uniqueIndexes.length === 0) {
       throw new Error("missing_catalyst_source");
+    }
+    if (!parsed.clear_catalyst && parsed.confidence !== "low") {
+      throw new Error("invalid_no_catalyst_confidence");
     }
     return {
       explanationZhCn: parsed.explanation_zh_cn,

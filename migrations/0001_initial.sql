@@ -13,6 +13,23 @@ CREATE TABLE tickers (
 );
 CREATE INDEX tickers_active_idx ON tickers(active, deleted_at);
 
+CREATE TRIGGER tickers_active_limit_insert
+BEFORE INSERT ON tickers
+WHEN NEW.active = 1 AND NEW.deleted_at IS NULL
+  AND (SELECT COUNT(*) FROM tickers WHERE active = 1 AND deleted_at IS NULL) >= 100
+BEGIN
+  SELECT RAISE(ABORT, 'watchlist_limit');
+END;
+
+CREATE TRIGGER tickers_active_limit_update
+BEFORE UPDATE OF active, deleted_at ON tickers
+WHEN NEW.active = 1 AND NEW.deleted_at IS NULL
+  AND NOT (OLD.active = 1 AND OLD.deleted_at IS NULL)
+  AND (SELECT COUNT(*) FROM tickers WHERE active = 1 AND deleted_at IS NULL) >= 100
+BEGIN
+  SELECT RAISE(ABORT, 'watchlist_limit');
+END;
+
 CREATE TABLE backfill_jobs (
   id TEXT PRIMARY KEY,
   start_date TEXT NOT NULL,
@@ -78,6 +95,13 @@ CREATE TABLE screenings (
 );
 CREATE INDEX screenings_run_status_idx ON screenings(report_run_id, status);
 CREATE INDEX screenings_lease_idx ON screenings(status, queued_at, processing_started_at);
+
+CREATE TABLE dispatch_events (
+  id TEXT PRIMARY KEY,
+  screening_id TEXT NOT NULL REFERENCES screenings(id) ON DELETE CASCADE,
+  dispatched_at TEXT NOT NULL
+);
+CREATE INDEX dispatch_events_day_idx ON dispatch_events(dispatched_at);
 
 CREATE TABLE analyses (
   id TEXT PRIMARY KEY,

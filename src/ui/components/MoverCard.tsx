@@ -82,7 +82,11 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
           </button>
         )}
         {unavailable && (
-          <button type="button" disabled={retrying} onClick={() => void retry()}>
+          <button
+            type="button"
+            disabled={retrying}
+            onClick={() => void retry()}
+          >
             {retrying ? "Retrying…" : "Retry explanation"}
           </button>
         )}
@@ -92,15 +96,12 @@ export const MoverCard = ({ mover }: { mover: MoverDto }) => {
         <ul className="sources">
           {mover.sources.map((source) => (
             <li key={`${source.url}-${source.title}`}>
-              <a
-                href={source.url}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
+              <a href={source.url} target="_blank" rel="noreferrer noopener">
                 {source.title}
               </a>
               <small>
-                {source.publisher} · {new Date(source.publishedAt).toLocaleString()}
+                {source.publisher} ·{" "}
+                {new Date(source.publishedAt).toLocaleString()}
                 {source.cited ? " · cited" : ""}
               </small>
             </li>

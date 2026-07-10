@@ -1,5 +1,6 @@
 import type { CreateRunInput, RunRepository } from "../db/runs";
 import type { TickerRecord, TickerRepository } from "../db/tickers";
+import type { ScreeningJobMessage } from "../shared/contracts";
 import { ApiError } from "../worker/errors";
 
 const dayMs = 86_400_000;
@@ -33,11 +34,12 @@ interface RunStore {
   reconcileStaleLeases(cutoff: string): Promise<number>;
   countDispatchedSince(dayStart: string): Promise<number>;
   dispatchPending(
-    queue: Queue<{ screeningId: string }>,
+    queue: Queue<ScreeningJobMessage>,
     limit: number,
     now: string,
   ): Promise<number>;
   finalizeRun(runId: string, now: string): Promise<string>;
+  pauseRunningBackfills(now: string): Promise<void>;
 }
 
 interface TickerStore {
@@ -48,7 +50,7 @@ export class JobsService {
   constructor(
     private readonly runs: RunStore,
     private readonly tickers: TickerStore,
-    private readonly queue: Queue<{ screeningId: string }>,
+    private readonly queue: Queue<ScreeningJobMessage>,
   ) {}
 
   async startScheduled(tradingDate: string, now: string): Promise<string> {
@@ -136,14 +138,21 @@ export class JobsService {
       0,
       2_500 - (await this.runs.countDispatchedSince(dayStart)),
     );
-    return remaining === 0
-      ? 0
-      : this.runs.dispatchPending(this.queue, remaining, now);
+    if (remaining === 0) return 0;
+    try {
+      return await this.runs.dispatchPending(this.queue, remaining, now);
+    } catch (error) {
+      if (/quota|limit|exceeded|\b429\b/i.test(String(error))) {
+        await this.runs.pauseRunningBackfills(now);
+        return 0;
+      }
+      throw error;
+    }
   }
 }
 
 export const createJobsService = (
   runs: RunRepository,
   tickers: TickerRepository,
-  queue: Queue<{ screeningId: string }>,
+  queue: Queue<ScreeningJobMessage>,
 ) => new JobsService(runs, tickers, queue);

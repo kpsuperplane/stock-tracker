@@ -12,7 +12,11 @@ const authorization = (username: string, password: string) =>
 
 describe("Basic Authentication", () => {
   it("challenges missing credentials", async () => {
-    const response = await createApp().request("http://local/api/health", {}, env);
+    const response = await createApp().request(
+      "http://local/api/health",
+      {},
+      env,
+    );
     expect(response.status).toBe(401);
     expect(response.headers.get("WWW-Authenticate")).toBe(
       'Basic realm="Stock Tracker"',

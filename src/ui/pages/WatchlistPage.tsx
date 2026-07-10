@@ -11,7 +11,9 @@ export const WatchlistPage = () => {
   }, []);
   useEffect(() => {
     void load().catch((cause) =>
-      setError(cause instanceof Error ? cause.message : "Could not load watchlist."),
+      setError(
+        cause instanceof Error ? cause.message : "Could not load watchlist.",
+      ),
     );
   }, [load]);
 
@@ -24,7 +26,9 @@ export const WatchlistPage = () => {
       setSymbol("");
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not add ticker.");
+      setError(
+        cause instanceof Error ? cause.message : "Could not add ticker.",
+      );
     } finally {
       setBusy(false);
     }
@@ -36,7 +40,9 @@ export const WatchlistPage = () => {
       await action();
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Watchlist update failed.");
+      setError(
+        cause instanceof Error ? cause.message : "Watchlist update failed.",
+      );
     }
   };
 
@@ -47,7 +53,9 @@ export const WatchlistPage = () => {
           <p className="eyebrow">Tracked symbols</p>
           <h1>Watchlist</h1>
         </div>
-        <span>{tickers.filter((ticker) => ticker.active).length}/100 active</span>
+        <span>
+          {tickers.filter((ticker) => ticker.active).length}/100 active
+        </span>
       </header>
       <form className="admin-form" onSubmit={submit}>
         <label htmlFor="symbol">Yahoo symbol</label>
@@ -66,7 +74,8 @@ export const WatchlistPage = () => {
           </button>
         </div>
         <p className="form-help">
-          Symbols are validated against recent Yahoo Finance daily data before saving.
+          Symbols are validated against recent Yahoo Finance daily data before
+          saving.
         </p>
         {error && <p role="alert">{error}</p>}
       </form>

@@ -23,7 +23,9 @@ export const HistoryPage = () => {
       })
       .catch((cause) => {
         if (active) {
-          setError(cause instanceof Error ? cause.message : "Could not load history.");
+          setError(
+            cause instanceof Error ? cause.message : "Could not load history.",
+          );
         }
       })
       .finally(() => {
@@ -40,7 +42,9 @@ export const HistoryPage = () => {
     try {
       setReport((await api.report(date)).report);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load report.");
+      setError(
+        cause instanceof Error ? cause.message : "Could not load report.",
+      );
     } finally {
       setLoading(false);
     }

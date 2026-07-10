@@ -10,6 +10,7 @@ export default defineConfig({
     cloudflareTest(async () => ({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
+        ai: { binding: "AI" },
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations(path.resolve("migrations")),
           BASIC_AUTH_USERNAME: "owner",
@@ -22,5 +23,6 @@ export default defineConfig({
     include: ["tests/worker/**/*.test.ts"],
     setupFiles: ["./tests/worker/apply-migrations.ts"],
     restoreMocks: true,
+    fileParallelism: false,
   },
 });

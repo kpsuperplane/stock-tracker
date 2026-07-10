@@ -7,7 +7,10 @@ const digest = async (value: string) =>
   );
 
 const safeEqual = async (left: string, right: string) => {
-  const [leftDigest, rightDigest] = await Promise.all([digest(left), digest(right)]);
+  const [leftDigest, rightDigest] = await Promise.all([
+    digest(left),
+    digest(right),
+  ]);
   let difference = leftDigest.length ^ rightDigest.length;
   for (
     let index = 0;
@@ -19,8 +22,8 @@ const safeEqual = async (left: string, right: string) => {
   return difference === 0;
 };
 
-export const requireBasicAuth = (): MiddlewareHandler<{ Bindings: Env }> =>
-  async (context, next) => {
+export const requireBasicAuth =
+  (): MiddlewareHandler<{ Bindings: Env }> => async (context, next) => {
     const header = context.req.header("Authorization");
     const encoded = header?.startsWith("Basic ") ? header.slice(6) : "";
     let supplied = "";
