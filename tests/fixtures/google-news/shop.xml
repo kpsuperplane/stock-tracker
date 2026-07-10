@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Shopify shares jump after enterprise growth update - Reuters</title>
+      <link>https://news.google.com/rss/articles/shop-1?utm_source=rss</link>
+      <pubDate>Thu, 09 Jul 2026 18:30:00 GMT</pubDate>
+      <description>Shopify highlighted stronger enterprise growth.</description>
+      <source url="https://reuters.com">Reuters</source>
+    </item>
+    <item>
+      <title>Shopify shares jump after enterprise growth update - Reuters</title>
+      <link>https://news.google.com/rss/articles/shop-duplicate</link>
+      <pubDate>Thu, 09 Jul 2026 18:31:00 GMT</pubDate>
+      <source url="https://reuters.com">Reuters</source>
+    </item>
+    <item>
+      <title>Analyst raises Shopify target after merchant additions - BNN Bloomberg</title>
+      <link>https://news.google.com/rss/articles/shop-2</link>
+      <pubDate>Thu, 09 Jul 2026 20:00:00 GMT</pubDate>
+      <source url="https://bnnbloomberg.ca">BNN Bloomberg</source>
+    </item>
+    <item>
+      <title>Old Shopify profile - Example News</title>
+      <link>https://news.google.com/rss/articles/shop-old</link>
+      <pubDate>Mon, 06 Jul 2026 12:00:00 GMT</pubDate>
+      <source url="https://example.com">Example News</source>
+    </item>
+    <item>
+      <title>Unrelated oil market roundup - Example News</title>
+      <link>https://news.google.com/rss/articles/unrelated</link>
+      <pubDate>Thu, 09 Jul 2026 19:00:00 GMT</pubDate>
+      <source url="https://example.com">Example News</source>
+    </item>
+  </channel>
+</rss>
