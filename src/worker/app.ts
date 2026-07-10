@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import { requireBasicAuth } from "./auth";
 import type { Env } from "./env";
 import { ApiError } from "./errors";
+import { tickerRoutes } from "./routes/tickers";
 
 export const createApp = () => {
   const app = new Hono<{ Bindings: Env }>();
@@ -40,6 +41,7 @@ export const createApp = () => {
   });
 
   app.get("/api/health", (context) => context.json({ ok: true }));
+  app.route("/api/tickers", tickerRoutes);
 
   app.onError((error, context) => {
     if (error instanceof ApiError) {
