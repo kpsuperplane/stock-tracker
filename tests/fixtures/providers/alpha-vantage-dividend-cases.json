@@ -1,0 +1,67 @@
+{
+  "overview": {
+    "Symbol": "CASE",
+    "Currency": "USD"
+  },
+  "historicalAndFuture": {
+    "symbol": "CASE",
+    "data": [
+      {
+        "ex_dividend_date": "2024-05-09",
+        "declaration_date": "2024-04-30",
+        "record_date": "2024-05-10",
+        "payment_date": "2024-06-10",
+        "amount": "1.6700"
+      },
+      {
+        "ex_dividend_date": "2026-08-10",
+        "declaration_date": "2026-07-09",
+        "record_date": "2026-08-10",
+        "payment_date": "2026-09-10",
+        "amount": "1.6900"
+      },
+      {
+        "ex_dividend_date": "2026-08-10",
+        "declaration_date": "2026-07-09",
+        "record_date": "2026-08-10",
+        "payment_date": "2026-09-10",
+        "amount": "1.6900"
+      }
+    ]
+  },
+  "correctionBefore": {
+    "symbol": "CASE",
+    "data": [
+      {
+        "ex_dividend_date": "2026-08-10",
+        "declaration_date": "2026-07-09",
+        "record_date": "2026-08-10",
+        "payment_date": "2026-09-10",
+        "amount": "1.6800"
+      }
+    ]
+  },
+  "correctionAfter": {
+    "symbol": "CASE",
+    "data": [
+      {
+        "ex_dividend_date": "2026-08-10",
+        "declaration_date": "2026-07-09",
+        "record_date": "2026-08-10",
+        "payment_date": "2026-09-10",
+        "amount": "1.6900"
+      }
+    ]
+  },
+  "missingFields": {
+    "symbol": "CASE",
+    "data": [
+      {
+        "ex_dividend_date": "2026-08-10",
+        "declaration_date": "2026-07-09",
+        "amount": null
+      }
+    ]
+  },
+  "delisted": {}
+}

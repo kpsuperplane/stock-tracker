@@ -1,0 +1,128 @@
+{
+  "ordinaryAndReverse": {
+    "chart": {
+      "result": [
+        {
+          "meta": { "symbol": "CASE", "firstTradeDate": 946684800 },
+          "timestamp": [],
+          "indicators": { "quote": [{ "close": [] }] },
+          "events": {
+            "splits": {
+              "1717201800": {
+                "date": 1717201800,
+                "numerator": 4,
+                "denominator": 1,
+                "splitRatio": "4:1"
+              },
+              "1727740800": {
+                "date": 1727740800,
+                "numerator": 1,
+                "denominator": 10,
+                "splitRatio": "1:10"
+              }
+            }
+          }
+        }
+      ],
+      "error": null
+    }
+  },
+  "correctionBefore": {
+    "chart": {
+      "result": [
+        {
+          "meta": { "symbol": "CASE", "firstTradeDate": 946684800 },
+          "timestamp": [],
+          "indicators": { "quote": [{ "close": [] }] },
+          "events": {
+            "splits": {
+              "1717200000": {
+                "date": 1717200000,
+                "numerator": 3,
+                "denominator": 2,
+                "splitRatio": "3:2"
+              }
+            }
+          }
+        }
+      ],
+      "error": null
+    }
+  },
+  "correctionAfter": {
+    "chart": {
+      "result": [
+        {
+          "meta": { "symbol": "CASE", "firstTradeDate": 946684800 },
+          "timestamp": [],
+          "indicators": { "quote": [{ "close": [] }] },
+          "events": {
+            "splits": {
+              "1717200000": {
+                "date": 1717200000,
+                "numerator": 2,
+                "denominator": 1,
+                "splitRatio": "2:1"
+              }
+            }
+          }
+        }
+      ],
+      "error": null
+    }
+  },
+  "timezoneBoundaryAndDuplicate": {
+    "chart": {
+      "result": [
+        {
+          "meta": { "symbol": "CASE", "firstTradeDate": 946684800 },
+          "timestamp": [],
+          "indicators": { "quote": [{ "close": [] }] },
+          "events": {
+            "splits": {
+              "1717201800": {
+                "date": 1717201800,
+                "numerator": 4,
+                "denominator": 1,
+                "splitRatio": "4:1"
+              },
+              "duplicate": {
+                "date": 1717201800,
+                "numerator": 4,
+                "denominator": 1,
+                "splitRatio": "4:1"
+              }
+            }
+          }
+        }
+      ],
+      "error": null
+    }
+  },
+  "missingFields": {
+    "chart": {
+      "result": [
+        {
+          "meta": { "symbol": "CASE", "firstTradeDate": 946684800 },
+          "timestamp": [],
+          "indicators": { "quote": [{ "close": [] }] },
+          "events": {
+            "splits": {
+              "1717201800": { "date": 1717201800, "numerator": 4 }
+            }
+          }
+        }
+      ],
+      "error": null
+    }
+  },
+  "delisted": {
+    "chart": {
+      "result": null,
+      "error": {
+        "code": "Not Found",
+        "description": "No data found, symbol may be delisted"
+      }
+    }
+  }
+}
