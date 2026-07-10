@@ -310,6 +310,107 @@ describe("EventImportsService", () => {
     ).toEqual({ count: 0 });
   });
 
+  it("rejects an over-cap preview before retention cleanup mutates expired staging", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO import_batches
+           (id, file_digest, original_filename, base_position_basis_revision,
+            status, expires_at, created_at, updated_at)
+           VALUES ('expired-preview', 'expired-digest', 'old.csv', 0,
+                   'preview', '2026-07-09T12:00:00.000Z', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO import_rows
+           (id, import_batch_id, row_number, symbol, status)
+           VALUES ('expired-row', 'expired-preview', 2, 'SHOP.TO', 'invalid')`,
+      ),
+    ]);
+    const result = await service().preview({
+      originalFilename: "over-symbol-cap.csv",
+      file: new TextEncoder().encode(
+        csv(
+          Array.from(
+            { length: 41 },
+            (_, index) => `2024-01-02,CAP${index + 1},buy,1,1`,
+          ),
+        ),
+      ),
+    });
+    expect(result).toEqual({ kind: "invalid_file", code: "too_many_symbols" });
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM import_batches WHERE id = 'expired-preview'",
+      ).first(),
+    ).toEqual({ status: "preview" });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_rows WHERE import_batch_id = 'expired-preview'",
+      ).first(),
+    ).toEqual({ count: 1 });
+  });
+
+  it("rejects a malformed 41-instrument staged batch before provider refetches", async () => {
+    await env.DB.prepare(
+      `INSERT INTO import_batches
+       (id, file_digest, original_filename, base_position_basis_revision,
+        status, expires_at, created_at, updated_at)
+       VALUES ('malformed-batch', 'malformed-digest', 'legacy.csv', 0,
+               'preview', '2026-07-11T12:00:00.000Z', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.batch(
+      Array.from({ length: 41 }, (_, index) =>
+        env.DB.prepare(
+          `INSERT INTO import_rows
+             (id, import_batch_id, row_number, symbol, trade_date, side,
+              quantity_decimal, price_decimal, status, normalized_transaction_json)
+             VALUES (?1, 'malformed-batch', ?2, ?3, '2024-01-02', 'buy',
+                     '1', '1', 'valid', ?4)`,
+        ).bind(
+          `malformed-row-${index + 1}`,
+          index + 2,
+          `LEGACY${index + 1}`,
+          JSON.stringify({
+            instrumentId: `legacy-instrument-${index + 1}`,
+            symbol: `LEGACY${index + 1}`,
+            tradeDate: "2024-01-02",
+            side: "buy",
+            quantityDecimal: "1",
+            priceDecimal: "1",
+            snapshot: {
+              provider: "yahoo-chart-v8",
+              requestedStartDate: "2024-01-02",
+              requestedEndDate: "2026-07-10",
+              providerRevision: "legacy-r1",
+            },
+          }),
+        ),
+      ),
+    );
+    const getSplits = vi.fn(provider().getSplits);
+    const result = await service({ getSplits }).commit({
+      batchId: "malformed-batch",
+      expectedPositionBasisRevision: 0,
+      confirmations: [],
+    });
+    expect(result).toEqual({
+      kind: "validation_error",
+      code: "too_many_symbols",
+    });
+    expect(getSplits).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM transactions",
+      ).first(),
+    ).toEqual({ count: 0 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM pipeline_jobs",
+      ).first(),
+    ).toEqual({ count: 0 });
+  });
+
   it("requires the previewed split confirmation, rejects a provider revision change, and never reparses staged bytes", async () => {
     const first = await service(provider("snapshot-r1")).preview({
       originalFilename: "portfolio-events.csv",

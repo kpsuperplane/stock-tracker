@@ -321,7 +321,6 @@ export class EventImportsService {
     originalFilename: string;
     file: Uint8Array;
   }): Promise<ImportPreviewResult> {
-    await this.cleanup();
     if (!input.originalFilename || input.originalFilename.length > 255)
       return { kind: "invalid_file", code: "invalid_filename" };
     if (input.file.byteLength === 0 || input.file.byteLength > MAX_FILE_BYTES)
@@ -346,6 +345,8 @@ export class EventImportsService {
     );
     if (sourceSymbols.size > MAX_DISTINCT_SYMBOLS)
       return { kind: "invalid_file", code: "too_many_symbols" };
+
+    await this.cleanup();
 
     const digest = await hexDigest(input.file);
     const duplicate = await this.imports.findBatchByDigest(digest);
@@ -510,7 +511,6 @@ export class EventImportsService {
     expectedPositionBasisRevision: number;
     confirmations: ImportConfirmation[];
   }): Promise<ImportCommitResult> {
-    await this.cleanup();
     if (
       !Number.isInteger(input.expectedPositionBasisRevision) ||
       input.expectedPositionBasisRevision < 0
@@ -552,6 +552,8 @@ export class EventImportsService {
     }
     if (byInstrument.size > MAX_DISTINCT_SYMBOLS)
       return { kind: "validation_error", code: "too_many_symbols" };
+
+    await this.cleanup();
     const confirmations = new Map(
       input.confirmations.map((entry) => [entry.instrumentId, entry]),
     );
