@@ -297,6 +297,14 @@ describe("normalized facts and reconciliation schema", () => {
         })
         .run(),
     ).resolves.toBeDefined();
+    expect(
+      await work.attachToJob({
+        pipelineJobId: "job-a",
+        workItemId: "planner-a",
+        relationship: "required",
+        now,
+      }),
+    ).toBe(true);
     await expect(
       env.DB.prepare(
         `INSERT INTO job_work_items
@@ -305,6 +313,12 @@ describe("normalized facts and reconciliation schema", () => {
       )
         .bind(now)
         .run(),
+    ).rejects.toThrow();
+    await expect(
+      env.DB.prepare(
+        `UPDATE work_items SET pipeline_job_id = 'job-b'
+           WHERE id = 'planner-a'`,
+      ).run(),
     ).rejects.toThrow();
     await expect(
       work.attachToJob({
@@ -436,6 +450,23 @@ describe("normalized facts and reconciliation schema", () => {
       },
       work: [dispatching],
     });
+    await env.DB.prepare(
+      `INSERT INTO dispatch_batches
+         (id, work_type, instrument_id, requested_start_date, requested_end_date,
+          state, attempt_count, max_attempts, created_at, updated_at)
+         VALUES ('dispatch-update-bad', 'analysis', 'instrument-1', '2026-07-10',
+                 '2026-07-10', 'dispatching', 0, 3, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await expect(
+      env.DB.prepare(
+        `UPDATE dispatch_batch_items SET dispatch_batch_id = 'dispatch-update-bad'
+           WHERE dispatch_batch_id = 'dispatch-1' AND work_item_id = ?1`,
+      )
+        .bind(base.id)
+        .run(),
+    ).rejects.toThrow();
     expect(
       await dispatch.reclaimExpiredDispatch({
         id: "dispatch-1",
