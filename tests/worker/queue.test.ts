@@ -4,6 +4,7 @@ import { RunRepository } from "../../src/db/runs";
 import { TickerRepository } from "../../src/db/tickers";
 import { WorkersAiExplanationProvider } from "../../src/providers/explanations";
 import { GoogleNewsProvider } from "../../src/providers/google-news";
+import { MarketauxNewsProvider } from "../../src/providers/marketaux";
 import { YahooMarketDataProvider } from "../../src/providers/yahoo";
 import type { ScreeningJobMessage } from "../../src/shared/contracts";
 import { handleQueue } from "../../src/worker/queue";
@@ -52,7 +53,10 @@ describe("Queue consumer", () => {
       ],
       corporateActionDates: new Set<string>(),
     });
-    vi.spyOn(GoogleNewsProvider.prototype, "search").mockResolvedValue([
+    vi.spyOn(GoogleNewsProvider.prototype, "search").mockRejectedValue(
+      new Error("google_should_not_be_used"),
+    );
+    vi.spyOn(MarketauxNewsProvider.prototype, "search").mockResolvedValue([
       {
         title: "Enterprise growth lifts Shopify",
         publisher: "Reuters",
@@ -77,7 +81,13 @@ describe("Queue consumer", () => {
     } as unknown as Message<ScreeningJobMessage>;
     await handleQueue(
       { messages: [message] } as unknown as MessageBatch<ScreeningJobMessage>,
-      env,
+      new Proxy(env, {
+        get(target, property) {
+          return property === "MARKETAUX_API_TOKEN"
+            ? "test-token"
+            : Reflect.get(target, property);
+        },
+      }),
     );
     expect(message.ack).toHaveBeenCalledOnce();
     expect(message.retry).not.toHaveBeenCalled();

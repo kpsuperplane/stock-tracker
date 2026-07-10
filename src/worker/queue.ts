@@ -1,6 +1,7 @@
 import { RunRepository } from "../db/runs";
 import { WorkersAiExplanationProvider } from "../providers/explanations";
 import { GoogleNewsProvider } from "../providers/google-news";
+import { MarketauxNewsProvider } from "../providers/marketaux";
 import { YahooMarketDataProvider } from "../providers/yahoo";
 import { ScreeningService } from "../services/screening";
 import type { ScreeningJobMessage } from "../shared/contracts";
@@ -19,10 +20,13 @@ export const handleQueue = async (
   env: Env,
 ) => {
   const repository = new RunRepository(env.DB);
+  const news = env.MARKETAUX_API_TOKEN
+    ? new MarketauxNewsProvider(env.MARKETAUX_API_TOKEN)
+    : new GoogleNewsProvider();
   const service = new ScreeningService(
     repository,
     new YahooMarketDataProvider(),
-    new GoogleNewsProvider(),
+    news,
     new WorkersAiExplanationProvider(env.AI),
   );
   await Promise.all(
@@ -42,7 +46,9 @@ export const handleQueue = async (
         const provider = text.includes("market_")
           ? "yahoo"
           : text.includes("news_")
-            ? "google-news"
+            ? env.MARKETAUX_API_TOKEN
+              ? "marketaux"
+              : "google-news"
             : "workers-ai";
         const row = await env.DB.prepare(
           "SELECT attempt_count AS attemptCount FROM screenings WHERE id = ?1",
