@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a concurrency-safe transaction ledger, validated split-action basis, exact holdings domain, and atomic Events/CSV APIs alongside the unchanged legacy application.
+**Goal:** Add a concurrency-safe transaction ledger, user-confirmed split-action basis, exact holdings domain, and atomic Events/CSV APIs alongside the unchanged legacy application.
 
-**Architecture:** Instruments, transactions, corporate-action coverage/candidates, and a trigger-guarded position-basis revision form one authoritative ledger. Provider coverage is established before historical validation; holdings are folded in memory with arbitrary-precision decimals and are never stored as position snapshots.
+**Architecture:** Instruments, transactions, best-effort split candidates, user confirmations tied to provider revisions, and a trigger-guarded position-basis revision form one authoritative ledger. Confirmation is established before historical validation; holdings are folded in memory with arbitrary-precision decimals and are never stored as position snapshots.
 
-**Tech Stack:** TypeScript, Hono, Cloudflare D1, Yahoo provider adapters or another approved free source, Zod, arbitrary-precision decimal library selected by the implementer, Vitest.
+**Tech Stack:** TypeScript, Hono, Cloudflare D1, Yahoo split and Alpha Vantage dividend adapters under the approved best-effort model, Zod, arbitrary-precision decimal library selected by the implementer, Vitest.
 
 ## Global Constraints
 
@@ -15,7 +15,9 @@
 - Do not change the current report read path, scheduler, Backfill behavior, or visible UI in this plan.
 - Use additive migrations only.
 - Reject future trade dates and negative end-of-day holdings.
-- Require current split coverage from the earliest affected trade date through today before an authoritative transaction mutation.
+- Require user confirmation of the displayed split history from the earliest affected trade date through today for the exact retrieved provider revision before an authoritative transaction mutation.
+- Invalidate confirmation on a changed provider revision or correction and require review again.
+- Treat dividends as source-reported best effort; missing future rows are not proof that no dividend exists.
 - Treat quarantined corporate-action corrections as visible conflicts; never silently apply an invalid split set.
 - Store transaction/dividend decimal values as canonical strings and keep arithmetic outside JavaScript `Number`.
 - Every task ends with focused tests, `npm run typecheck`, review, and a scoped commit.
@@ -31,11 +33,11 @@
 | `src/domain/holdings.test.ts` | Ledger semantics and split/eligibility fixtures |
 | `src/providers/corporate-actions.ts` | Corporate-action provider contract |
 | `src/providers/dividends.ts` | Dividend provider contract |
-| `src/providers/yahoo-corporate-actions.ts` | Candidate Yahoo split adapter, if feasibility passes |
-| `src/providers/yahoo-dividends.ts` | Candidate Yahoo dividend adapter, if feasibility passes |
+| `src/providers/yahoo-corporate-actions.ts` | Unverified Yahoo split-candidate adapter |
+| `src/providers/alpha-vantage-dividends.ts` | Source-reported Alpha Vantage dividend adapter |
 | `src/db/instruments.ts` | Instrument identity repository |
 | `src/db/transactions.ts` | Transaction persistence and event revisions |
-| `src/db/corporate-actions.ts` | Coverage, candidates, active actions, quarantine state |
+| `src/db/corporate-actions.ts` | Candidate snapshots, user confirmations, active actions, quarantine state |
 | `src/db/position-basis.ts` | Mutation token and position-basis revision repository |
 | `src/db/imports.ts` | CSV preview batches and normalized staging rows |
 | `src/db/pipeline-jobs.ts` | Minimal job creation/state needed by authoritative mutations |
@@ -53,7 +55,7 @@ Implementers may split an oversized module while preserving these ownership boun
 
 ---
 
-### Task 1: Prove corporate-action and dividend provider feasibility
+### Task 1: Establish best-effort corporate-action and dividend providers
 
 **Files:**
 
@@ -63,17 +65,17 @@ Implementers may split an oversized module while preserving these ownership boun
 
 **Interfaces:**
 
-- Produces normalized split coverage with stable identity, exact ratio, effective date, provider revision, and range coverage.
-- Produces normalized announced dividend events with exact ex-date, per-share amount, currency, identity, and revision.
+- Produces normalized unverified split snapshots with stable identity, exact ratio, effective date, requested range, retrieval time, and derived provider revision.
+- Produces normalized source-reported dividend events with exact ex-date, per-share amount, currency, identity, retrieval time, and revision.
 - Later tasks consume only these normalized contracts, not Yahoo response shapes.
 
-- [ ] Record provider fixtures covering an ordinary split, reverse split, correction, historical dividend, announced future dividend, missing fields, timezone boundary, duplicate event, and delisted symbol.
+- [ ] Record provider-shaped fixtures covering an ordinary split, reverse split, correction, historical dividend, announced future dividend, missing future dividend row, missing fields, timezone boundary, duplicate event, and delisted symbol. Fixtures prove parser behavior, not exhaustive coverage.
 - [ ] Add contract tests that fail against the current collapsed corporate-action representation.
-- [ ] Evaluate Yahoo endpoints against every required field and coverage case; document request shape, stability limits, and correction identity.
-- [ ] If Yahoo fails future dividend amount/ex-date coverage, test one alternative free source. Stop the plan and request a provider decision if no source passes; do not weaken acceptance criteria.
-- [ ] Select adapters only after all required fixture cases pass.
+- [ ] Evaluate Yahoo endpoints against every required field and document request shape, unverified history limits, correction identity, and the user-confirmation requirement.
+- [ ] Evaluate Alpha Vantage as the approved source-reported dividend feed and document the 25-request/day quota, incomplete history, and missing-future-row semantics.
+- [ ] Select adapters only under the approved best-effort decision; never describe their ranges as exhaustive.
 - [ ] Run `npm test -- src/providers` and `npm run typecheck`; expect all provider contract tests to pass.
-- [ ] Request adversarial review focused on historical coverage claims and future dividend evidence.
+- [ ] Request adversarial review focused on split-authority claims and truthful source-reported dividend semantics.
 - [ ] Commit provider contracts, fixtures, adapters, tests, and feasibility evidence with message `feat: establish portfolio event providers`.
 
 ### Task 2: Add the authoritative ledger schema
@@ -86,14 +88,14 @@ Implementers may split an oversized module while preserving these ownership boun
 
 **Interfaces:**
 
-- Produces `instruments`, `transactions`, `corporate_actions`, `corporate_action_coverage`, `position_basis_state`, `ledger_mutations`, `import_batches`, `import_rows`, `pipeline_jobs`, `work_items`, and `job_work_items`.
+- Produces `instruments`, `transactions`, `corporate_actions`, `corporate_action_coverage`, `position_basis_state`, `ledger_mutations`, `import_batches`, `import_rows`, `pipeline_jobs`, `work_items`, and `job_work_items`. The coverage table stores requested and user-confirmed start/end, provider revision, retrieval time, and confirmation timestamp.
 - The job/work tables include the complete job-scoped/global scope and deterministic-key fields required by the approved schema, although this plan uses only job-scoped planning work.
 - The mutation-token trigger must abort on expected-revision mismatch and advance the revision on success inside the same D1 batch.
 - Existing ticker/report tables remain unchanged.
 
 - [ ] Write migration tests for clean apply, repeated local test setup, constraints, indexes, canonical status values, foreign keys, and legacy-table preservation.
 - [ ] Write concurrent mutation-token tests proving one of two identical expected revisions aborts without partial writes.
-- [ ] Write schema tests for event revision, unique import digest, coverage ranges, active/candidate/quarantined actions, and cascade/retention rules.
+- [ ] Write schema tests for event revision, unique import digest, requested/confirmed ranges, provider revision, confirmation timestamp, active/candidate/quarantined actions, and cascade/retention rules.
 - [ ] Apply migrations locally and inspect the resulting D1 schema.
 - [ ] Implement repositories without adding business folding logic to persistence modules.
 - [ ] Run `npm run test:worker -- tests/worker/events.test.ts` and `npm run typecheck`; expect schema and guard tests to pass.
@@ -121,7 +123,7 @@ Implementers may split an oversized module while preserving these ownership boun
 - [ ] Request review focused on precision leakage and date ordering.
 - [ ] Commit with message `feat: derive holdings from portfolio events`.
 
-### Task 4: Add coverage-aware, concurrency-safe ledger mutations
+### Task 4: Add confirmation-aware, concurrency-safe ledger mutations
 
 **Files:**
 
@@ -131,12 +133,12 @@ Implementers may split an oversized module while preserving these ownership boun
 **Interfaces:**
 
 - Consumes a proposed create/edit/delete plus expected position-basis and event revisions.
-- Produces either an atomic authoritative mutation with its pipeline job and job-scoped planning work, or a typed coverage/conflict/validation error.
+- Produces either an atomic authoritative mutation with its pipeline job and job-scoped planning work, or a typed confirmation/conflict/validation error. A review-required result includes only the normalized server-fetched snapshot.
 - Plan 2 implements planner execution and global child work without replacing this atomic foundation.
 
-- [ ] Add failing service tests for missing coverage, stale coverage, provider outage, valid coverage refresh, negative proposal, stale event revision, stale position-basis revision, and the 100-current-position race.
-- [ ] Add candidate-action tests for valid promotion, invalid quarantine, unrelated edits during conflict, and a resolving edit that promotes the candidate in the same guarded batch.
-- [ ] Implement coverage refresh and proposal folding before the guarded D1 batch.
+- [ ] Add failing service tests for missing confirmation, newly required earlier range, provider outage, explicit confirmation, provider-revision invalidation, negative proposal, stale event revision, stale position-basis revision, and the 100-current-position race.
+- [ ] Add candidate-action tests for confirmed valid promotion, invalid quarantine, unrelated edits during review/conflict, and a resolving edit that confirms and promotes the candidate in the same guarded batch.
+- [ ] Implement snapshot refresh, review/confirmation, and proposal folding before the guarded D1 batch; never accept client-authored split rows.
 - [ ] Ensure the guarded batch contains the mutation token, event/action writes, revision advance, pipeline job, job-scoped planning work, and job/work link atomically.
 - [ ] Run focused service and Worker D1 tests plus `npm run typecheck`.
 - [ ] Request adversarial review focused on time-of-check/time-of-use races.
@@ -154,7 +156,7 @@ Implementers may split an oversized module while preserving these ownership boun
 - Produces paginated combined transaction/split timeline reads and transaction create/edit/delete mutations.
 - Mutations require same-origin validation, the non-simple app header, and `If-Match` where applicable.
 
-- [ ] Add failing HTTP tests for timeline pagination/filtering, canonical decimal DTOs, transaction creation, edit/delete revisions, stale conflicts, missing coverage, quarantined correction reporting, negative holdings, auth, CSRF/origin rejection, body limits, and unsupported methods.
+- [ ] Add failing HTTP tests for timeline pagination/filtering, canonical decimal DTOs, transaction creation, edit/delete revisions, split review payloads, explicit confirmation, revision invalidation, stale conflicts, quarantined correction reporting, negative holdings, auth, CSRF/origin rejection, body limits, and unsupported methods.
 - [ ] Register routes without changing current report endpoints.
 - [ ] Implement stable English API errors independent of UI locale.
 - [ ] Run `npm run test:worker -- tests/worker/events.test.ts`, `npm run typecheck`, and existing report route tests.
@@ -171,10 +173,10 @@ Implementers may split an oversized module while preserving these ownership boun
 
 **Interfaces:**
 
-- Preview accepts the documented five-column UTF-8 template, normalizes rows, establishes coverage, stores staging rows, and returns row errors/projected quantities.
+- Preview accepts the documented five-column UTF-8 template, normalizes rows, fetches required split snapshots, stores staging rows, and returns row errors/projected quantities plus histories requiring confirmation.
 - Commit checks the previewed position-basis revision and performs one guarded `INSERT ... SELECT`-style authoritative commit with its pipeline job and job-scoped planning work.
 
-- [ ] Add failing tests for exact header, BOM handling, row limit, file-size limit, dates, side normalization, decimals, symbols, duplicate digest, provider coverage, projected negative holdings, expiry, stale revision, multipart CSRF defense, and all-or-nothing commit.
+- [ ] Add failing tests for exact header, BOM handling, row limit, file-size limit, dates, side normalization, decimals, symbols, duplicate digest, split review/confirmation, provider-revision invalidation, projected negative holdings, expiry, stale revision, multipart CSRF defense, and all-or-nothing commit.
 - [ ] Add retention tests for 24-hour preview expiry, seven-day staging cleanup, and retained digest/status.
 - [ ] Implement preview and commit without reparsing the file during commit.
 - [ ] Run focused import tests, all Events tests, `npm run typecheck`, and `npm run build`.
@@ -200,4 +202,4 @@ Implementers may split an oversized module while preserving these ownership boun
 - [ ] Run an adversarial architecture/concurrency review against the approved specification.
 - [ ] Commit verification/documentation changes with message `docs: verify portfolio ledger foundation`.
 
-Plan 1 is complete only when the current application still functions unchanged and every ledger/provider gate above passes.
+Plan 1 is complete only when the current application still functions unchanged and every ledger/provider gate above passes, including explicit confirmation before split authority and truthful source-reported dividend behavior.

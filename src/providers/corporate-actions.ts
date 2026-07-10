@@ -4,7 +4,9 @@ export interface ProviderRangeCoverage {
   coverageStartDate: string | null;
   coverageEndDate: string | null;
   isComplete: boolean;
-  basis: "provider-confirmed" | "unverified";
+  basis: "provider-confirmed" | "source-reported" | "unverified";
+  observedAt: string;
+  providerRevision: string;
 }
 
 export interface SplitEventIdentity {

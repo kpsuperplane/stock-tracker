@@ -88,7 +88,10 @@ function parseRatio(value: string): [string, string] {
 }
 
 export class YahooCorporateActionProvider implements CorporateActionProvider {
-  constructor(private readonly fetcher: typeof fetch = fetch) {}
+  constructor(
+    private readonly fetcher: typeof fetch = fetch,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
 
   async getSplits(
     symbol: string,
@@ -151,6 +154,10 @@ export class YahooCorporateActionProvider implements CorporateActionProvider {
       byIdentity.set(providerEventId, event);
     }
 
+    const events = [...byIdentity.values()].sort((left, right) =>
+      left.effectiveDate.localeCompare(right.effectiveDate),
+    );
+
     return {
       symbol: normalizedSymbol,
       range: {
@@ -160,10 +167,15 @@ export class YahooCorporateActionProvider implements CorporateActionProvider {
         coverageEndDate: null,
         isComplete: false,
         basis: "unverified",
+        observedAt: this.now().toISOString(),
+        providerRevision: `${provider}|${normalizedSymbol}|${startDate}|${endDate}|${events
+          .map(
+            (event) =>
+              `${event.effectiveDate}|${event.numerator}:${event.denominator}`,
+          )
+          .join(",")}`,
       },
-      events: [...byIdentity.values()].sort((left, right) =>
-        left.effectiveDate.localeCompare(right.effectiveDate),
-      ),
+      events,
     };
   }
 }

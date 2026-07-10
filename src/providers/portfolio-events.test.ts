@@ -19,11 +19,10 @@ describe("normalized portfolio event provider contracts", () => {
       Response.json(cases.ordinaryAndReverse),
     );
 
-    const result = await new YahooCorporateActionProvider(fetcher).getSplits(
-      "case",
-      "2024-01-01",
-      "2024-12-31",
-    );
+    const result = await new YahooCorporateActionProvider(
+      fetcher,
+      () => new Date("2026-07-10T18:00:00.000Z"),
+    ).getSplits("case", "2024-01-01", "2024-12-31");
 
     expect(result).toEqual({
       symbol: "CASE",
@@ -34,6 +33,9 @@ describe("normalized portfolio event provider contracts", () => {
         coverageEndDate: null,
         isComplete: false,
         basis: "unverified",
+        observedAt: "2026-07-10T18:00:00.000Z",
+        providerRevision:
+          "yahoo-chart-v8|CASE|2024-01-01|2024-12-31|2024-06-01|4:1,2024-10-01|1:10",
       },
       events: [
         {
@@ -86,6 +88,9 @@ describe("normalized portfolio event provider contracts", () => {
     );
     expect(results[0]?.events[0]?.providerRevision).not.toBe(
       results[1]?.events[0]?.providerRevision,
+    );
+    expect(results[0]?.range.providerRevision).not.toBe(
+      results[1]?.range.providerRevision,
     );
   });
 
@@ -233,6 +238,14 @@ describe("normalized portfolio event provider contracts", () => {
       },
     ]);
     expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.range).toMatchObject({
+      coverageStartDate: null,
+      coverageEndDate: null,
+      isComplete: false,
+      basis: "source-reported",
+      observedAt: expect.any(String),
+      providerRevision: expect.stringContaining("alpha-vantage-dividends"),
+    });
     for (const call of fetcher.mock.calls) {
       const request = new URL(String(call[0]));
       expect(request.origin).toBe("https://www.alphavantage.co");
@@ -273,6 +286,45 @@ describe("normalized portfolio event provider contracts", () => {
     expect(results[0]?.events[0]?.providerRevision).not.toBe(
       results[1]?.events[0]?.providerRevision,
     );
+  });
+
+  it("treats a missing future dividend row as no event known from this source", async () => {
+    const { AlphaVantageDividendEventProvider } = await import(
+      "./alpha-vantage-dividends"
+    );
+    const cases = await fixture(
+      "tests/fixtures/providers/alpha-vantage-dividend-cases.json",
+    );
+    const payload = structuredClone(cases.historicalAndFuture) as {
+      symbol: string;
+      data: Array<{ ex_dividend_date: string }>;
+    };
+    payload.data = payload.data.filter(
+      (event) => event.ex_dividend_date < "2026-01-01",
+    );
+    const provider = new AlphaVantageDividendEventProvider(
+      "key",
+      async (input) =>
+        Response.json(
+          new URL(String(input)).searchParams.get("function") === "OVERVIEW"
+            ? cases.overview
+            : payload,
+        ),
+      () => new Date("2026-07-10T18:00:00.000Z"),
+    );
+
+    const result = await provider.getDividends(
+      "CASE",
+      "2026-01-01",
+      "2026-12-31",
+    );
+
+    expect(result.events).toEqual([]);
+    expect(result.range).toMatchObject({
+      basis: "source-reported",
+      isComplete: false,
+      observedAt: "2026-07-10T18:00:00.000Z",
+    });
   });
 
   it("rejects dividends with missing required fields", async () => {

@@ -1,13 +1,13 @@
 # Portfolio Ledger and Calendar Expansion — Design Specification
 
-Status: Revised after adversarial architecture review; awaiting written-spec approval
+Status: Approved; revised for best-effort providers and user-confirmed split history
 Date: 2026-07-10
 
 ## 1. Summary
 
 Expand the current stock movement explainer into a single-user portfolio ledger with four pages: Portfolio, Events, Calendar, and Backfill.
 
-Buy and sell events become the source of truth for ownership. Current and historical holdings are derived from those events plus provider-reported stock splits; the application does not persist a current-holdings row or checkpoint. Daily market prices, movements, Chinese news summaries, dividends, and corporate actions are stored as reusable facts keyed by instrument and effective date.
+Buy and sell events become the source of truth for ownership. Current and historical holdings are derived from those events plus user-confirmed provider-reported stock splits; the application does not persist a current-holdings row or checkpoint. Daily market prices, movements, Chinese news summaries, source-reported dividends, and corporate actions are stored as reusable facts keyed by instrument and effective date.
 
 An incremental reconciliation pipeline serves scheduled screening, historical ledger corrections, and explicit backfills. It reuses valid facts and fetches or analyzes only missing or stale dependencies. The frontend uses ASTRYX with its neutral theme and conservative spacing. The monthly and weekly event calendar is the only substantial custom UI component.
 
@@ -46,10 +46,10 @@ An incremental reconciliation pipeline serves scheduled screening, historical le
 - Supported instruments remain Yahoo-validated US and Canadian stocks and ETFs denominated in USD or CAD.
 - A movement qualifies when its unrounded split-adjusted price return has an absolute value of at least 5.00%. Movement excludes dividend adjustments; Portfolio valuation always uses the latest raw completed close.
 - Explanations are stored and displayed in Simplified Chinese regardless of the selected UI language.
-- Future Calendar dividends include only events announced by the provider.
+- Future Calendar dividends include only events currently announced by the selected source; a missing row is not proof that no future dividend exists.
 - Transactions record completed trades, so manual entry and CSV import reject future trade dates.
 - Provider data remains unofficial and may be corrected or unavailable.
-- A historical event cannot become authoritative until corporate-action coverage is complete from its earliest affected date through today.
+- A historical event cannot become authoritative until the user confirms the displayed split history from its earliest affected date through today for the exact retrieved provider revision.
 - Automatic reconciliation may span more than the manual Backfill tool's 30-calendar-day request limit, but it must chunk work and obey the same daily dispatch ceiling.
 - The UI should favor information density: compact controls, restrained page gutters, short section gaps, dense tables, and minimal card nesting.
 
@@ -84,23 +84,23 @@ The holdings engine folds transactions and splits in deterministic instrument/da
 - A sell-to-zero dated July 10 remains eligible for July 10 screening and stops on July 11.
 - A buy on an ex-dividend date is ineligible; a sell on that date does not remove eligibility.
 
-Every create, edit, delete, or CSV import first requires complete, current corporate-action coverage for each affected instrument from its earliest transaction date through today. Coverage is current for mutation validation only when a successful provider fetch spanning that range completed within the previous 24 hours. Missing or stale coverage is refreshed before the proposal can commit; if the provider is unavailable, the proposal remains uncommitted and returns a retryable coverage error.
+Every create, edit, delete, or CSV import first requires a user-confirmed split-history snapshot for each affected instrument from its earliest transaction date through today. The service fetches the best-effort provider snapshot, displays its source, requested range, retrieval time, derived revision, split rows, and incomplete-history warning, and records confirmation only after explicit user approval. Confirmation is valid only for the confirmed start/end range and exact provider revision. A changed revision, correction, or newly required earlier start date invalidates it and requires review again. If the provider is unavailable, the proposal remains uncommitted and returns a retryable provider error.
 
-Once coverage is established, the service performs a full validation fold for affected instruments. The mutation is rejected if quantity becomes negative at the end of any trade date. Same-day buys and sells are validated by their net end-of-day effect because execution time is not stored.
+Once confirmation is established, the service performs a full validation fold for affected instruments. The mutation is rejected if quantity becomes negative at the end of any trade date. Same-day buys and sells are validated by their net end-of-day effect because execution time is not stored.
 
 ### 5.3 Stock splits
 
-The corporate-action provider imports stock splits as read-only candidates. A split adjusts derived quantities but never creates an editable buy or sell. Corporate actions appear in the Events timeline with source, effective date, ratio, coverage, revision, and sync status.
+The corporate-action provider imports stock splits as read-only, unverified candidates. A split adjusts derived quantities only after the user confirms the displayed history for the affected range and revision; it never creates an editable buy or sell. Corporate actions appear in the Events timeline with source, effective date, ratio, requested/confirmed range, retrieval and confirmation times, revision, and sync status.
 
-New or corrected split candidates are folded against the full transaction ledger before activation. A valid candidate set is promoted atomically, advances the position-basis revision, and creates reconciliation work. A candidate that would make any historical position negative is quarantined rather than applied. The last valid active split set remains authoritative, and Portfolio and Events show a blocking corporate-action conflict with the affected dates. Editing transactions automatically rechecks quarantined candidates; the system never silently accepts an invalid ledger.
+New or corrected split candidates are folded against the full transaction ledger before activation and presented for review. User confirmation of a valid candidate set promotes it atomically, records confirmed start/end, provider revision, and confirmation timestamp, advances the position-basis revision, and creates reconciliation work. A candidate that would make any historical position negative is quarantined rather than offered for activation. A provider revision or correction invalidates the prior confirmation; the last valid active split set remains visible but cannot authorize new affected mutations until the new snapshot is reviewed. Portfolio and Events show a blocking review/conflict state with affected dates. Editing transactions automatically rechecks quarantined candidates; the system never silently accepts an invalid ledger.
 
-While a candidate is quarantined, edits to unrelated instruments remain available. An edit to the affected instrument is validated against the candidate set; it may commit only if the resulting ledger is valid, in which case the transaction change and candidate promotion share one guarded batch. This is the resolution path for a provider correction conflict.
+While a candidate is quarantined or awaiting review, edits to unrelated instruments remain available. An edit to the affected instrument may commit only after the candidate set is valid and the user confirms that exact revision; the transaction change, confirmation, and promotion then share one guarded batch. This is the resolution path for a provider correction conflict.
 
 Active split revisions invalidate derived eligibility intervals, split-adjusted movement calculations that cross the action, and dependent dividend totals. Market raw closes remain reusable unless their provider revision changed.
 
 ### 5.4 Concurrency and revisions
 
-One `position_basis_state` revision covers transactions plus corporate-action coverage, candidates, and the active action set. Every manual mutation, CSV commit, coverage update, candidate quarantine, or corporate-action promotion is submitted with its expected revision.
+One `position_basis_state` revision covers transactions plus split-history confirmations, candidates, and the active action set. Every manual mutation, CSV commit, candidate refresh, confirmation/invalidation, quarantine, or corporate-action promotion is submitted with its expected revision.
 
 The D1 batch begins by inserting a mutation token. A database trigger compares the token's expected revision with `position_basis_state` and calls `RAISE(ABORT, 'ledger_conflict')` on mismatch; a successful token advances the revision. Transaction/corporate-action writes, the 100-positive-position validation result, reconciliation job creation, and job/work links share that same transactional batch. This prevents two individually valid concurrent proposals from combining into an invalid ledger or exceeding the position limit.
 
@@ -147,7 +147,7 @@ This separation allows a stored market fact to be reused if a transaction correc
 
 - Owns manual transaction CRUD and CSV commits.
 - Parses canonical decimal strings into arbitrary-precision domain values.
-- Requires complete corporate-action coverage before historical validation.
+- Requires user confirmation of the exact best-effort split snapshot before historical validation.
 - Validates non-negative historical quantities.
 - Calculates the before/after eligibility difference for affected instruments.
 - Uses the trigger-enforced expected-revision mutation token.
@@ -164,12 +164,12 @@ This separation allows a stored market fact to be reused if a transaction correc
 
 Use separate typed provider contracts rather than extending the existing collapsed `corporateActionDates` set:
 
-- `CorporateActionProvider` returns historical split coverage, stable identity, effective date, numerator/denominator, retrieval time, and revision/correction behavior.
-- `DividendProvider` returns historical and announced future ex-dates, exact per-share amount, currency, stable identity, announcement/retrieval time, and revision/correction behavior.
+- `CorporateActionProvider` returns unverified historical split candidates, stable identity, effective date, numerator/denominator, retrieval time, requested range, and derived snapshot/event revisions.
+- `DividendProvider` returns source-reported historical and announced future ex-dates, exact per-share amount, currency, stable identity, retrieval time, and revision/correction behavior. Its range is explicitly incomplete.
 
-Implementation begins with a provider-feasibility gate using recorded fixtures for historical coverage, future-announcement coverage, corrections, timezone normalization, delisted instruments, and missing data. Yahoo adapters may satisfy these contracts, but the feature cannot cut over until the fixtures prove the required fields and coverage. If no free source can provide announced future amount/ex-date pairs, implementation stops for provider selection rather than fabricating or predicting events.
+The approved personal-app provider model uses Yahoo chart v8 for unverified split candidates and Alpha Vantage for source-reported dividends. Recorded fixtures prove parsing, exact fields, corrections, timezone normalization, delisted instruments, and missing-data behavior; they do not prove exhaustive history. Split candidates require explicit user confirmation before use, and dividend consumers must describe absent future rows as "no event currently known from this source" rather than fabricating, predicting, or asserting nonexistence. Alpha Vantage's 25-request/day free quota and incomplete-history warnings remain visible operating constraints.
 
-The corporate-action service stages candidates, validates them against the ledger, promotes valid revisions, and quarantines invalid corrections. The dividend service upserts facts by provider identity or deterministic fingerprint and recalculates expected totals from the ledger without refetching unchanged events.
+The corporate-action service stages candidates, validates them against the ledger, records user confirmation for an exact range/revision, promotes confirmed valid revisions, invalidates confirmation on provider change, and quarantines conflicting corrections. The dividend service upserts source-reported facts by provider identity or deterministic fingerprint and recalculates expected totals from the ledger without refetching unchanged events.
 
 ### 7.5 Market-fact service
 
@@ -238,11 +238,11 @@ Indexes support `(instrument_id, trade_date, id)` and reverse chronological Even
 ### `corporate_action_coverage`
 
 - `instrument_id`, provider
-- covered start/end dates
-- provider revision and retrieval time
-- status: `complete`, `refreshing`, `unavailable`, or `conflict`
+- requested start/end dates and retrieved time
+- confirmed start/end dates, provider revision, and confirmation timestamp
+- status: `review_required`, `confirmed`, `refreshing`, `unavailable`, or `conflict`
 
-Coverage is valid only for the recorded provider revision and range. A transaction earlier than the covered start date forces coverage expansion before validation.
+Confirmation is valid only for the recorded provider revision and confirmed range. A changed provider revision invalidates confirmation, and a transaction earlier than the confirmed start date forces a broader snapshot and review before validation. Provider results themselves always remain unverified candidates.
 
 ### `daily_market_facts`
 
@@ -282,7 +282,7 @@ Expected total value is derived at read time and is not stored.
 
 ### `position_basis_state`
 
-- singleton revision covering transactions plus corporate-action coverage, candidates, and the active action set
+- singleton revision covering transactions plus split confirmations, candidates, and the active action set
 - update timestamp and last mutation identifier
 
 ### `ledger_mutations`
@@ -400,7 +400,7 @@ trade_date,symbol,side,quantity,price
 - Symbols are trimmed, uppercased, provider-validated, and canonicalized.
 - The first version accepts only the application template, not brokerage-specific exports.
 
-Preview parses and validates every row, establishes required corporate-action coverage, detects a previously committed file digest, folds projected holdings, and records the current position-basis revision. It returns row errors and projected per-symbol quantities without modifying transactions.
+Preview parses and validates every row, fetches any required split-history snapshots, detects a previously committed file digest, folds projected holdings only against confirmed split revisions, and records the current position-basis revision. It returns row errors, projected per-symbol quantities, and any split histories requiring explicit review without modifying transactions. Commit remains unavailable until the user confirms each required range/revision.
 
 Commit succeeds only if every row is valid and the position-basis revision still matches the preview. The trigger-guarded batch inserts all transactions, advances the position-basis revision, creates one reconciliation job, and links its initial planning work atomically. A revision conflict requires a new preview. Valid rows are never partially imported while invalid rows are skipped.
 
@@ -428,17 +428,18 @@ All routes remain protected by HTTP Basic Authentication.
 - `POST /api/events`
 - `PATCH /api/events/:id`
 - `DELETE /api/events/:id`
+- `POST /api/corporate-actions/confirm`
 - `POST /api/event-imports/preview`
 - `POST /api/event-imports/:id/commit`
 - `POST /api/backfills`
 
-Event mutations return the updated event or deletion confirmation plus the reconciliation job identifier. API contracts use decimal strings for user-entered quantities/prices and formatted numeric values only at the UI boundary.
+Event mutations that need a new split range return a review-required response with the normalized candidate snapshot rather than committing. Split confirmation carries the instrument, confirmed start/end, provider revision, and expected position-basis revision; it never accepts client-authored split rows. Successful event mutations return the updated event or deletion confirmation plus the reconciliation job identifier. API contracts use decimal strings for user-entered quantities/prices and formatted numeric values only at the UI boundary.
 
 All ordinary mutation routes retain the current JSON content-type requirement and 64 KiB body limit. Only CSV preview uses its explicit multipart and 5 MiB limit.
 
 Every mutation requires a same-origin `Origin`/`Host` check and a non-simple custom request header issued by the app. This prevents the multipart CSV exception from reintroducing form-based CSRF under cached Basic Authentication. CORS remains disabled. Event edits/deletes require `If-Match`; import commit carries the previewed position-basis revision.
 
-Distinct API errors cover invalid decimals, invalid or unsupported symbols, incomplete corporate-action coverage, quarantined corporate-action conflicts, negative historical holdings, missing events, duplicate imports, stale import previews, position-basis revision conflicts, range limits, provider unavailability, and pipeline terminal failure.
+Distinct API errors cover invalid decimals, invalid or unsupported symbols, split confirmation required, stale split confirmation, quarantined corporate-action conflicts, negative historical holdings, missing events, duplicate imports, stale import previews, position-basis revision conflicts, range limits, provider unavailability, and pipeline terminal failure.
 
 All stored or provider-returned source links are accepted only when parsed as absolute `http:` or `https:` URLs before persistence and again before rendering.
 
@@ -498,7 +499,7 @@ Static strings pass through a lightweight typed translation wrapper. The selecte
 - Supports filters, pagination, manual add, transaction edit, and transaction delete.
 - Destructive edits use an ASTRYX confirmation dialog and show the resulting reconciliation job.
 - CSV import uses FileInput, a validation summary, row-error table, projected holdings table, and explicit commit action.
-- Incomplete split coverage and quarantined provider corrections appear as prominent actionable states. A quarantined correction identifies the invalid dates and remains blocked until transaction edits make the candidate ledger valid.
+- Unconfirmed or invalidated split history and quarantined provider corrections appear as prominent actionable states. Review shows source, requested range, retrieval time, provider revision, exact split rows, and an incomplete-history warning. A quarantined correction identifies the invalid dates and remains blocked until transaction edits make the candidate ledger valid and the user confirms the resulting revision.
 
 ### 13.6 Calendar
 
@@ -515,7 +516,7 @@ ASTRYX buttons, button groups, badges, popovers, dialogs, typography, icons, foc
 
 Both layouts show all-day event chips because daily movers and ex-dividend events have dates, not intraday times. Month view uses a seven-column grid with bounded visible chips and a `more` disclosure for busy dates. Week view uses seven denser day columns without an hourly time axis. Controls provide previous, today, next, and week/month selection.
 
-Mover events show symbol and signed percentage. Activating one opens an accessible ASTRYX dialog containing date, completed prices, movement, Chinese summary, status, and source links. Dividend events show symbol and expected native-currency total; details include eligible shares and per-share amount.
+Mover events show symbol and signed percentage. Activating one opens an accessible ASTRYX dialog containing date, completed prices, movement, Chinese summary, status, and source links. Dividend events show symbol and expected native-currency total; details include eligible shares, per-share amount, source, and best-effort freshness. Empty future dates never imply that no dividend will be announced.
 
 ### 13.7 Backfill
 
@@ -547,9 +548,9 @@ Benchmarks cover 100 instruments, 10,000 transactions, five years of normalized 
 
 - Ledger mutations and CSV commits either complete atomically with their reconciliation job or make no authoritative change.
 - A trigger-enforced position-basis revision prevents concurrent invalid combinations and stale multi-tab writes.
-- Historical transaction validation cannot run against unknown split coverage.
+- Historical transaction validation cannot run until the user confirms the displayed split history for the required range and exact provider revision.
 - Provider split corrections are staged and validated; invalid candidates are quarantined without replacing the active ledger basis.
-- Other provider corrections update facts by revision and invalidate only downstream dependencies.
+- A changed split provider revision invalidates confirmation and requires review again; other provider corrections update facts by revision and invalidate only downstream dependencies.
 - Last valid market facts and summaries remain visible with stale state when refreshes fail.
 - Missing completed bars never become zero movement.
 - Global work items use deterministic keys, leases, bounded retries, terminal D1 recording, and a Queue DLQ.
@@ -584,16 +585,17 @@ The existing watchlist cannot be converted into transactions because it has no q
 - Canonical decimal parsing, arbitrary-precision arithmetic, bounds, multiplication, and display rounding without JavaScript `Number` conversion.
 - Multiple buys/sells, same-day netting, fractional quantities, and negative-history rejection.
 - Portfolio, start-of-day screening, and ex-dividend eligibility boundaries.
-- Forward/reverse splits, fractional cash-in-lieu sell events, corrected split revisions, incomplete coverage, valid promotion, and invalid-candidate quarantine.
+- Forward/reverse splits, fractional cash-in-lieu sell events, corrected split revisions, required user confirmation, revision-driven confirmation invalidation, valid confirmed promotion, and invalid-candidate quarantine.
 - Raw-close valuation and split-adjusted/dividend-unadjusted movement on ordinary, split, and ex-dividend dates.
 - Expected dividends in native currency.
 
-### Provider feasibility tests
+### Provider contract tests
 
-- Historical corporate-action coverage with exact split ratios and stable identities.
-- Announced future ex-dividend coverage with exact per-share amounts and currencies.
+- Unverified historical split snapshots with exact ratios, stable identities, retrieval time, and derived snapshot revisions.
+- Source-reported past/future dividend rows with exact per-share amounts and currencies.
 - Corrections, missing fields, timezones, delisted instruments, duplicate identities, and bounded range retrieval.
-- The provider gate must pass recorded fixtures before split/dividend implementation or production cutover proceeds.
+- A missing future dividend row means no announced event is currently known from that source, not proof of absence.
+- Fixtures validate normalized parser behavior; downstream split use still requires user confirmation and preserves incomplete-history warnings.
 
 ### Pipeline tests
 
@@ -613,7 +615,7 @@ The existing watchlist cannot be converted into transactions because it has no q
 - Published-generation winner selection, superseded-generation exclusion, deleted-ticker identity preservation, provenance hashes, dual-write high-water catch-up, rollback flag, and refusal to expose legacy-basis rows before refresh.
 - Repository indexes and uniqueness constraints.
 - Concurrent transaction CRUD/import/corporate-action promotion against one expected position-basis revision, including trigger abort and 100-position races.
-- Event `If-Match`, CSV preview, coverage establishment, row errors, duplicate digest, stale revision, and atomic commit.
+- Event `If-Match`, CSV preview, split-history review/confirmation, confirmation invalidation, row errors, duplicate digest, stale revision, and atomic commit.
 - Portfolio and Calendar batch queries and conditional `304` fast paths.
 - Auth, CSRF/origin enforcement, input bounds, body limits, URL-scheme validation, and distinct error contracts.
 
@@ -641,14 +643,14 @@ The final gate is `npm run check` extended with the new focused domain, Worker/D
 ## 18. Acceptance criteria
 
 - A user can create, edit, delete, or atomically import transactions and see correct derived holdings without a persisted holdings row.
-- Historical transaction changes commit only with complete split coverage and a trigger-enforced expected position-basis revision.
+- Historical transaction changes commit only with user-confirmed split history for the required range and exact provider revision, plus a trigger-enforced expected position-basis revision.
 - A historical correction automatically queues only required fact work and visibly reports progress.
 - Portfolio shows separate CAD/USD totals and current holdings valued at the latest raw completed close.
 - A held stock moving at least 5% shows its stored Chinese summary; smaller movements do not invoke the LLM.
 - Movement uses split-adjusted, dividend-unadjusted raw-close price return; split and ex-dividend dates do not create adjustment artifacts.
 - Calendar switches between month and week, shows historically held movers and ex-dividend events, and opens an accessible Chinese-summary dialog for movers.
 - Dividend totals use shares held immediately before the ex-date and remain in native currency.
-- Provider-reported splits adjust holdings automatically and appear as read-only Events rows.
+- Provider-reported splits adjust holdings only after user confirmation and appear as read-only Events rows with source/revision status.
 - Provider split corrections that would invalidate the ledger are quarantined and visible rather than silently applied.
 - The weekday pipeline starts at 4:30 p.m. ET across DST and retries bars that are not finalized.
 - A 15-minute dispatcher resumes delayed, quota-paused, and send-failed D1 work; shared work items report progress to every requesting job.

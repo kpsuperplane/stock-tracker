@@ -66,6 +66,7 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
   constructor(
     private readonly apiKey: string,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   async getDividends(
@@ -147,6 +148,10 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
       byIdentity.set(providerEventId, event);
     }
 
+    const events = [...byIdentity.values()].sort((left, right) =>
+      left.exDate.localeCompare(right.exDate),
+    );
+
     return {
       symbol: normalizedSymbol,
       range: {
@@ -155,11 +160,17 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
         coverageStartDate: null,
         coverageEndDate: null,
         isComplete: false,
-        basis: "unverified",
+        basis: "source-reported",
+        observedAt: this.now().toISOString(),
+        providerRevision: [
+          provider,
+          normalizedSymbol,
+          startDate,
+          endDate,
+          ...events.map((event) => event.providerRevision),
+        ].join("|"),
       },
-      events: [...byIdentity.values()].sort((left, right) =>
-        left.exDate.localeCompare(right.exDate),
-      ),
+      events,
     };
   }
 }

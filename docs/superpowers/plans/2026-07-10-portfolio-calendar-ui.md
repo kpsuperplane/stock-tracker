@@ -18,6 +18,7 @@
 - Use conservative density: approximately 16px page gutters, 12px section gaps, compact controls, dense rows, and minimal card nesting.
 - UI locale affects static strings, dates, and numbers. Stored summaries remain Chinese.
 - Preserve pending, partial, stale, conflict, and terminal states; do not hide data because one row failed.
+- Split review must show source, range, retrieval time, provider revision, exact rows, and an incomplete-history warning before confirmation. Dividend copy must identify source-reported best-effort data and must not imply that empty future dates prove absence.
 - Keep the new shell behind a disabled-by-default feature flag until Plan 4.
 - Every task ends with focused tests, visual inspection at desktop/phone widths, review, and a scoped commit.
 
@@ -107,7 +108,7 @@ Implementers may adjust component splitting after inspecting ASTRYX templates, b
 - Manual mutations carry expected position/event revisions.
 - CSV dialog performs upload, preview, projected holdings, and explicit commit.
 
-- [ ] Add failing tests for loading/empty/error states, filters, pagination, manual add, edit revision, delete confirmation, retryable coverage error, negative holdings, stale conflict, read-only split, quarantined correction, and resolving edit.
+- [ ] Add failing tests for loading/empty/error states, filters, pagination, manual add, edit revision, delete confirmation, retryable provider error, split-history review and explicit confirmation, provider-revision invalidation, negative holdings, stale conflict, read-only split, quarantined correction, and resolving edit.
 - [ ] Add import tests for file selection, preview errors, projected holdings, duplicate file, stale preview, commit progress, and template access.
 - [ ] Compose forms, tables, dialogs, file input, badges, alerts, and toasts from ASTRYX.
 - [ ] Ensure pending reconciliation job state is visible after successful mutations.
@@ -145,11 +146,11 @@ Implementers may adjust component splitting after inspecting ASTRYX templates, b
 **Interfaces:**
 
 - CalendarPage owns visible range and server request.
-- MarketCalendar receives normalized all-day mover/dividend events and pending coverage.
+- MarketCalendar receives normalized all-day mover/source-reported-dividend events and pending fact or split-review states.
 - Month/week grids expose keyboard-reachable events; MoverDialog displays stored Chinese summary/sources.
 
 - [ ] Add pure date tests for month boundaries, outside days, leap year, Sunday week start, week crossing month/year, Toronto DST, previous/today/next, and range request bounds.
-- [ ] Add failing UI tests for mover/dividend chips, signed percentages, native expected totals, dividend details with eligible shares/per-share amount, busy-day `more` disclosure, pending legacy refresh, empty dates, and error states.
+- [ ] Add failing UI tests for mover/dividend chips, signed percentages, native expected totals, dividend details with eligible shares/per-share amount/source/best-effort freshness, missing-future-row copy, busy-day `more` disclosure, pending legacy refresh, empty dates, and error states.
 - [ ] Add dialog tests for focus transfer/return, Escape, title/description, source URLs, and Chinese summary under both locales.
 - [ ] Build toolbar controls from ASTRYX Button/ButtonGroup and detail surfaces from ASTRYX Dialog/Popover/Badge.
 - [ ] Implement only the spatial month/week grids and overflow in custom CSS.

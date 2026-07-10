@@ -14,6 +14,7 @@
 - This plan intentionally leaves exact code and signatures to implementing subagents.
 - Legacy report tables and current production scheduler remain authoritative throughout this plan.
 - Market valuation facts use raw close; movement uses split-adjusted, dividend-unadjusted raw-close return.
+- Dividend facts are source-reported best effort. Preserve source/retrieval/revision metadata and never treat a missing future row as proof that no dividend exists.
 - Logical work is deduplicated per fact/date. Provider range batching occurs only at dispatch.
 - Job planning is job-scoped and must attach shared child work independently for every job.
 - D1 persists all unfinished work; Queue delivery is at least once and disposable.
@@ -104,7 +105,7 @@
 - Current/latest market or analysis changes update `latest`; historical changes update their month.
 - Analysis dependency fingerprint covers movement revision and normalized news evidence.
 
-- [ ] Add failing tests for dividend identity/correction, native currency, announced future event, stale refresh, source URL schemes, analysis reuse, and dependency invalidation.
+- [ ] Add failing tests for dividend identity/correction, native currency, source-reported announced future event, missing future row as "not currently known," stale refresh, incomplete-history warning, source URL schemes, analysis reuse, and dependency invalidation.
 - [ ] Add bucket tests proving a historical update does not change Portfolio `latest` or unrelated months.
 - [ ] Add last-valid-result tests for failed market/analysis refreshes.
 - [ ] Implement atomic fact-plus-bucket updates.
@@ -165,10 +166,10 @@
 **Interfaces:**
 
 - Portfolio returns derived quantities, raw-close valuations, split-adjusted movement, summaries, native totals, actual trading dates, conflicts, and freshness.
-- Calendar returns bounded held mover/dividend events and pending coverage for requested week/month ranges.
+- Calendar returns bounded held mover/source-reported-dividend events and pending fact or split-review states for requested week/month ranges.
 - Conditional reads compose ETags from position-basis plus `latest` or intersecting month buckets.
 
-- [ ] Add failing read-model tests for CAD/USD totals, current quantity, qualifying threshold, Chinese summary, start-of-day historical eligibility, ex-date quantity, future dividend, stale/pending/error, quarantined split, and legacy-basis pending refresh.
+- [ ] Add failing read-model tests for CAD/USD totals, current quantity, qualifying threshold, Chinese summary, start-of-day historical eligibility, ex-date quantity, source-reported future dividend, missing future row semantics, stale/pending/error, split review required, quarantined split, and legacy-basis pending refresh.
 - [ ] Add ETag tests for unchanged `304`, historical-month isolation, locale variation, position-basis invalidation, and at-most-ten state-row fast path.
 - [ ] Add API tests for auth, range bounds, decimal-string DTOs, cursor/job error limits, and source URL safety.
 - [ ] Implement feature-flagged routes while keeping legacy UI/read paths active.

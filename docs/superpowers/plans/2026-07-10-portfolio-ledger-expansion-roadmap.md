@@ -4,7 +4,7 @@
 
 **Goal:** Deliver the approved Portfolio, Events, Calendar, and Backfill experience through four testable implementation phases without destabilizing the existing report application.
 
-**Architecture:** Transactions and validated split actions form the position basis; reusable market/dividend/analysis facts are maintained by a D1-backed work pipeline; Portfolio and Calendar combine derived holdings with those facts. The rollout is additive, dual-written, feature-flagged, and reversible until final cutover.
+**Architecture:** Transactions and user-confirmed split actions form the position basis; reusable market/source-reported-dividend/analysis facts are maintained by a D1-backed work pipeline; Portfolio and Calendar combine derived holdings with those facts. The rollout is additive, dual-written, feature-flagged, and reversible until final cutover.
 
 **Tech Stack:** TypeScript, React 19, Vite, Hono, Cloudflare Workers, D1, Queues, Cron, Workers AI, ASTRYX neutral theme, Vitest.
 
@@ -18,6 +18,8 @@
 - Static UI copy supports English and Simplified Chinese. Stored summaries remain Simplified Chinese.
 - Use exact pinned ASTRYX packages with the neutral theme; keep custom CSS limited to the event calendar, financial alignment, and unavoidable overflow.
 - All authoritative mutations use the trigger-enforced position-basis revision.
+- Best-effort split snapshots never authorize mutations automatically; confirmation binds the required range to an exact provider revision and is invalidated when that revision changes.
+- Dividend rows are source-reported and incomplete; absence of a future row means no event is currently known from that source.
 - D1 is the source of truth for unfinished work; Queue messages are transient delivery hints.
 - No task may remove or destructively rewrite legacy report data during this roadmap.
 - Every implementation task follows TDD, focused validation, adversarial review, and a scoped commit.
@@ -32,13 +34,13 @@ File: `docs/superpowers/plans/2026-07-10-ledger-events-foundation.md`
 
 Produces:
 
-- provider feasibility evidence for split and dividend contracts;
-- additive instrument, transaction, coverage, candidate-action, mutation-guard, import, pipeline-job, and job-scoped planning-work schema;
+- best-effort provider evidence and normalized split/dividend contracts;
+- additive instrument, transaction, split-confirmation, candidate-action, mutation-guard, import, pipeline-job, and job-scoped planning-work schema;
 - exact decimal and holdings-domain boundaries;
 - concurrency-safe Events CRUD and atomic CSV preview/commit APIs;
 - no user-visible replacement of the existing dashboard yet.
 
-Gate: authoritative ledger behavior passes domain and local D1 concurrency tests, including quarantined split corrections.
+Gate: authoritative ledger behavior passes domain and local D1 concurrency tests, including explicit split-history confirmation, provider-revision invalidation, and quarantined corrections.
 
 ### Plan 2 — Normalized facts and reconciliation pipeline
 
@@ -89,7 +91,8 @@ Gate: two clean catch-up passes, sampled hash equivalence, bounded D1 rows read/
 | --- | --- | --- |
 | Decimal and holdings semantics | Plan 1 | Plans 2–4 |
 | Position-basis revision and mutation guard | Plan 1 | Plans 2 and 4 |
-| Provider feasibility contracts | Plan 1 | Plans 2 and 4 |
+| Best-effort provider contracts | Plan 1 | Plans 2 and 4 |
+| Split review/confirmation semantics | Plan 1 | Plans 2–4 |
 | Normalized facts and revision buckets | Plan 2 | Plans 3 and 4 |
 | Job/work/outbox lifecycle | Plan 2 | Plans 3 and 4 |
 | Portfolio/Calendar read models | Plan 2 | Plan 3 |
