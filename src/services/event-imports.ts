@@ -8,7 +8,7 @@ import {
   ImportRepository,
   type ImportRowRecord,
 } from "../db/imports";
-import { type InstrumentRecord, InstrumentRepository } from "../db/instruments";
+import type { InstrumentRecord } from "../db/instruments";
 import { PipelineJobRepository } from "../db/pipeline-jobs";
 import { PositionBasisRepository } from "../db/position-basis";
 import { WorkItemRepository } from "../db/work-items";
@@ -27,6 +27,7 @@ const HEADER = "trade_date,symbol,side,quantity,price";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_ROWS = 10_000;
 const MAX_CURRENT_POSITIONS = 100;
+const BULK_QUERY_SIZE = 100;
 const PREVIEW_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const PLANNING_WORK_TYPE = "ledger_reconciliation_plan";
@@ -206,6 +207,14 @@ const confirmationMatches = (
   confirmation.requestedEndDate === snapshot.range.requestedEndDate &&
   confirmation.providerRevision === snapshot.range.providerRevision;
 
+const chunks = <T>(values: readonly T[]): T[][] => {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += BULK_QUERY_SIZE) {
+    result.push(values.slice(index, index + BULK_QUERY_SIZE));
+  }
+  return result;
+};
+
 const parseCsv = (text: string): string[][] | null => {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -277,7 +286,6 @@ const parseCsv = (text: string): string[][] | null => {
 export class EventImportsService {
   private readonly actions: CorporateActionRepository;
   private readonly imports: ImportRepository;
-  private readonly instruments: InstrumentRepository;
   private readonly jobs: PipelineJobRepository;
   private readonly positionBasis: PositionBasisRepository;
   private readonly workItems: WorkItemRepository;
@@ -287,7 +295,6 @@ export class EventImportsService {
   constructor(private readonly dependencies: EventImportsServiceDependencies) {
     this.actions = new CorporateActionRepository(dependencies.db);
     this.imports = new ImportRepository(dependencies.db);
-    this.instruments = new InstrumentRepository(dependencies.db);
     this.jobs = new PipelineJobRepository(dependencies.db);
     this.positionBasis = new PositionBasisRepository(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
@@ -311,7 +318,8 @@ export class EventImportsService {
         .prepare(
           `DELETE FROM import_rows WHERE import_batch_id IN (
              SELECT id FROM import_batches
-             WHERE created_at <= ?1 AND status <> 'preview'
+             WHERE status = 'expired'
+                OR (status = 'committed' AND committed_at IS NOT NULL AND committed_at <= ?1)
            )`,
         )
         .bind(sevenDaysAgo),
@@ -354,8 +362,11 @@ export class EventImportsService {
 
     const timestamp = this.now().toISOString();
     const today = timestamp.slice(0, 10);
-    const preliminary = await Promise.all(
-      sourceRows.map((row, index) => this.normalizeRow(row, index + 2, today)),
+    const instrumentsBySymbol = await this.instrumentsBySymbol(
+      sourceRows.map((row) => (row[1] ?? "").trim().toUpperCase()),
+    );
+    const preliminary = sourceRows.map((row, index) =>
+      this.normalizeRow(row, index + 2, today, instrumentsBySymbol),
     );
 
     const validByInstrument = new Map<
@@ -372,9 +383,14 @@ export class EventImportsService {
       validByInstrument.set(row.instrument.id, current);
     }
 
+    const instrumentIds = [...validByInstrument.keys()];
+    const transactionsByInstrument =
+      await this.transactionsByInstrument(instrumentIds);
+    const actionsByInstrument =
+      await this.activeActionsByInstrument(instrumentIds);
     const snapshots = new Map<string, SplitEventRange>();
     for (const [instrumentId, group] of validByInstrument) {
-      const existing = await this.transactionsForInstrument(instrumentId);
+      const existing = transactionsByInstrument.get(instrumentId) ?? [];
       const startDate = [
         ...existing.map((row) => row.tradeDate),
         ...group.rows.map((row) => row.tradeDate),
@@ -406,23 +422,14 @@ export class EventImportsService {
 
     const projectedHoldings: Record<string, string> = {};
     for (const [instrumentId, group] of validByInstrument) {
-      const actions = (
-        await this.actions.listForInstrument(instrumentId)
-      ).filter((action) => action.status === "active");
+      const actions = actionsByInstrument.get(instrumentId) ?? [];
       const snapshot = snapshots.get(instrumentId);
       if (!snapshot) continue;
       try {
         const holdings = deriveHoldings({
           today,
           transactions: [
-            ...(await this.transactionsForInstrument(instrumentId)).map(
-              (row) => ({
-                id: row.id,
-                tradeDate: row.tradeDate,
-                side: row.side,
-                quantityDecimal: row.quantityDecimal,
-              }),
-            ),
+            ...(transactionsByInstrument.get(instrumentId) ?? []),
             ...group.rows.map(toLedgerTransaction),
           ],
           activeSplits: actions.map(toActiveSplit),
@@ -474,12 +481,18 @@ export class EventImportsService {
       throw error;
     }
 
+    const coverageByKey = await this.coverageByInstrumentProvider(
+      [...snapshots].map(([instrumentId, snapshot]) => ({
+        instrumentId,
+        provider: snapshot.range.provider,
+      })),
+    );
     const reviews: ImportSplitReview[] = [];
     for (const [instrumentId, snapshot] of snapshots) {
-      const coverage = await this.coverageFor(
-        instrumentId,
-        snapshot.range.provider,
-      );
+      const coverage =
+        coverageByKey.get(
+          this.coverageKey(instrumentId, snapshot.range.provider),
+        ) ?? null;
       if (!coverageMatches(coverage, snapshot)) {
         const instrument = validByInstrument.get(instrumentId)?.instrument;
         if (instrument) reviews.push(this.reviewFor(instrument, snapshot));
@@ -547,12 +560,19 @@ export class EventImportsService {
     if (confirmations.size !== input.confirmations.length)
       return { kind: "validation_error", code: "duplicate_confirmation" };
 
+    const instrumentIds = [...byInstrument.keys()];
+    const instrumentsById = await this.instrumentsById(instrumentIds);
+    const transactionsByInstrument =
+      await this.transactionsByInstrument(instrumentIds);
+    const actionsByInstrument =
+      await this.activeActionsByInstrument(instrumentIds);
+
     const refreshed: {
       instrument: InstrumentRecord;
       snapshot: SplitEventRange;
     }[] = [];
     for (const [instrumentId, group] of byInstrument) {
-      const instrument = await this.instruments.findById(instrumentId);
+      const instrument = instrumentsById.get(instrumentId) ?? null;
       if (!instrument)
         return { kind: "validation_error", code: "instrument_not_found" };
       const staged = group[0]?.snapshot;
@@ -580,13 +600,23 @@ export class EventImportsService {
           reviews: [this.reviewFor(instrument, snapshot)],
         };
       }
-      const coverage = await this.coverageFor(
-        instrumentId,
-        snapshot.range.provider,
-      );
+      refreshed.push({ instrument, snapshot });
+    }
+    const coverageByKey = await this.coverageByInstrumentProvider(
+      refreshed.map(({ instrument, snapshot }) => ({
+        instrumentId: instrument.id,
+        provider: snapshot.range.provider,
+      })),
+    );
+    for (const { instrument, snapshot } of refreshed) {
+      const group = byInstrument.get(instrument.id) ?? [];
+      const coverage =
+        coverageByKey.get(
+          this.coverageKey(instrument.id, snapshot.range.provider),
+        ) ?? null;
       if (
         !coverageMatches(coverage, snapshot) &&
-        !confirmationMatches(confirmations.get(instrumentId), snapshot)
+        !confirmationMatches(confirmations.get(instrument.id), snapshot)
       ) {
         return {
           kind: "review_required",
@@ -595,7 +625,8 @@ export class EventImportsService {
       }
       try {
         await this.assertProjectedHoldings(
-          instrumentId,
+          transactionsByInstrument.get(instrument.id) ?? [],
+          actionsByInstrument.get(instrument.id) ?? [],
           group,
           snapshot,
           this.now().toISOString().slice(0, 10),
@@ -603,7 +634,6 @@ export class EventImportsService {
       } catch {
         return { kind: "validation_error", code: "negative_holdings" };
       }
-      refreshed.push({ instrument, snapshot });
     }
 
     if (
@@ -723,11 +753,12 @@ export class EventImportsService {
     };
   }
 
-  private async normalizeRow(
+  private normalizeRow(
     values: string[],
     rowNumber: number,
     today: string,
-  ): Promise<PreliminaryRow> {
+    instrumentsBySymbol: ReadonlyMap<string, InstrumentRecord>,
+  ): PreliminaryRow {
     const errors: string[] = [];
     if (values.length !== 5)
       return {
@@ -775,7 +806,7 @@ export class EventImportsService {
       errors.push("invalid_price");
     }
     const instrument =
-      errors.length === 0 ? await this.instruments.findBySymbol(symbol) : null;
+      errors.length === 0 ? (instrumentsBySymbol.get(symbol) ?? null) : null;
     if (errors.length === 0 && !instrument) errors.push("unknown_symbol");
     const normalized =
       errors.length === 0 && instrument && quantityDecimal && priceDecimal
@@ -854,47 +885,160 @@ export class EventImportsService {
     };
   }
 
-  private async transactionsForInstrument(
-    instrumentId: string,
-  ): Promise<LedgerTransaction[]> {
-    const result = await this.dependencies.db
-      .prepare(
-        `SELECT id, trade_date, side, quantity_decimal FROM transactions
-       WHERE instrument_id = ?1 ORDER BY trade_date, id`,
-      )
-      .bind(instrumentId)
-      .all<{
-        id: string;
-        trade_date: string;
-        side: Side;
-        quantity_decimal: string;
-      }>();
-    return result.results.map((row) => ({
-      id: row.id,
-      tradeDate: row.trade_date,
-      side: row.side,
-      quantityDecimal: row.quantity_decimal,
-    }));
+  private async instrumentsBySymbol(
+    symbols: readonly string[],
+  ): Promise<Map<string, InstrumentRecord>> {
+    const result = new Map<string, InstrumentRecord>();
+    for (const group of chunks([...new Set(symbols.filter(Boolean))])) {
+      const placeholders = group.map((_, index) => `?${index + 1}`).join(", ");
+      const rows = await this.dependencies.db
+        .prepare(
+          `SELECT id, symbol, company_name AS companyName, exchange, currency,
+                  instrument_type AS instrumentType, provider,
+                  provider_symbol AS providerSymbol,
+                  provider_metadata_json AS providerMetadataJson,
+                  created_at AS createdAt, updated_at AS updatedAt
+           FROM instruments WHERE symbol IN (${placeholders})`,
+        )
+        .bind(...group)
+        .all<InstrumentRecord>();
+      for (const row of rows.results) result.set(row.symbol, row);
+    }
+    return result;
   }
 
-  private async coverageFor(
-    instrumentId: string,
-    provider: string,
-  ): Promise<CoverageRecord | null> {
-    const row = await this.dependencies.db
-      .prepare(
-        `SELECT instrument_id, provider, requested_start_date, requested_end_date,
-              snapshot_provider_revision, retrieved_at, confirmed_start_date,
-              confirmed_end_date, confirmed_provider_revision, confirmed_at,
-              status, error_code, error_message, updated_at
-       FROM corporate_action_coverage WHERE instrument_id = ?1 AND provider = ?2`,
-      )
-      .bind(instrumentId, provider)
-      .first<Record<string, string | null>>();
-    if (!row) return null;
+  private async instrumentsById(
+    instrumentIds: readonly string[],
+  ): Promise<Map<string, InstrumentRecord>> {
+    const result = new Map<string, InstrumentRecord>();
+    for (const group of chunks([...new Set(instrumentIds)])) {
+      const placeholders = group.map((_, index) => `?${index + 1}`).join(", ");
+      const rows = await this.dependencies.db
+        .prepare(
+          `SELECT id, symbol, company_name AS companyName, exchange, currency,
+                  instrument_type AS instrumentType, provider,
+                  provider_symbol AS providerSymbol,
+                  provider_metadata_json AS providerMetadataJson,
+                  created_at AS createdAt, updated_at AS updatedAt
+           FROM instruments WHERE id IN (${placeholders})`,
+        )
+        .bind(...group)
+        .all<InstrumentRecord>();
+      for (const row of rows.results) result.set(row.id, row);
+    }
+    return result;
+  }
+
+  private async transactionsByInstrument(
+    instrumentIds: readonly string[],
+  ): Promise<Map<string, LedgerTransaction[]>> {
+    const result = new Map<string, LedgerTransaction[]>();
+    for (const group of chunks([...new Set(instrumentIds)])) {
+      const placeholders = group.map((_, index) => `?${index + 1}`).join(", ");
+      const rows = await this.dependencies.db
+        .prepare(
+          `SELECT id, instrument_id, trade_date, side, quantity_decimal
+           FROM transactions WHERE instrument_id IN (${placeholders})
+           ORDER BY instrument_id, trade_date, id`,
+        )
+        .bind(...group)
+        .all<{
+          id: string;
+          instrument_id: string;
+          trade_date: string;
+          side: Side;
+          quantity_decimal: string;
+        }>();
+      for (const row of rows.results) {
+        const transactions = result.get(row.instrument_id) ?? [];
+        transactions.push({
+          id: row.id,
+          tradeDate: row.trade_date,
+          side: row.side,
+          quantityDecimal: row.quantity_decimal,
+        });
+        result.set(row.instrument_id, transactions);
+      }
+    }
+    return result;
+  }
+
+  private async activeActionsByInstrument(
+    instrumentIds: readonly string[],
+  ): Promise<Map<string, CorporateActionRecord[]>> {
+    const result = new Map<string, CorporateActionRecord[]>();
+    for (const group of chunks([...new Set(instrumentIds)])) {
+      const placeholders = group.map((_, index) => `?${index + 1}`).join(", ");
+      const rows = await this.dependencies.db
+        .prepare(
+          `SELECT id, instrument_id AS instrumentId, effective_date AS effectiveDate,
+                  split_numerator AS splitNumerator, split_denominator AS splitDenominator,
+                  provider, provider_event_id AS providerEventId,
+                  provider_revision AS providerRevision, retrieved_at AS retrievedAt,
+                  revision, status, conflict_code AS conflictCode,
+                  conflict_message AS conflictMessage, created_at AS createdAt,
+                  updated_at AS updatedAt
+           FROM corporate_actions
+           WHERE status = 'active' AND instrument_id IN (${placeholders})
+           ORDER BY instrument_id, effective_date, id`,
+        )
+        .bind(...group)
+        .all<CorporateActionRecord>();
+      for (const row of rows.results) {
+        const actions = result.get(row.instrumentId) ?? [];
+        actions.push(row);
+        result.set(row.instrumentId, actions);
+      }
+    }
+    return result;
+  }
+
+  private coverageKey(instrumentId: string, provider: string): string {
+    return `${instrumentId}\u0000${provider}`;
+  }
+
+  private async coverageByInstrumentProvider(
+    entries: readonly { instrumentId: string; provider: string }[],
+  ): Promise<Map<string, CoverageRecord>> {
+    const result = new Map<string, CoverageRecord>();
+    const idsByProvider = new Map<string, Set<string>>();
+    for (const { instrumentId, provider } of entries) {
+      const ids = idsByProvider.get(provider) ?? new Set<string>();
+      ids.add(instrumentId);
+      idsByProvider.set(provider, ids);
+    }
+    for (const [provider, ids] of idsByProvider) {
+      for (const group of chunks([...ids])) {
+        const placeholders = group
+          .map((_, index) => `?${index + 2}`)
+          .join(", ");
+        const rows = await this.dependencies.db
+          .prepare(
+            `SELECT instrument_id, provider, requested_start_date, requested_end_date,
+                    snapshot_provider_revision, retrieved_at, confirmed_start_date,
+                    confirmed_end_date, confirmed_provider_revision, confirmed_at,
+                    status, error_code, error_message, updated_at
+             FROM corporate_action_coverage
+             WHERE provider = ?1 AND instrument_id IN (${placeholders})`,
+          )
+          .bind(provider, ...group)
+          .all<Record<string, string | null>>();
+        for (const row of rows.results) {
+          const coverage = this.coverageFromRow(row);
+          result.set(
+            this.coverageKey(coverage.instrumentId, coverage.provider),
+            coverage,
+          );
+        }
+      }
+    }
+    return result;
+  }
+
+  private coverageFromRow(row: Record<string, string | null>): CoverageRecord {
     return {
-      instrumentId: row.instrument_id as string,
-      provider: row.provider as string,
+      instrumentId: row.instrument_id ?? "",
+      provider: row.provider ?? "",
       requestedStartDate: row.requested_start_date ?? "",
       requestedEndDate: row.requested_end_date ?? "",
       snapshotProviderRevision: row.snapshot_provider_revision ?? null,
@@ -1011,21 +1155,16 @@ export class EventImportsService {
     }
   }
 
-  private async assertProjectedHoldings(
-    instrumentId: string,
+  private assertProjectedHoldings(
+    existing: LedgerTransaction[],
+    active: CorporateActionRecord[],
     rows: NormalizedImportTransaction[],
     snapshot: SplitEventRange,
     today: string,
-  ): Promise<void> {
-    const active = (await this.actions.listForInstrument(instrumentId)).filter(
-      (action) => action.status === "active",
-    );
+  ): void {
     deriveHoldings({
       today,
-      transactions: [
-        ...(await this.transactionsForInstrument(instrumentId)),
-        ...rows.map(toLedgerTransaction),
-      ],
+      transactions: [...existing, ...rows.map(toLedgerTransaction)],
       activeSplits: this.proposedSplits(active, snapshot),
     });
   }
@@ -1062,17 +1201,20 @@ export class EventImportsService {
     const instruments = await this.dependencies.db
       .prepare("SELECT id FROM instruments ORDER BY id")
       .all<{ id: string }>();
+    const instrumentIds = instruments.results.map(({ id }) => id);
+    const transactionsByInstrument =
+      await this.transactionsByInstrument(instrumentIds);
+    const actionsByInstrument =
+      await this.activeActionsByInstrument(instrumentIds);
     let currentPositions = 0;
     try {
       for (const { id } of instruments.results) {
-        const actions = (await this.actions.listForInstrument(id)).filter(
-          (action) => action.status === "active",
-        );
+        const actions = actionsByInstrument.get(id) ?? [];
         const snapshot = snapshots.get(id);
         const holdings = deriveHoldings({
           today,
           transactions: [
-            ...(await this.transactionsForInstrument(id)),
+            ...(transactionsByInstrument.get(id) ?? []),
             ...(imported.get(id) ?? []).map(toLedgerTransaction),
           ],
           activeSplits: snapshot
@@ -1121,7 +1263,8 @@ export class EventImportsService {
           `UPDATE corporate_actions
            SET status = 'active', conflict_code = NULL, conflict_message = NULL, updated_at = ?5
            WHERE instrument_id = ?1 AND provider = ?2 AND provider_event_id = ?3
-             AND provider_revision = ?4 AND status = 'candidate'`,
+             AND provider_revision = ?4
+             AND status IN ('candidate', 'active', 'superseded', 'quarantined')`,
         )
         .bind(
           instrument.id,

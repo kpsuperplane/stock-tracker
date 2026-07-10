@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { InstrumentRepository } from "../../src/db/instruments";
 import type {
   CorporateActionProvider,
   SplitEventRange,
@@ -182,6 +183,18 @@ describe("EventImportsService", () => {
     expect(duplicate).toEqual(expect.objectContaining({ kind: "duplicate" }));
   });
 
+  it("bulk-resolves repeated symbols rather than issuing one D1 lookup per CSV row", async () => {
+    const lookup = vi.spyOn(InstrumentRepository.prototype, "findBySymbol");
+    const result = await service().preview({
+      originalFilename: "many-valid.csv",
+      file: new TextEncoder().encode(
+        csv(Array.from({ length: 500 }, () => "2024-01-02,SHOP.TO,buy,1,1")),
+      ),
+    });
+    expect(result).toEqual(expect.objectContaining({ kind: "preview" }));
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
   it("requires the previewed split confirmation, rejects a provider revision change, and never reparses staged bytes", async () => {
     const first = await service(provider("snapshot-r1")).preview({
       originalFilename: "portfolio-events.csv",
@@ -327,6 +340,52 @@ describe("EventImportsService", () => {
     ).toEqual({ status: "active" });
   });
 
+  it.each([
+    "active",
+    "quarantined",
+  ] as const)("reactivates an exact fresh snapshot action previously marked %s", async (status) => {
+    const event = {
+      type: "split" as const,
+      symbol: "SHOP.TO",
+      effectiveDate: "2025-01-02",
+      numerator: "2",
+      denominator: "1",
+      provider: "yahoo-chart-v8",
+      providerEventId: "reusable-split",
+      providerRevision: "event-r2",
+    };
+    const importService = service(providerWithEvents("snapshot-r2", [event]));
+    const preview = await importService.preview({
+      originalFilename: "portfolio-events.csv",
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
+    });
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    await env.DB.prepare(
+      `INSERT INTO corporate_actions
+         (id, instrument_id, action_type, effective_date, split_numerator, split_denominator,
+          provider, provider_event_id, provider_revision, retrieved_at, revision, status,
+          conflict_code, conflict_message, created_at, updated_at)
+         VALUES ('reusable-action', 'instrument-1', 'split', '2025-01-02', '2', '1',
+                 'yahoo-chart-v8', 'reusable-split', 'event-r2', ?1, 1, ?2,
+                 ?3, ?3, ?1, ?1)`,
+    )
+      .bind(now, status, status === "quarantined" ? "prior_conflict" : null)
+      .run();
+    await expect(
+      importService.commit({
+        batchId: preview.batchId,
+        expectedPositionBasisRevision: 0,
+        confirmations: [confirmation("snapshot-r2")],
+      }),
+    ).resolves.toEqual(expect.objectContaining({ kind: "committed" }));
+    expect(
+      await env.DB.prepare(
+        "SELECT status, conflict_code FROM corporate_actions WHERE id = 'reusable-action'",
+      ).first(),
+    ).toEqual({ status: "active", conflict_code: null });
+  });
+
   it("does not allow an import to create a 101st current position", async () => {
     const statements: D1PreparedStatement[] = [];
     for (let index = 2; index <= 101; index += 1) {
@@ -469,6 +528,44 @@ describe("EventImportsService", () => {
     ).toEqual({ count: 1 });
   });
 
+  it("allows exactly one of two simultaneous commits to advance the ledger", async () => {
+    const importService = service();
+    const preview = await importService.preview({
+      originalFilename: "portfolio-events.csv",
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
+    });
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    const input = {
+      batchId: preview.batchId,
+      expectedPositionBasisRevision: 0,
+      confirmations: [confirmation()],
+    };
+    const results = await Promise.all([
+      importService.commit(input),
+      importService.commit(input),
+    ]);
+    expect(results.map((result) => result.kind).sort()).toEqual([
+      "committed",
+      "conflict",
+    ]);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM transactions",
+      ).first(),
+    ).toEqual({ count: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM pipeline_jobs",
+      ).first(),
+    ).toEqual({ count: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT revision FROM position_basis_state WHERE id = 1",
+      ).first(),
+    ).toEqual({ revision: 1 });
+  });
+
   it("aborts atomically when a preview expires after the initial read but before the guarded write", async () => {
     let current = new Date(now);
     const previewService = new EventImportsService({
@@ -543,9 +640,72 @@ describe("EventImportsService", () => {
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "expired" }));
   });
+
+  it("purges expired staging immediately and committed staging seven days after commitment", async () => {
+    const expired = await service().preview({
+      originalFilename: "expired.csv",
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
+    });
+    const committed = await service().preview({
+      originalFilename: "committed.csv",
+      file: new TextEncoder().encode(csv(["2024-01-03,SHOP.TO,buy,1,1"])),
+    });
+    expect(expired.kind).toBe("preview");
+    expect(committed.kind).toBe("preview");
+    if (expired.kind !== "preview" || committed.kind !== "preview") return;
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE import_batches SET expires_at = '2026-07-10T11:59:59.000Z' WHERE id = ?1",
+      ).bind(expired.batchId),
+      env.DB.prepare(
+        `UPDATE import_batches
+           SET status = 'committed', committed_at = '2026-07-03T11:59:59.000Z'
+           WHERE id = ?1`,
+      ).bind(committed.batchId),
+    ]);
+    await service().cleanup();
+    for (const batchId of [expired.batchId, committed.batchId]) {
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM import_rows WHERE import_batch_id = ?1",
+        )
+          .bind(batchId)
+          .first(),
+      ).toEqual({ count: 0 });
+      expect(
+        await env.DB.prepare("SELECT status FROM import_batches WHERE id = ?1")
+          .bind(batchId)
+          .first(),
+      ).toBeTruthy();
+    }
+  });
 });
 
 describe("event import route", () => {
+  it("accepts a 5 MiB file part plus bounded multipart framing rather than rejecting the envelope", async () => {
+    const form = new FormData();
+    form.set(
+      "file",
+      new File([new Uint8Array(5 * 1024 * 1024)], "boundary.csv", {
+        type: "text/csv",
+      }),
+    );
+    const response = await exports.default.fetch(
+      new Request("http://local/api/event-imports/preview", {
+        method: "POST",
+        body: form,
+        headers: {
+          Authorization: "Basic b3duZXI6cGFzc3dvcmQ=",
+          Origin: "http://local",
+          Host: "local",
+          "X-Stock-Tracker-Request": "1",
+        },
+      }),
+    );
+    expect(response.status).not.toBe(413);
+    expect(response.status).toBe(422);
+  });
+
   it("requires same-origin application requests before multipart parsing", async () => {
     const form = new FormData();
     form.set(
