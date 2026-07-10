@@ -1,6 +1,6 @@
 # Portfolio Ledger and Calendar Expansion — Design Specification
 
-Status: Design approved; awaiting written-spec review
+Status: Revised after adversarial architecture review; awaiting written-spec approval
 Date: 2026-07-10
 
 ## 1. Summary
@@ -44,11 +44,12 @@ An incremental reconciliation pipeline serves scheduled screening, historical le
 
 - The application remains capped at 100 instruments with a positive current position. Instruments sold to zero remain as historical identities without consuming the current-position limit.
 - Supported instruments remain Yahoo-validated US and Canadian stocks and ETFs denominated in USD or CAD.
-- A movement qualifies when its unrounded completed close-to-close percentage has an absolute value of at least 5.00%.
+- A movement qualifies when its unrounded split-adjusted price return has an absolute value of at least 5.00%. Movement excludes dividend adjustments; Portfolio valuation always uses the latest raw completed close.
 - Explanations are stored and displayed in Simplified Chinese regardless of the selected UI language.
 - Future Calendar dividends include only events announced by the provider.
 - Transactions record completed trades, so manual entry and CSV import reject future trade dates.
 - Provider data remains unofficial and may be corrected or unavailable.
+- A historical event cannot become authoritative until corporate-action coverage is complete from its earliest affected date through today.
 - Automatic reconciliation may span more than the manual Backfill tool's 30-calendar-day request limit, but it must chunk work and obey the same daily dispatch ceiling.
 - The UI should favor information density: compact controls, restrained page gutters, short section gaps, dense tables, and minimal card nesting.
 
@@ -68,7 +69,9 @@ Each editable transaction stores:
 
 Fees and brokerage account are not captured. The execution price is retained for future accounting capabilities but is not used for cost-basis calculations in this scope.
 
-User-entered quantity and price accept at most six decimal places. The API accepts canonical decimal strings, and D1 stores integer micro-units to avoid binary floating-point errors. Split ratios are stored as integer numerator and denominator values.
+User-entered quantity and price accept at most six decimal places. The API and D1 store canonical decimal strings, and a domain `Decimal` wrapper backed by arbitrary-precision decimal arithmetic handles folding, multiplication, comparison, and display rounding. Values do not pass through JavaScript `Number`. Split ratios are stored as integer numerator and denominator values and applied with rational arithmetic.
+
+Quantity and price are each bounded to `1,000,000,000` before six fractional digits. Derived quantities retain at least twelve fractional digits internally and display six. If a broker pays cash in lieu after a reverse split, the user records the fractional disposition as a sell event; the application does not infer broker-specific cash handling.
 
 ### 5.2 Derived quantity rules
 
@@ -81,11 +84,27 @@ The holdings engine folds transactions and splits in deterministic instrument/da
 - A sell-to-zero dated July 10 remains eligible for July 10 screening and stops on July 11.
 - A buy on an ex-dividend date is ineligible; a sell on that date does not remove eligibility.
 
-Every create, edit, delete, or CSV import performs a full validation fold for affected instruments. The mutation is rejected if quantity becomes negative at the end of any trade date. Same-day buys and sells are validated by their net end-of-day effect because execution time is not stored.
+Every create, edit, delete, or CSV import first requires complete, current corporate-action coverage for each affected instrument from its earliest transaction date through today. Coverage is current for mutation validation only when a successful provider fetch spanning that range completed within the previous 24 hours. Missing or stale coverage is refreshed before the proposal can commit; if the provider is unavailable, the proposal remains uncommitted and returns a retryable coverage error.
+
+Once coverage is established, the service performs a full validation fold for affected instruments. The mutation is rejected if quantity becomes negative at the end of any trade date. Same-day buys and sells are validated by their net end-of-day effect because execution time is not stored.
 
 ### 5.3 Stock splits
 
-The provider adapter imports stock splits as read-only corporate actions. A split adjusts derived quantities but never creates an editable buy or sell. Corporate actions appear in the Events timeline with source, effective date, ratio, and sync status. A corrected provider split invalidates only derived eligibility ranges and dependent dividend totals; reusable market facts remain valid unless their own provider inputs change.
+The corporate-action provider imports stock splits as read-only candidates. A split adjusts derived quantities but never creates an editable buy or sell. Corporate actions appear in the Events timeline with source, effective date, ratio, coverage, revision, and sync status.
+
+New or corrected split candidates are folded against the full transaction ledger before activation. A valid candidate set is promoted atomically, advances the position-basis revision, and creates reconciliation work. A candidate that would make any historical position negative is quarantined rather than applied. The last valid active split set remains authoritative, and Portfolio and Events show a blocking corporate-action conflict with the affected dates. Editing transactions automatically rechecks quarantined candidates; the system never silently accepts an invalid ledger.
+
+While a candidate is quarantined, edits to unrelated instruments remain available. An edit to the affected instrument is validated against the candidate set; it may commit only if the resulting ledger is valid, in which case the transaction change and candidate promotion share one guarded batch. This is the resolution path for a provider correction conflict.
+
+Active split revisions invalidate derived eligibility intervals, split-adjusted movement calculations that cross the action, and dependent dividend totals. Market raw closes remain reusable unless their provider revision changed.
+
+### 5.4 Concurrency and revisions
+
+One `position_basis_state` revision covers transactions plus corporate-action coverage, candidates, and the active action set. Every manual mutation, CSV commit, coverage update, candidate quarantine, or corporate-action promotion is submitted with its expected revision.
+
+The D1 batch begins by inserting a mutation token. A database trigger compares the token's expected revision with `position_basis_state` and calls `RAISE(ABORT, 'ledger_conflict')` on mismatch; a successful token advances the revision. Transaction/corporate-action writes, the 100-positive-position validation result, reconciliation job creation, and job/work links share that same transactional batch. This prevents two individually valid concurrent proposals from combining into an invalid ledger or exceeding the position limit.
+
+Event `PATCH` and `DELETE` also require the event revision through `If-Match`. A stale tab receives `409 ledger_conflict` and must reload before retrying.
 
 ## 6. Architecture
 
@@ -95,10 +114,12 @@ flowchart LR
     API --> LEDGER["Transactions + corporate actions"]
     LEDGER --> HOLDINGS["In-memory holdings engine"]
     HOLDINGS --> UI
-    CRON["4:30 p.m. ET weekday Cron"] --> PIPE["Incremental reconciliation pipeline"]
-    API -->|"ledger revision or backfill"| PIPE
-    PIPE --> QUEUE["Cloudflare Queue"]
-    QUEUE --> PROVIDERS["Yahoo / news / Workers AI"]
+    CRON["4:30 p.m. ET planner"] --> PIPE["Incremental reconciliation pipeline"]
+    DISPATCH["15-minute dispatcher / reconciler"] --> PIPE
+    API -->|"position-basis revision or backfill"| PIPE
+    PIPE --> WORK["D1 work-item outbox"]
+    WORK --> QUEUE["Cloudflare Queue"]
+    QUEUE --> PROVIDERS["Market / actions / dividends / news / Workers AI"]
     PROVIDERS --> FACTS["Reusable market, dividend, source, and analysis facts"]
     FACTS --> UI
     HOLDINGS --> PIPE
@@ -125,10 +146,12 @@ This separation allows a stored market fact to be reused if a transaction correc
 ### 7.2 Ledger service
 
 - Owns manual transaction CRUD and CSV commits.
-- Parses canonical decimal strings into fixed-precision values.
+- Parses canonical decimal strings into arbitrary-precision domain values.
+- Requires complete corporate-action coverage before historical validation.
 - Validates non-negative historical quantities.
 - Calculates the before/after eligibility difference for affected instruments.
-- Atomically updates the ledger revision and creates a reconciliation job.
+- Uses the trigger-enforced expected-revision mutation token.
+- Atomically updates transactions, the position-basis revision, reconciliation job, and one job-scoped planning work link. Large globally deduplicated child work sets are materialized and attached idempotently after commit in bounded pages.
 
 ### 7.3 Holdings engine
 
@@ -137,19 +160,23 @@ This separation allows a stored market fact to be reused if a transaction correc
 - Returns current quantities, dated quantities, or held intervals through a small typed interface.
 - Persists no position snapshots or checkpoints.
 
-### 7.4 Corporate-action and dividend service
+### 7.4 Corporate-action and dividend services
 
-- Retrieves provider-reported splits and dividends for relevant instruments.
-- Upserts facts using stable provider identity or a deterministic fingerprint.
-- Stores provenance, retrieval time, and content revision.
-- Treats future dividends as announced events, not predictions.
-- Recalculates expected dividend totals from the ledger without refetching unchanged dividend facts.
+Use separate typed provider contracts rather than extending the existing collapsed `corporateActionDates` set:
+
+- `CorporateActionProvider` returns historical split coverage, stable identity, effective date, numerator/denominator, retrieval time, and revision/correction behavior.
+- `DividendProvider` returns historical and announced future ex-dates, exact per-share amount, currency, stable identity, announcement/retrieval time, and revision/correction behavior.
+
+Implementation begins with a provider-feasibility gate using recorded fixtures for historical coverage, future-announcement coverage, corrections, timezone normalization, delisted instruments, and missing data. Yahoo adapters may satisfy these contracts, but the feature cannot cut over until the fixtures prove the required fields and coverage. If no free source can provide announced future amount/ex-date pairs, implementation stops for provider selection rather than fabricating or predicting events.
+
+The corporate-action service stages candidates, validates them against the ledger, promotes valid revisions, and quarantines invalid corrections. The dividend service upserts facts by provider identity or deterministic fingerprint and recalculates expected totals from the ledger without refetching unchanged events.
 
 ### 7.5 Market-fact service
 
-- Retrieves the target completed daily bar and immediately preceding completed bar.
+- Retrieves bounded date ranges and emits all completed daily facts in that range, including enough lookback for the preceding trading bar.
 - Stores one normalized result per instrument and trading date.
-- Records adjusted/close price basis, prices, amount change, percentage change, provider revision, and retrieval time.
+- Stores previous/current raw closes, any split factor crossing the comparison, split-adjusted comparison price, split-adjusted amount/percentage price return, optional raw-close difference for diagnostics, provider revision, and retrieval time.
+- Uses raw latest close for Portfolio valuation and split-adjusted raw-close return for movement; it never uses dividend-adjusted close for either purpose.
 - Never substitutes an intraday quote for an absent completed bar.
 
 ### 7.6 Explanation service
@@ -161,10 +188,14 @@ This separation allows a stored market fact to be reused if a transaction correc
 
 ### 7.7 Pipeline service
 
-- Plans idempotent tasks for Cron, ledger reconciliation, and Backfill.
-- Uses deterministic uniqueness keys for fact type, instrument, effective date, and dependency revision.
-- Claims tasks with leases, retries transient failures with backoff, and records terminal failures.
-- Respects the existing daily soft dispatch ceiling and resumes queued work later.
+- Creates one job-scoped planning work item for each Cron, reconciliation, or Backfill job. The planner then links that job to idempotent global child work items.
+- Uses fact-granular deterministic work keys for work type, instrument, effective date, dependency revision, and optional forced-refresh generation. Overlapping Cron, Backfill, and reconciliation jobs therefore link to the same logical requirement.
+- At dispatch time, groups compatible contiguous market work items for one instrument into a transient range batch of at most 90 calendar days. Qualifying news/analysis batches normally contain one instrument/date.
+- Treats pending D1 work and dispatch batches as the authoritative transactional outbox. Queue messages contain only the dispatch-batch ID.
+- Claims `pending` work into a consumer-claimable `dispatching` batch with a lease before sending, then conditionally records still-dispatching batch/items as `queued` after send. Consumers may atomically claim the matching unexpired batch from either `dispatching` or `queued`; the acknowledgement never overwrites `processing`. A crash before send or before acknowledgement is recovered after lease expiry, and a duplicate send is harmless.
+- Claims work with dispatch and processing leases, retries transient failures with backoff, and records terminal failures.
+- Recovers expired `dispatching`, `queued`, and `processing` leases and routes exhausted queue messages to a DLQ while retaining terminal D1 state.
+- Respects the existing daily soft dispatch ceiling, prioritizes current-day work over historical reconciliation, and resumes queued work through the recurring dispatcher.
 - Reports counts for reused, skipped, fetched, analyzed, processed, and failed work.
 
 ## 8. Data model
@@ -186,8 +217,8 @@ This table evolves from current ticker metadata. It contains no ownership or act
 - `id`, `instrument_id`
 - `trade_date`
 - `side`: `buy` or `sell`
-- `quantity_microunits`
-- `price_microunits`
+- canonical `quantity_decimal`
+- canonical `price_decimal`
 - `created_at`, `updated_at`
 - `revision`
 
@@ -200,19 +231,32 @@ Indexes support `(instrument_id, trade_date, id)` and reverse chronological Even
 - `effective_date`
 - `split_numerator`, `split_denominator`
 - provider identity/fingerprint, source, retrieved time, revision
+- activation status: `candidate`, `active`, `superseded`, or `quarantined`
+- conflict code/message when quarantined
 - unique provider/deterministic identity
+
+### `corporate_action_coverage`
+
+- `instrument_id`, provider
+- covered start/end dates
+- provider revision and retrieval time
+- status: `complete`, `refreshing`, `unavailable`, or `conflict`
+
+Coverage is valid only for the recorded provider revision and range. A transaction earlier than the covered start date forces coverage expansion before validation.
 
 ### `daily_market_facts`
 
 - `id`, `instrument_id`, `trading_date`
-- previous bar date and price
-- current completed price
-- change amount and unrounded percentage
-- price basis
+- previous bar date and raw close
+- current raw completed close
+- crossing split factor and split-adjusted comparison price
+- split-adjusted amount change and unrounded split-adjusted percentage return
+- optional raw-close difference for diagnostics only
+- movement basis: `split_adjusted_price_return` or a legacy migration basis
 - provider revision, status, retrieved time, stale/error metadata
 - unique `(instrument_id, trading_date)`
 
-Provider-derived prices and movement values may use SQLite real values because they are display/screening facts, not user-entered accounting amounts.
+Provider numeric inputs are normalized to canonical decimal strings. Domain calculations use the same arbitrary-precision `Decimal` boundary as the ledger; JSON display values are formatted only after calculation.
 
 ### `movement_analyses`
 
@@ -230,53 +274,101 @@ Provider-derived prices and movement values may use SQLite real values because t
 
 - `id`, `instrument_id`
 - `ex_date`
-- `amount_per_share_microunits`
+- canonical `amount_per_share_decimal`
 - `currency`
 - provider identity/fingerprint, source, announced/retrieved time, revision, status
 
 Expected total value is derived at read time and is not stored.
 
-### `ledger_state`
+### `position_basis_state`
 
-- singleton ledger revision and update timestamp
+- singleton revision covering transactions plus corporate-action coverage, candidates, and the active action set
+- update timestamp and last mutation identifier
+
+### `ledger_mutations`
+
+- unique mutation identifier
+- expected and resulting position-basis revisions
+- mutation kind and timestamp
+
+A `BEFORE INSERT` trigger aborts when the expected revision does not equal the singleton state. Successful insertion advances the state within the same D1 batch.
 
 ### `import_batches` and `import_rows`
 
 - file SHA-256 digest and original filename
-- base ledger revision
+- base position-basis revision
 - normalized preview rows and row-level validation results
 - projected holdings summary
 - status: `preview`, `committed`, `expired`, or `rejected`
 - timestamps
 
-### `pipeline_jobs` and `pipeline_tasks`
+Uncommitted previews expire after 24 hours. Normalized import rows are purged on expiry or seven days after commit. The batch digest, commit status, and resulting job ID are retained so the same file remains detectable without retaining its contents.
 
-- job trigger: `scheduled`, `ledger_reconciliation`, or `backfill`
+### `pipeline_jobs`
+
+- trigger: `scheduled`, `ledger_reconciliation`, or `backfill`
 - requested/affected range and instruments
-- status and aggregate progress counters
-- task type, dependency key/revision, uniqueness key, lease, attempt count, timestamps, and terminal error
+- serialized minimal eligibility intervals needed by the planner
+- priority, status, and aggregate progress counters
+
+### `work_items`
+
+- scope: `job_planning` or `global_fact`
+- a job-scoped planner key includes `pipeline_job_id`; a global fact key never does
+- work type, instrument, effective date, dependency revision, and optional forced-refresh generation
+- deterministic uniqueness key
+- state: `pending`, `dispatching`, `queued`, `processing`, `complete`, or `terminal`
+- dispatch/processing leases, attempt count, timestamps, result revision, and terminal error
+
+### `dispatch_batches` and `dispatch_batch_items`
+
+- transient batch ID, compatible work type/instrument, bounded provider range, state, and lease
+- join rows linking one or more work items to the batch
+
+The dispatcher creates these rows transactionally. A market batch groups contiguous pending dates to one provider request while each logical work item retains its own uniqueness, result, and job relationships.
+
+### `job_work_items`
+
+- `pipeline_job_id`, `work_item_id`
+- required/optional relationship and job-facing outcome
+- unique `(pipeline_job_id, work_item_id)`
+
+Multiple jobs can wait on one globally deduplicated work item while aggregating progress independently.
+
+### `fact_revision_buckets`
+
+- bucket key `latest` for facts that can change current Portfolio output
+- `YYYY-MM` bucket keys for market, analysis, and dividend facts displayed by Calendar
+- monotonically increasing revision and update timestamp per bucket
+
+Portfolio ETags combine `position_basis_state` with the `latest` buckets. Calendar ETags combine `position_basis_state` with only the one to three month buckets intersecting the requested range. Corporate-action changes advance `position_basis_state`. A historical backfill therefore invalidates only its affected Calendar months, not current Portfolio or unrelated ranges.
+
+Completed work items and job links are retained for 90 days; compact job summaries and terminal/DLQ records are retained for one year. Cleanup is a low-priority D1 work item. Normalized facts, transaction history, corporate-action provenance, and import digests are not removed by this cleanup.
 
 Existing `report_runs`, `screenings`, `analyses`, and `sources` remain during migration and recovery but cease to be the active read/write model after cutover.
 
 ## 9. Incremental reconciliation
 
-A ledger mutation calculates old and proposed timelines for its affected instruments before committing. The resulting job stores the minimal changed eligibility intervals.
+A transaction mutation or corporate-action promotion calculates old and proposed timelines for its affected instruments before committing. The guarded batch stores the minimal changed eligibility intervals and links the job to one job-scoped planning work item. That planner always runs for its owning job, then creates and attaches globally deduplicated fact-granular child work in bounded pages. A completed planner from another job can never substitute for this attachment step, and a large historical correction never requires thousands of statements in the authoritative ledger batch.
 
 - Quantity changes while a position remains positive do not invalidate market or LLM facts.
 - Newly held dates require market facts only when none already exist or when an existing fact is stale.
 - Dates that become unheld require no provider work; Calendar excludes them through the current ledger fold.
 - Dividend expected totals update from the ledger without provider or LLM work.
 - Analyses run only for newly required qualifying market facts or when their dependency fingerprint changed.
+- Compatible missing market dates are coalesced into dispatch batches of at most 90 calendar days; one provider response materializes all completed bars in the batch while work remains deduplicated per fact/date.
 
-Large historical changes are split into bounded date/instrument task pages. Planning and execution are resumable and remain under the daily dispatch ceiling. Automatic reconciliation is not constrained to a 30-day span because it may be correcting the authoritative ledger; the explicit Backfill form retains its 30-calendar-day request limit.
+Large historical changes are split into bounded date/instrument ranges. Planning and execution are resumable and remain under the daily dispatch ceiling. Current-day market work has priority over user backfills, which have priority over automatic historical reconciliation. Automatic reconciliation is not constrained to a 30-day span because it may be correcting the authoritative ledger; the explicit Backfill form retains its 30-calendar-day request limit.
 
-Every task is safe to redeliver. Concurrent workers cannot publish conflicting fact revisions. A failed replacement never erases a last valid fact or Chinese summary.
+Every work item is safe to redeliver. Concurrent workers cannot publish conflicting fact revisions. A failed replacement never erases a last valid fact or Chinese summary. A forced Backfill refresh uses a new forced-refresh generation so a prior completed work item cannot suppress the requested provider call.
 
 ## 10. Scheduled workflow
 
 The scheduler targets 4:30 p.m. `America/Toronto` on weekdays, approximately 30 minutes after the regular US/Canadian close.
 
 Cloudflare Cron schedules are configured for both possible UTC equivalents. The handler converts the scheduled time to `America/Toronto` and performs work only when local time is 4:30 p.m.; the other trigger is a no-op. This produces one run across daylight-saving changes.
+
+A separate dispatcher/reconciler Cron runs every 15 minutes. It recovers expired leases, dispatches pending D1 work by priority under the soft daily ceiling, updates job aggregates, and revisits bars that were not finalized at 4:30 p.m. Queue retention is never the persistence mechanism; D1 retains unfinished work until completion or explicit terminal resolution.
 
 The scheduled planner:
 
@@ -288,6 +380,8 @@ The scheduled planner:
 6. Completes with success, partial error, or terminal error while preserving successful facts.
 
 A first current buy also requests the latest completed pair of bars so Portfolio does not wait for the next scheduled run.
+
+Bars not finalized at the first attempt retry with bounded backoff for up to six hours, then become terminal for that date. The recurring dispatcher provides the wake-up; the next weekday planner may also satisfy an older still-pending fact.
 
 ## 11. CSV import
 
@@ -306,9 +400,9 @@ trade_date,symbol,side,quantity,price
 - Symbols are trimmed, uppercased, provider-validated, and canonicalized.
 - The first version accepts only the application template, not brokerage-specific exports.
 
-Preview parses and validates every row, detects a previously committed file digest, folds projected holdings, and records the current ledger revision. It returns row errors and projected per-symbol quantities without modifying transactions.
+Preview parses and validates every row, establishes required corporate-action coverage, detects a previously committed file digest, folds projected holdings, and records the current position-basis revision. It returns row errors and projected per-symbol quantities without modifying transactions.
 
-Commit succeeds only if every row is valid and the ledger revision still matches the preview. It inserts all transactions, advances the ledger revision, and creates one reconciliation job atomically. A revision conflict requires a new preview. Valid rows are never partially imported while invalid rows are skipped.
+Commit succeeds only if every row is valid and the position-basis revision still matches the preview. The trigger-guarded batch inserts all transactions, advances the position-basis revision, creates one reconciliation job, and links its initial planning work atomically. A revision conflict requires a new preview. Valid rows are never partially imported while invalid rows are skipped.
 
 The preview route accepts `multipart/form-data` as a narrow exception to the API's normal JSON-only mutation rule. CSV uploads are limited to 5 MiB and 10,000 data rows. Commit inserts from normalized staging rows rather than resending or reparsing the file.
 
@@ -342,7 +436,11 @@ Event mutations return the updated event or deletion confirmation plus the recon
 
 All ordinary mutation routes retain the current JSON content-type requirement and 64 KiB body limit. Only CSV preview uses its explicit multipart and 5 MiB limit.
 
-Distinct API errors cover invalid decimals, invalid or unsupported symbols, negative historical holdings, missing events, duplicate imports, stale import previews, ledger revision conflicts, range limits, provider unavailability, and pipeline terminal failure.
+Every mutation requires a same-origin `Origin`/`Host` check and a non-simple custom request header issued by the app. This prevents the multipart CSV exception from reintroducing form-based CSRF under cached Basic Authentication. CORS remains disabled. Event edits/deletes require `If-Match`; import commit carries the previewed position-basis revision.
+
+Distinct API errors cover invalid decimals, invalid or unsupported symbols, incomplete corporate-action coverage, quarantined corporate-action conflicts, negative historical holdings, missing events, duplicate imports, stale import previews, position-basis revision conflicts, range limits, provider unavailability, and pipeline terminal failure.
+
+All stored or provider-returned source links are accepted only when parsed as absolute `http:` or `https:` URLs before persistence and again before rendering.
 
 ## 13. Frontend and interaction design
 
@@ -387,7 +485,8 @@ Static strings pass through a lightweight typed translation wrapper. The selecte
 
 - Shows separate CAD and USD valuation totals.
 - Table columns: symbol/company, quantity, latest completed price, valuation, today's amount/percentage movement, and Chinese summary/status.
-- Valuation is `current derived quantity × latest completed price`.
+- Valuation is `current derived quantity × latest raw completed close`; daily movement is the split-adjusted, dividend-unadjusted price return.
+- Both displayed movement amount and percentage use the split-adjusted comparison basis. Raw-close difference is never shown as daily movement on a split date.
 - The header and each row identify the actual latest completed trading date, including on weekends and market holidays.
 - Non-qualifying holdings show no summary placeholder beyond a compact dash/status.
 - Qualifying movers show the stored Chinese summary and a source action.
@@ -399,6 +498,7 @@ Static strings pass through a lightweight typed translation wrapper. The selecte
 - Supports filters, pagination, manual add, transaction edit, and transaction delete.
 - Destructive edits use an ASTRYX confirmation dialog and show the resulting reconciliation job.
 - CSV import uses FileInput, a validation summary, row-error table, projected holdings table, and explicit commit action.
+- Incomplete split coverage and quarantined provider corrections appear as prominent actionable states. A quarantined correction identifies the invalid dates and remains blocked until transaction edits make the candidate ledger valid.
 
 ### 13.6 Calendar
 
@@ -433,50 +533,67 @@ Portfolio and Calendar must not perform queries per symbol, date cell, or event.
 - Portfolio batch-loads ledger entries, splits, and latest facts, then folds the ledger once.
 - Calendar batch-loads ledger entries, splits, market facts, analyses, sources, and dividends for its bounded range, then folds once.
 - Sources are loaded in batches rather than hydrated per mover.
-- Pipeline planning operates per affected instrument and pages long date ranges into bounded tasks.
+- Pipeline planning creates fact-granular work per affected instrument/date; dispatch groups compatible contiguous items into bounded range batches.
 - Facts are reused by `(instrument_id, effective_date, dependency_revision)` rather than copied into report generations.
+- Portfolio and Calendar ETags are composed from the position-basis revision, `latest` or intersecting `YYYY-MM` fact-revision buckets, locale, and requested range. An unchanged conditional request reads only those bucket/state rows and returns `304` without replaying the ledger.
+- The UI polls only the small pipeline-job status endpoint. Completion invalidates Portfolio or Calendar once; it never polls their full payloads.
+- Client query state reuses unchanged Portfolio and Calendar responses across navigation.
 
 No holdings checkpoint is stored initially. Introduce a rebuildable cache only if measurement demonstrates a need and only through a separately approved design.
 
-Benchmarks cover 100 instruments, 10,000 transactions, five years of normalized facts, and a busy calendar month. Tests assert bounded query counts and prohibit N+1 patterns. Request and task timing is emitted through safe structured diagnostics; pipeline counters distinguish reused, skipped, fetched, analyzed, processed, and failed work.
+Benchmarks cover 100 instruments, 10,000 transactions, five years of normalized facts, and a busy calendar month. Tests assert bounded query counts, rows read, CPU time, serialized response size, and provider-call counts; they prohibit N+1 and per-date market requests. An unchanged conditional Portfolio or Calendar request must read no more than ten revision/state rows. Request and work-item timing is emitted through safe structured diagnostics; pipeline counters distinguish reused, skipped, fetched, analyzed, processed, and failed work.
 
 ## 15. Reliability and error handling
 
 - Ledger mutations and CSV commits either complete atomically with their reconciliation job or make no authoritative change.
-- A ledger revision prevents stale multi-tab CSV commits.
-- Provider corrections update facts by revision and invalidate only downstream dependencies.
+- A trigger-enforced position-basis revision prevents concurrent invalid combinations and stale multi-tab writes.
+- Historical transaction validation cannot run against unknown split coverage.
+- Provider split corrections are staged and validated; invalid candidates are quarantined without replacing the active ledger basis.
+- Other provider corrections update facts by revision and invalidate only downstream dependencies.
 - Last valid market facts and summaries remain visible with stale state when refreshes fail.
 - Missing completed bars never become zero movement.
-- Queue tasks use deterministic keys, leases, bounded retries, and terminal error recording.
+- Global work items use deterministic keys, leases, bounded retries, terminal D1 recording, and a Queue DLQ.
+- D1 pending work is the transactional outbox and survives Queue retention or send failures.
 - Duplicate queue delivery and repeated Cron triggers are safe.
 - A full-market holiday produces no false daily events.
-- Logs include identifiers, task types, dates, durations, and bounded error codes, but never Basic Auth headers, CSV contents, full provider payloads, or model prompts.
+- Logs include identifiers, work types, dates, durations, and bounded error codes, but never Basic Auth headers, CSV contents, full provider payloads, or model prompts.
 - The 4:30 p.m. ET dual-UTC Cron guard prevents duplicate DST execution.
+- The 15-minute dispatcher guarantees wake-up for paused ceilings, delayed bars, expired leases, and failed sends.
 
 ## 16. Migration and rollout
 
 Migration is additive and staged:
 
-1. Create `instruments`, ledger, normalized-fact, import, and pipeline tables with indexes and constraints.
-2. Copy current ticker metadata into instruments.
-3. Convert completed screening prices, analyses, and sources into normalized facts using deterministic uniqueness keys.
-4. Verify counts, key uniqueness, and sampled equivalence against published reports.
-5. Introduce the ASTRYX neutral shell, Events page, and CSV workflow.
-6. Enable Portfolio and Calendar reads from the ledger plus normalized facts.
-7. Switch scheduled and Backfill writes to the incremental pipeline.
-8. Leave existing report tables intact and read-only for recovery until the new flows have been verified in production.
+1. Apply only additive schema changes. The currently deployed Worker remains compatible while the migration runs before deployment.
+2. Deploy a compatibility Worker that continues serving legacy reads but dual-writes every newly published screening fact, analysis, and source into the normalized model.
+3. Copy every ticker identity, including soft-deleted tickers and any identity referenced by a screening, into `instruments` while preserving IDs.
+4. Run an idempotent resumable migrator. For each trading date, only the screening belonging to that date's currently `published = 1` report generation can win `(instrument_id, trading_date)`. Unpublished and superseded generations remain solely in legacy tables.
+5. Store `legacy_run_id`, `legacy_screening_id`, generation, and content hash as migration provenance. Preserve the old `adjusted`/`close` basis as `legacy_adjusted` or `legacy_close`, but never treat that row as authoritative for Portfolio or emit it as a Calendar mover. Once the ledger makes that instrument/date relevant, the planner treats the legacy basis as stale and refreshes it to raw/split-adjusted semantics; Calendar shows pending coverage until refresh completes. Legacy sources may be reused only if the new dependency fingerprint permits it.
+6. Record a report-run high-water mark, migrate through it, then perform catch-up passes while dual-write remains active. Reprocessing that changes the published generation deterministically upserts the new winner and provenance.
+7. Verify counts, uniqueness, provenance hashes, and sampled API equivalence. Require two consecutive catch-up passes with no unexplained differences.
+8. Switch Portfolio and Calendar reads behind a deployment feature flag. Keep legacy reads available for immediate rollback.
+9. Switch scheduled and Backfill writes to the work-item pipeline during a short dispatch freeze, run one final catch-up, then resume through the 15-minute dispatcher.
+10. Leave existing report tables intact and read-only for recovery until the new flows have been verified in production.
 
-The existing watchlist cannot be converted into transactions because it has no quantity or execution history. Portfolio therefore remains empty until transactions are entered or imported. Once historical transactions exist, migrated market facts can populate Calendar immediately without refetching.
+The existing watchlist cannot be converted into transactions because it has no quantity or execution history. Portfolio therefore remains empty until transactions are entered or imported. Once historical transactions exist, only migrated facts already using the new basis can populate Calendar immediately; legacy-basis rows enter the refresh pipeline first.
 
 ## 17. Testing and verification
 
 ### Domain tests
 
-- Fixed-precision parsing and arithmetic.
+- Canonical decimal parsing, arbitrary-precision arithmetic, bounds, multiplication, and display rounding without JavaScript `Number` conversion.
 - Multiple buys/sells, same-day netting, fractional quantities, and negative-history rejection.
 - Portfolio, start-of-day screening, and ex-dividend eligibility boundaries.
-- Forward/reverse splits and corrected split revisions.
+- Forward/reverse splits, fractional cash-in-lieu sell events, corrected split revisions, incomplete coverage, valid promotion, and invalid-candidate quarantine.
+- Raw-close valuation and split-adjusted/dividend-unadjusted movement on ordinary, split, and ex-dividend dates.
 - Expected dividends in native currency.
+
+### Provider feasibility tests
+
+- Historical corporate-action coverage with exact split ratios and stable identities.
+- Announced future ex-dividend coverage with exact per-share amounts and currencies.
+- Corrections, missing fields, timezones, delisted instruments, duplicate identities, and bounded range retrieval.
+- The provider gate must pass recorded fixtures before split/dividend implementation or production cutover proceeds.
 
 ### Pipeline tests
 
@@ -484,17 +601,21 @@ The existing watchlist cannot be converted into transactions because it has no q
 - Quantity-only changes that reuse all facts.
 - Newly held and newly unheld date ranges.
 - Dependency fingerprints and minimal analysis invalidation.
-- Task uniqueness, concurrent claims, expired leases, retries, redelivery, quota pause, and resume.
+- Global work deduplication with independent progress for two jobs requesting the same fact.
+- Job-scoped planning that attaches shared child work independently for every requesting job.
+- Transactional outbox creation, consumer claim from `dispatching`/`queued`, acknowledgement race, send-failure recovery, concurrent claims, expired dispatch/processing leases, retries, redelivery, DLQ, quota pause, priority, and 15-minute resume.
+- Fact-granular deduplication plus per-instrument dispatch-range coalescing with no per-date market provider requests.
 - Data-not-finalized retry after the scheduled close.
 
 ### Database and API tests
 
 - Additive migration and legacy fact conversion.
+- Published-generation winner selection, superseded-generation exclusion, deleted-ticker identity preservation, provenance hashes, dual-write high-water catch-up, rollback flag, and refusal to expose legacy-basis rows before refresh.
 - Repository indexes and uniqueness constraints.
-- Transaction CRUD and reconciliation job creation.
-- CSV preview, row errors, duplicate digest, stale revision, and atomic commit.
-- Portfolio and Calendar batch query counts.
-- Auth, input bounds, body limits, and distinct error contracts.
+- Concurrent transaction CRUD/import/corporate-action promotion against one expected position-basis revision, including trigger abort and 100-position races.
+- Event `If-Match`, CSV preview, coverage establishment, row errors, duplicate digest, stale revision, and atomic commit.
+- Portfolio and Calendar batch queries and conditional `304` fast paths.
+- Auth, CSRF/origin enforcement, input bounds, body limits, URL-scheme validation, and distinct error contracts.
 
 ### Frontend tests
 
@@ -510,22 +631,28 @@ The existing watchlist cannot be converted into transactions because it has no q
 ### Performance verification
 
 - Benchmark 100 instruments, 10,000 transactions, five years of facts, and a busy month.
-- Assert bounded batch queries and no per-row/per-cell requests.
-- Record Portfolio, Calendar, planner, and task timing during integration tests.
+- Assert bounded queries, rows read, CPU, response size, and provider calls with no per-row/per-cell/per-date requests.
+- Assert an unchanged conditional Portfolio or Calendar request reads at most ten state rows and returns `304`.
+- Assert a historical fact update invalidates only its `YYYY-MM` Calendar bucket and does not invalidate the Portfolio `latest` bucket or unrelated months.
+- Record Portfolio, Calendar, planner, range-fetch, and work-item timing during integration tests.
 
 The final gate is `npm run check` extended with the new focused domain, Worker/D1 integration, component, accessibility, responsive, and performance suites.
 
 ## 18. Acceptance criteria
 
 - A user can create, edit, delete, or atomically import transactions and see correct derived holdings without a persisted holdings row.
+- Historical transaction changes commit only with complete split coverage and a trigger-enforced expected position-basis revision.
 - A historical correction automatically queues only required fact work and visibly reports progress.
-- Portfolio shows separate CAD/USD totals and current holdings valued at the latest completed close.
+- Portfolio shows separate CAD/USD totals and current holdings valued at the latest raw completed close.
 - A held stock moving at least 5% shows its stored Chinese summary; smaller movements do not invoke the LLM.
+- Movement uses split-adjusted, dividend-unadjusted raw-close price return; split and ex-dividend dates do not create adjustment artifacts.
 - Calendar switches between month and week, shows historically held movers and ex-dividend events, and opens an accessible Chinese-summary dialog for movers.
 - Dividend totals use shares held immediately before the ex-date and remain in native currency.
 - Provider-reported splits adjust holdings automatically and appear as read-only Events rows.
+- Provider split corrections that would invalidate the ledger are quarantined and visible rather than silently applied.
 - The weekday pipeline starts at 4:30 p.m. ET across DST and retries bars that are not finalized.
+- A 15-minute dispatcher resumes delayed, quota-paused, and send-failed D1 work; shared work items report progress to every requesting job.
 - UI static copy switches between English and Simplified Chinese while summaries remain Chinese.
 - The interface follows ASTRYX neutral conventions with compact spacing and only narrowly scoped custom calendar/layout CSS.
-- Existing historical facts migrate without losing the legacy report tables.
-- Verification demonstrates bounded batch-query behavior at the agreed performance fixture size.
+- Only currently published legacy generations win normalized fact keys; migration remains resumable, provenance-backed, dual-written, and reversible until cutover verification.
+- Verification demonstrates bounded row reads, CPU, response size, provider calls, and batch-query behavior at the agreed performance fixture size.
