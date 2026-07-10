@@ -23,9 +23,10 @@ import type {
   SplitEventRange,
 } from "../providers/corporate-actions";
 
-const HEADER = "symbol,trade_date,side,quantity_decimal,price_decimal";
-const MAX_FILE_BYTES = 256 * 1024;
-const MAX_ROWS = 1_000;
+const HEADER = "trade_date,symbol,side,quantity,price";
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_ROWS = 10_000;
+const MAX_CURRENT_POSITIONS = 100;
 const PREVIEW_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const PLANNING_WORK_TYPE = "ledger_reconciliation_plan";
@@ -210,6 +211,7 @@ const parseCsv = (text: string): string[][] | null => {
   let row: string[] = [];
   let field = "";
   let quoted = false;
+  let quoteClosed = false;
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index] ?? "";
     if (quoted) {
@@ -219,9 +221,33 @@ const parseCsv = (text: string): string[][] | null => {
           index += 1;
         } else {
           quoted = false;
+          quoteClosed = true;
         }
       } else {
         field += character;
+      }
+      continue;
+    }
+    if (quoteClosed) {
+      if (character === ",") {
+        row.push(field);
+        field = "";
+        quoteClosed = false;
+      } else if (character === "\n") {
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+        quoteClosed = false;
+      } else if (character === "\r" && text[index + 1] === "\n") {
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+        quoteClosed = false;
+        index += 1;
+      } else {
+        return null;
       }
       continue;
     }
@@ -399,7 +425,7 @@ export class EventImportsService {
             ),
             ...group.rows.map(toLedgerTransaction),
           ],
-          activeSplits: this.proposedSplits(actions, snapshot),
+          activeSplits: actions.map(toActiveSplit),
         });
         projectedHoldings[group.instrument.symbol] = holdings.currentQuantity();
       } catch {
@@ -580,6 +606,16 @@ export class EventImportsService {
       refreshed.push({ instrument, snapshot });
     }
 
+    if (
+      !(await this.withinPositionLimit(
+        byInstrument,
+        refreshed,
+        this.now().toISOString().slice(0, 10),
+      ))
+    ) {
+      return { kind: "validation_error", code: "position_limit" };
+    }
+
     const timestamp = this.now().toISOString();
     const jobId = this.newId();
     const workId = this.newId();
@@ -592,10 +628,10 @@ export class EventImportsService {
       },
     ]);
     const statements: D1PreparedStatement[] = [
-      this.positionBasis.mutationTokenStatement({
+      this.importMutationTokenStatement({
         id: mutationId,
+        batchId: batch.id,
         expectedRevision: input.expectedPositionBasisRevision,
-        kind: "import_commit",
         createdAt: timestamp,
       }),
       ...refreshed.flatMap(({ instrument, snapshot }) =>
@@ -617,9 +653,15 @@ export class EventImportsService {
          WHERE import_rows.import_batch_id = ?1
            AND import_rows.status = 'valid'
            AND import_batches.status = 'preview'
-           AND import_batches.base_position_basis_revision = ?3`,
+           AND import_batches.base_position_basis_revision = ?3
+           AND import_batches.expires_at > ?4`,
         )
-        .bind(batch.id, timestamp, input.expectedPositionBasisRevision),
+        .bind(
+          batch.id,
+          timestamp,
+          input.expectedPositionBasisRevision,
+          timestamp,
+        ),
       this.jobs.createStatement({
         id: jobId,
         triggerType: "ledger_reconciliation",
@@ -659,13 +701,17 @@ export class EventImportsService {
         .prepare(
           `UPDATE import_batches
          SET status = 'committed', result_pipeline_job_id = ?2, committed_at = ?3, updated_at = ?3
-         WHERE id = ?1 AND status = 'preview' AND base_position_basis_revision = ?4`,
+         WHERE id = ?1 AND status = 'preview' AND base_position_basis_revision = ?4
+           AND expires_at > ?3`,
         )
         .bind(batch.id, jobId, timestamp, input.expectedPositionBasisRevision),
     ];
     try {
       await this.dependencies.db.batch(statements);
     } catch (error) {
+      const afterFailure = await this.batch(batch.id);
+      if (afterFailure && afterFailure.expiresAt <= this.now().toISOString())
+        return { kind: "expired" };
       if (String(error).includes("ledger_conflict"))
         return { kind: "conflict", code: "ledger_conflict" };
       return { kind: "validation_error", code: "import_commit_failed" };
@@ -696,8 +742,8 @@ export class EventImportsService {
         instrument: null,
       };
     const [
-      symbolInput = "",
       dateInput = "",
+      symbolInput = "",
       sideInput = "",
       quantityInput = "",
       priceInput = "",
@@ -984,6 +1030,64 @@ export class EventImportsService {
     });
   }
 
+  private importMutationTokenStatement(input: {
+    id: string;
+    batchId: string;
+    expectedRevision: number;
+    createdAt: string;
+  }): D1PreparedStatement {
+    return this.dependencies.db
+      .prepare(
+        `INSERT INTO ledger_mutations
+         (id, expected_revision, resulting_revision, mutation_kind, created_at)
+         VALUES (?1,
+           CASE WHEN EXISTS (
+             SELECT 1 FROM import_batches
+             WHERE id = ?2 AND status = 'preview'
+               AND base_position_basis_revision = ?3 AND expires_at > ?4
+           ) THEN ?3 ELSE NULL END,
+           ?3 + 1, 'import_commit', ?4)`,
+      )
+      .bind(input.id, input.batchId, input.expectedRevision, input.createdAt);
+  }
+
+  private async withinPositionLimit(
+    imported: Map<string, NormalizedImportTransaction[]>,
+    refreshed: { instrument: InstrumentRecord; snapshot: SplitEventRange }[],
+    today: string,
+  ): Promise<boolean> {
+    const snapshots = new Map(
+      refreshed.map(({ instrument, snapshot }) => [instrument.id, snapshot]),
+    );
+    const instruments = await this.dependencies.db
+      .prepare("SELECT id FROM instruments ORDER BY id")
+      .all<{ id: string }>();
+    let currentPositions = 0;
+    try {
+      for (const { id } of instruments.results) {
+        const actions = (await this.actions.listForInstrument(id)).filter(
+          (action) => action.status === "active",
+        );
+        const snapshot = snapshots.get(id);
+        const holdings = deriveHoldings({
+          today,
+          transactions: [
+            ...(await this.transactionsForInstrument(id)),
+            ...(imported.get(id) ?? []).map(toLedgerTransaction),
+          ],
+          activeSplits: snapshot
+            ? this.proposedSplits(actions, snapshot)
+            : actions.map(toActiveSplit),
+        });
+        if (holdings.currentQuantity() !== "0") currentPositions += 1;
+        if (currentPositions > MAX_CURRENT_POSITIONS) return false;
+      }
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
   private snapshotStatements(
     instrument: InstrumentRecord,
     snapshot: SplitEventRange,
@@ -1011,6 +1115,22 @@ export class EventImportsService {
           timestamp,
         ),
     );
+    const promotions = snapshot.events.map((event) =>
+      this.dependencies.db
+        .prepare(
+          `UPDATE corporate_actions
+           SET status = 'active', conflict_code = NULL, conflict_message = NULL, updated_at = ?5
+           WHERE instrument_id = ?1 AND provider = ?2 AND provider_event_id = ?3
+             AND provider_revision = ?4 AND status = 'candidate'`,
+        )
+        .bind(
+          instrument.id,
+          snapshot.range.provider,
+          event.providerEventId,
+          event.providerRevision,
+          timestamp,
+        ),
+    );
     return [
       ...candidates,
       this.dependencies.db
@@ -1026,19 +1146,7 @@ export class EventImportsService {
           timestamp,
           snapshot.range.requestedEndDate,
         ),
-      this.dependencies.db
-        .prepare(
-          `UPDATE corporate_actions SET status = 'active', conflict_code = NULL, conflict_message = NULL, updated_at = ?4
-         WHERE instrument_id = ?1 AND provider = ?2 AND status = 'candidate'
-           AND effective_date >= ?3 AND effective_date <= ?5`,
-        )
-        .bind(
-          instrument.id,
-          snapshot.range.provider,
-          snapshot.range.requestedStartDate,
-          timestamp,
-          snapshot.range.requestedEndDate,
-        ),
+      ...promotions,
       this.actions.upsertCoverageStatement({
         instrumentId: instrument.id,
         provider: snapshot.range.provider,

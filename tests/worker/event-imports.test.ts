@@ -7,7 +7,7 @@ import type {
 import { EventImportsService } from "../../src/services/event-imports";
 
 const now = "2026-07-10T12:00:00.000Z";
-const header = "symbol,trade_date,side,quantity_decimal,price_decimal";
+const header = "trade_date,symbol,side,quantity,price";
 
 const provider = (revision = "snapshot-r1"): CorporateActionProvider => ({
   getSplits: async (symbol, startDate, endDate): Promise<SplitEventRange> => ({
@@ -24,6 +24,27 @@ const provider = (revision = "snapshot-r1"): CorporateActionProvider => ({
       providerRevision: revision,
     },
     events: [],
+  }),
+});
+
+const providerWithEvents = (
+  revision: string,
+  events: SplitEventRange["events"],
+): CorporateActionProvider => ({
+  getSplits: async (symbol, startDate, endDate): Promise<SplitEventRange> => ({
+    symbol: symbol.toUpperCase(),
+    range: {
+      requestedStartDate: startDate,
+      requestedEndDate: endDate,
+      coverageStartDate: null,
+      coverageEndDate: null,
+      isComplete: false,
+      basis: "unverified",
+      provider: "yahoo-chart-v8",
+      observedAt: now,
+      providerRevision: revision,
+    },
+    events,
   }),
 });
 
@@ -63,7 +84,7 @@ describe("EventImportsService", () => {
     const result = await service().preview({
       originalFilename: "portfolio-events.csv",
       file: new TextEncoder().encode(
-        `\uFEFF${csv(["shop.to,2024-01-02, BUY ,001.2500,100.5000"])}`,
+        `\uFEFF${csv(["2024-01-02,shop.to, BUY ,001.2500,100.5000"])}`,
       ),
     });
 
@@ -103,7 +124,7 @@ describe("EventImportsService", () => {
       service().preview({
         originalFilename: "wrong.csv",
         file: new TextEncoder().encode(
-          "symbol,date,side,quantity_decimal,price_decimal\nSHOP.TO,2024-01-02,buy,1,1\n",
+          "symbol,date,side,quantity_decimal,price_decimal\n2024-01-02,SHOP.TO,buy,1,1\n",
         ),
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "invalid_file" }));
@@ -112,8 +133,8 @@ describe("EventImportsService", () => {
       originalFilename: "invalid.csv",
       file: new TextEncoder().encode(
         csv([
-          "unknown,2024-02-30,hold,-1,nope",
-          "SHOP.TO,2026-07-11,sell,1.1234567,2",
+          "2024-02-30,unknown,hold,-1,nope",
+          "2026-07-11,SHOP.TO,sell,1.1234567,2",
         ]),
       ),
     });
@@ -132,8 +153,8 @@ describe("EventImportsService", () => {
   it("enforces file and row limits and retains a digest record when duplicate upload is rejected", async () => {
     const importService = service();
     const tooManyRows = Array.from(
-      { length: 1_001 },
-      () => "SHOP.TO,2024-01-02,buy,1,1",
+      { length: 10_001 },
+      () => "2024-01-02,SHOP.TO,buy,1,1",
     );
     await expect(
       importService.preview({
@@ -144,11 +165,11 @@ describe("EventImportsService", () => {
     await expect(
       importService.preview({
         originalFilename: "large.csv",
-        file: new Uint8Array(256 * 1024 + 1),
+        file: new Uint8Array(5 * 1024 * 1024 + 1),
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "invalid_file" }));
 
-    const file = new TextEncoder().encode(csv(["SHOP.TO,2024-01-02,buy,1,1"]));
+    const file = new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"]));
     const first = await importService.preview({
       originalFilename: "portfolio-events.csv",
       file,
@@ -164,7 +185,7 @@ describe("EventImportsService", () => {
   it("requires the previewed split confirmation, rejects a provider revision change, and never reparses staged bytes", async () => {
     const first = await service(provider("snapshot-r1")).preview({
       originalFilename: "portfolio-events.csv",
-      file: new TextEncoder().encode(csv(["SHOP.TO,2024-01-02,buy,1,1"])),
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
     });
     expect(first.kind).toBe("preview");
     if (first.kind !== "preview") return;
@@ -185,12 +206,47 @@ describe("EventImportsService", () => {
     ).resolves.toEqual(expect.objectContaining({ kind: "review_required" }));
   });
 
+  it("accepts RFC-style quoted fields but rejects bytes after a closing quote and preserves quoted newlines as one row", async () => {
+    const quoted = await service().preview({
+      originalFilename: "quoted.csv",
+      file: new TextEncoder().encode(
+        `${header}\n"2024-01-02","SHOP.TO","BUY","1","1"\n`,
+      ),
+    });
+    expect(quoted).toEqual(
+      expect.objectContaining({
+        kind: "preview",
+        rows: [expect.objectContaining({ status: "valid" })],
+      }),
+    );
+    await expect(
+      service().preview({
+        originalFilename: "malformed.csv",
+        file: new TextEncoder().encode(
+          `${header}\n2024-01-02,"SHOP.TO"junk,BUY,1,1\n`,
+        ),
+      }),
+    ).resolves.toEqual(expect.objectContaining({ kind: "invalid_file" }));
+    const newline = await service().preview({
+      originalFilename: "quoted-newline.csv",
+      file: new TextEncoder().encode(
+        `${header}\n2024-01-02,"SHOP\n.TO",BUY,1,1\n`,
+      ),
+    });
+    expect(newline).toEqual(
+      expect.objectContaining({
+        kind: "preview",
+        rows: [expect.objectContaining({ rowNumber: 2, status: "invalid" })],
+      }),
+    );
+  });
+
   it("commits all normalized rows, one pipeline job, and a basis revision atomically", async () => {
     const importService = service();
     const preview = await importService.preview({
       originalFilename: "portfolio-events.csv",
       file: new TextEncoder().encode(
-        csv(["SHOP.TO,2024-01-02,buy,2,1", "SHOP.TO,2024-01-03,sell,1,1"]),
+        csv(["2024-01-02,SHOP.TO,buy,2,1", "2024-01-03,SHOP.TO,sell,1,1"]),
       ),
     });
     expect(preview.kind).toBe("preview");
@@ -224,10 +280,103 @@ describe("EventImportsService", () => {
     ).toEqual({ status: "committed" });
   });
 
+  it("only promotes candidates that belong to the fresh confirmed snapshot", async () => {
+    const event = {
+      type: "split" as const,
+      symbol: "SHOP.TO",
+      effectiveDate: "2025-01-02",
+      numerator: "2",
+      denominator: "1",
+      provider: "yahoo-chart-v8",
+      providerEventId: "fresh-split",
+      providerRevision: "event-r2",
+    };
+    const importService = service(providerWithEvents("snapshot-r2", [event]));
+    const preview = await importService.preview({
+      originalFilename: "portfolio-events.csv",
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
+    });
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    await env.DB.prepare(
+      `INSERT INTO corporate_actions
+       (id, instrument_id, action_type, effective_date, split_numerator, split_denominator,
+        provider, provider_event_id, provider_revision, retrieved_at, revision, status,
+        created_at, updated_at)
+       VALUES ('stale-candidate', 'instrument-1', 'split', '2025-01-02', '3', '1',
+               'yahoo-chart-v8', 'stale-split', 'event-r1', ?1, 1, 'candidate', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await expect(
+      importService.commit({
+        batchId: preview.batchId,
+        expectedPositionBasisRevision: 0,
+        confirmations: [confirmation("snapshot-r2")],
+      }),
+    ).resolves.toEqual(expect.objectContaining({ kind: "committed" }));
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM corporate_actions WHERE id = 'stale-candidate'",
+      ).first(),
+    ).toEqual({ status: "candidate" });
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM corporate_actions WHERE provider_event_id = 'fresh-split'",
+      ).first(),
+    ).toEqual({ status: "active" });
+  });
+
+  it("does not allow an import to create a 101st current position", async () => {
+    const statements: D1PreparedStatement[] = [];
+    for (let index = 2; index <= 101; index += 1) {
+      const id = `instrument-${index}`;
+      const symbol = `CAP${index}`;
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO instruments
+             (id, symbol, company_name, exchange, currency, instrument_type,
+              provider, provider_symbol, created_at, updated_at)
+             VALUES (?1, ?2, ?2, 'NYSE', 'USD', 'stock', 'yahoo', ?2, ?3, ?3)`,
+        ).bind(id, symbol, now),
+        env.DB.prepare(
+          `INSERT INTO transactions
+             (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+              revision, created_at, updated_at)
+             VALUES (?1, ?2, '2024-01-01', 'buy', '1', '1', 1, ?3, ?3)`,
+        ).bind(`transaction-${index}`, id, now),
+      );
+    }
+    await env.DB.batch(statements);
+    const preview = await service().preview({
+      originalFilename: "portfolio-events.csv",
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
+    });
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    await expect(
+      service().commit({
+        batchId: preview.batchId,
+        expectedPositionBasisRevision: 0,
+        confirmations: [confirmation()],
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        kind: "validation_error",
+        code: "position_limit",
+      }),
+    );
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM transactions",
+      ).first(),
+    ).toEqual({ count: 100 });
+  });
+
   it("does not partially commit a projected negative holding or stale basis", async () => {
     const preview = await service().preview({
       originalFilename: "portfolio-events.csv",
-      file: new TextEncoder().encode(csv(["SHOP.TO,2024-01-02,sell,1,1"])),
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,sell,1,1"])),
     });
     expect(preview.kind).toBe("preview");
     if (preview.kind !== "preview") return;
@@ -247,7 +396,7 @@ describe("EventImportsService", () => {
 
     const valid = await service().preview({
       originalFilename: "second.csv",
-      file: new TextEncoder().encode(csv(["SHOP.TO,2024-01-02,buy,1,1"])),
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
     });
     expect(valid.kind).toBe("preview");
     if (valid.kind !== "preview") return;
@@ -264,7 +413,7 @@ describe("EventImportsService", () => {
     const importService = service();
     const preview = await importService.preview({
       originalFilename: "portfolio-events.csv",
-      file: new TextEncoder().encode(csv(["SHOP.TO,2024-01-02,buy,1,1"])),
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
     });
     expect(preview.kind).toBe("preview");
     if (preview.kind !== "preview") return;
@@ -306,10 +455,65 @@ describe("EventImportsService", () => {
     ).toEqual({ status: "preview" });
   });
 
+  it("allows only one simultaneous preview for the same digest to create staging", async () => {
+    const file = new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"]));
+    const [left, right] = await Promise.all([
+      service().preview({ originalFilename: "left.csv", file }),
+      service().preview({ originalFilename: "right.csv", file }),
+    ]);
+    expect([left.kind, right.kind].sort()).toEqual(["duplicate", "preview"]);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_batches",
+      ).first(),
+    ).toEqual({ count: 1 });
+  });
+
+  it("aborts atomically when a preview expires after the initial read but before the guarded write", async () => {
+    let current = new Date(now);
+    const previewService = new EventImportsService({
+      db: env.DB,
+      corporateActionProvider: provider(),
+      now: () => current,
+    });
+    const preview = await previewService.preview({
+      originalFilename: "portfolio-events.csv",
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
+    });
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    const expiryProvider: CorporateActionProvider = {
+      getSplits: async (...args) => {
+        current = new Date("2026-07-11T12:00:00.000Z");
+        return provider().getSplits(...args);
+      },
+    };
+    const result = await new EventImportsService({
+      db: env.DB,
+      corporateActionProvider: expiryProvider,
+      now: () => current,
+    }).commit({
+      batchId: preview.batchId,
+      expectedPositionBasisRevision: 0,
+      confirmations: [confirmation()],
+    });
+    expect(result).toEqual({ kind: "expired" });
+    expect(
+      await env.DB.prepare(
+        "SELECT revision FROM position_basis_state WHERE id = 1",
+      ).first(),
+    ).toEqual({ revision: 0 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM transactions",
+      ).first(),
+    ).toEqual({ count: 0 });
+  });
+
   it("expires previews after 24 hours, removes staging rows after seven days, and retains digest/status", async () => {
     const preview = await service().preview({
       originalFilename: "portfolio-events.csv",
-      file: new TextEncoder().encode(csv(["SHOP.TO,2024-01-02,buy,1,1"])),
+      file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
     });
     expect(preview.kind).toBe("preview");
     if (preview.kind !== "preview") return;
@@ -346,7 +550,7 @@ describe("event import route", () => {
     const form = new FormData();
     form.set(
       "file",
-      new File([csv(["SHOP.TO,2024-01-02,buy,1,1"])], "portfolio-events.csv", {
+      new File([csv(["2024-01-02,SHOP.TO,buy,1,1"])], "portfolio-events.csv", {
         type: "text/csv",
       }),
     );

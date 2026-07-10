@@ -1,2 +1,2 @@
-symbol,trade_date,side,quantity_decimal,price_decimal
-SHOP.TO,2024-01-02,buy,10,100.50
+trade_date,symbol,side,quantity,price
+2024-01-02,SHOP.TO,BUY,10,100.50

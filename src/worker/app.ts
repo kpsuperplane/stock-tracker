@@ -28,7 +28,7 @@ export const createApp = () => {
     onError: bodyTooLarge,
   });
   const importPreviewBodyLimit = bodyLimit({
-    maxSize: 256 * 1024,
+    maxSize: 5 * 1024 * 1024,
     onError: bodyTooLarge,
   });
 
