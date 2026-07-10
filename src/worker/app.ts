@@ -5,6 +5,8 @@ import { requireBasicAuth } from "./auth";
 import type { Env } from "./env";
 import { ApiError } from "./errors";
 import { backfillRoutes } from "./routes/backfills";
+import { reportRoutes } from "./routes/reports";
+import { retryRoutes } from "./routes/retries";
 import { tickerRoutes } from "./routes/tickers";
 
 export const createApp = () => {
@@ -43,6 +45,8 @@ export const createApp = () => {
 
   app.get("/api/health", (context) => context.json({ ok: true }));
   app.route("/api/backfills", backfillRoutes);
+  app.route("/api/reports", reportRoutes);
+  app.route("/api/screenings", retryRoutes);
   app.route("/api/tickers", tickerRoutes);
 
   app.onError((error, context) => {

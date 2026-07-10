@@ -1,5 +1,11 @@
 import type { ExplanationResult } from "../providers/explanations";
 import type { NewsItem } from "../providers/news";
+import type {
+  MoverDto,
+  ReportDto,
+  ReportSummaryDto,
+  SourceDto,
+} from "../shared/contracts";
 import type { TickerRecord } from "./tickers";
 
 export interface ScreeningWork {
@@ -556,5 +562,137 @@ export class RunRepository {
         tickersFailed: number;
       }>();
     return { ...job, runs: runs.results };
+  }
+
+  private async hydrateReport(
+    run: ReportSummaryDto | null,
+  ): Promise<ReportDto | null> {
+    if (!run) return null;
+    const movers = await this.db
+      .prepare(
+        `SELECT s.id AS screeningId, s.symbol,
+         s.company_name AS companyName, s.exchange, s.currency,
+         s.current_price AS currentPrice, s.change_amount AS changeAmount,
+         s.change_pct AS changePct,
+         a.explanation_zh_cn AS explanationZhCn, a.confidence,
+         a.clear_catalyst AS clearCatalyst, a.status AS analysisStatus
+         FROM screenings s LEFT JOIN analyses a ON a.screening_id = s.id
+         WHERE s.report_run_id = ?1 AND s.qualified = 1
+         ORDER BY ABS(s.change_pct) DESC, s.symbol`,
+      )
+      .bind(run.id)
+      .all<
+        Omit<MoverDto, "sources" | "clearCatalyst"> & {
+          clearCatalyst: number | null;
+        }
+      >();
+    const hydrated: MoverDto[] = [];
+    for (const mover of movers.results) {
+      const sources = await this.db
+        .prepare(
+          `SELECT title, publisher, published_at AS publishedAt, url, cited
+           FROM sources WHERE screening_id = ?1 ORDER BY source_index`,
+        )
+        .bind(mover.screeningId)
+        .all<Omit<SourceDto, "cited"> & { cited: number }>();
+      hydrated.push({
+        ...mover,
+        clearCatalyst:
+          mover.clearCatalyst === null ? null : mover.clearCatalyst === 1,
+        sources: sources.results.map((source) => ({
+          ...source,
+          cited: source.cited === 1,
+        })),
+      });
+    }
+    return { run, movers: hydrated };
+  }
+
+  async reportByDate(date: string): Promise<ReportDto | null> {
+    const run = await this.db
+      .prepare(
+        `SELECT id, trading_date AS tradingDate, status,
+         tickers_total AS tickersTotal, tickers_processed AS tickersProcessed,
+         tickers_qualified AS tickersQualified, tickers_failed AS tickersFailed
+         FROM report_runs WHERE trading_date = ?1 AND published = 1`,
+      )
+      .bind(date)
+      .first<ReportSummaryDto>();
+    return this.hydrateReport(run);
+  }
+
+  async latestPublishedReport(): Promise<ReportDto | null> {
+    const run = await this.db
+      .prepare(
+        `SELECT id, trading_date AS tradingDate, status,
+         tickers_total AS tickersTotal, tickers_processed AS tickersProcessed,
+         tickers_qualified AS tickersQualified, tickers_failed AS tickersFailed
+         FROM report_runs WHERE published = 1
+         ORDER BY trading_date DESC LIMIT 1`,
+      )
+      .first<ReportSummaryDto>();
+    return this.hydrateReport(run);
+  }
+
+  async currentRun(): Promise<ReportSummaryDto | null> {
+    return this.db
+      .prepare(
+        `SELECT id, trading_date AS tradingDate, status,
+         tickers_total AS tickersTotal, tickers_processed AS tickersProcessed,
+         tickers_qualified AS tickersQualified, tickers_failed AS tickersFailed
+         FROM report_runs WHERE published = 0 AND status IN ('pending','running')
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .first<ReportSummaryDto>();
+  }
+
+  async reportHistory(
+    before: string | null,
+    limit = 30,
+  ): Promise<ReportSummaryDto[]> {
+    const cursor = before ?? "9999-12-31";
+    const rows = await this.db
+      .prepare(
+        `SELECT id, trading_date AS tradingDate, status,
+         tickers_total AS tickersTotal, tickers_processed AS tickersProcessed,
+         tickers_qualified AS tickersQualified, tickers_failed AS tickersFailed
+         FROM report_runs WHERE published = 1 AND trading_date < ?1
+         ORDER BY trading_date DESC LIMIT ?2`,
+      )
+      .bind(cursor, limit)
+      .all<ReportSummaryDto>();
+    return rows.results;
+  }
+
+  async retryAnalysis(
+    screeningId: string,
+    queue: Queue<{ screeningId: string }>,
+    now: string,
+  ): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT qualified FROM screenings
+         WHERE id = ?1 AND status = 'failed'`,
+      )
+      .bind(screeningId)
+      .first<{ qualified: number }>();
+    if (row?.qualified !== 1) return false;
+    await this.db.batch([
+      this.db
+        .prepare("DELETE FROM sources WHERE screening_id = ?1")
+        .bind(screeningId),
+      this.db
+        .prepare("DELETE FROM analyses WHERE screening_id = ?1")
+        .bind(screeningId),
+      this.db
+        .prepare(
+          `UPDATE screenings SET status = 'queued', attempt_count = 0,
+           queued_at = ?1, processing_started_at = NULL, error_code = NULL,
+           error_message = NULL WHERE id = ?2`,
+        )
+        .bind(now, screeningId),
+    ]);
+    await queue.send({ screeningId });
+    return true;
   }
 }
