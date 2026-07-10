@@ -702,22 +702,39 @@ export class RunRepository {
           qualified: number | null;
         }
       >();
+    const sourceRows = await this.db
+      .prepare(
+        `SELECT src.screening_id AS screeningId, src.title, src.publisher,
+         src.published_at AS publishedAt, src.url, src.cited
+         FROM sources src JOIN screenings s ON s.id = src.screening_id
+         WHERE s.report_run_id = ?1
+         ORDER BY src.screening_id, src.source_index`,
+      )
+      .bind(run.id)
+      .all<
+        Omit<SourceDto, "cited"> & {
+          screeningId: string;
+          cited: number;
+        }
+      >();
+    const sourcesByScreening = new Map<string, SourceDto[]>();
+    for (const source of sourceRows.results) {
+      const sources = sourcesByScreening.get(source.screeningId) ?? [];
+      sources.push({
+        title: source.title,
+        publisher: source.publisher,
+        publishedAt: source.publishedAt,
+        url: source.url,
+        cited: source.cited === 1,
+      });
+      sourcesByScreening.set(source.screeningId, sources);
+    }
     const hydrated: MoverDto[] = [];
     for (const mover of movers.results) {
-      const sources = await this.db
-        .prepare(
-          `SELECT title, publisher, published_at AS publishedAt, url, cited
-           FROM sources WHERE screening_id = ?1 ORDER BY source_index`,
-        )
-        .bind(mover.screeningId)
-        .all<Omit<SourceDto, "cited"> & { cited: number }>();
       hydrated.push({
         ...mover,
         qualified: mover.qualified === null ? null : mover.qualified === 1,
-        sources: sources.results.map((source) => ({
-          ...source,
-          cited: source.cited === 1,
-        })),
+        sources: sourcesByScreening.get(mover.screeningId) ?? [],
       });
     }
     return { run, movers: hydrated };

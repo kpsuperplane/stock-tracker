@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import { RunRepository } from "../../src/db/runs";
 import type { ReportDto } from "../../src/shared/contracts";
 
 const headers = { Authorization: `Basic ${btoa("owner:password")}` };
@@ -62,6 +63,107 @@ describe("report routes", () => {
         sources: [],
       }),
     );
+  });
+
+  it("uses three queries to hydrate a 71-stock report", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `WITH RECURSIVE numbers(value) AS (
+           SELECT 4 UNION ALL SELECT value + 1 FROM numbers WHERE value < 71
+         )
+         INSERT INTO tickers
+           (id, symbol, company_name, exchange, currency, active, created_at, updated_at)
+         SELECT 'ticker-' || value, 'T' || value, 'Ticker ' || value,
+           'NMS', 'USD', 1, ?1, ?1 FROM numbers`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO screenings
+           (id, report_run_id, ticker_id, symbol, company_name, exchange,
+            currency, target_date, current_price, change_amount, change_pct,
+            qualified, status)
+         SELECT 'screening-' || id, 'run', id, symbol, company_name, exchange,
+           currency, '2026-07-09', 100, 1, 1, 0, 'complete'
+         FROM tickers WHERE id LIKE 'ticker-%'`,
+      ),
+      env.DB.prepare(
+        `INSERT INTO sources
+           (id, screening_id, source_index, title, publisher, published_at, url, cited)
+         VALUES ('src-shop-2', 's-shop', 2, 'Shopify source 2', 'Publisher',
+           ?1, 'https://news/shop-2', 0)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO sources
+           (id, screening_id, source_index, title, publisher, published_at, url, cited)
+         VALUES ('src-shop-1', 's-shop', 1, 'Shopify source 1', 'Publisher',
+           ?1, 'https://news/shop-1', 0)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO sources
+           (id, screening_id, source_index, title, publisher, published_at, url, cited)
+         VALUES ('src-ticker-4', 'screening-ticker-4', 0, 'Ticker 4 source',
+           'Publisher', ?1, 'https://news/ticker-4', 0)`,
+      ).bind(now),
+    ]);
+
+    let executedQueries = 0;
+    const countStatement = (
+      statement: D1PreparedStatement,
+    ): D1PreparedStatement =>
+      new Proxy(statement, {
+        get(target, property, receiver) {
+          if (property === "bind") {
+            return (...values: unknown[]) =>
+              countStatement(target.bind(...values));
+          }
+          if (property === "first") {
+            return (columnName?: string) => {
+              executedQueries += 1;
+              return columnName === undefined
+                ? target.first()
+                : target.first(columnName);
+            };
+          }
+          if (property === "all") {
+            return () => {
+              executedQueries += 1;
+              return target.all();
+            };
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    const countingDatabase = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => countStatement(target.prepare(query));
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    const report = await new RunRepository(countingDatabase).reportByDate(
+      "2026-07-09",
+    );
+
+    expect(report?.movers).toHaveLength(71);
+    expect(executedQueries).toBe(3);
+    expect(
+      report?.movers
+        .find((mover) => mover.screeningId === "s-shop")
+        ?.sources.map((source) => source.title),
+    ).toEqual(["Shopify news", "Shopify source 1", "Shopify source 2"]);
+    expect(
+      report?.movers.find((mover) => mover.screeningId === "screening-ticker-4")
+        ?.sources,
+    ).toEqual([
+      expect.objectContaining({
+        title: "Ticker 4 source",
+        url: "https://news/ticker-4",
+      }),
+    ]);
+    expect(
+      report?.movers.find((mover) => mover.screeningId === "s-aapl")?.sources,
+    ).toEqual([]);
   });
 
   it("lists history and reads a report by date", async () => {
