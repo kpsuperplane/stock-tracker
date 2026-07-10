@@ -18,6 +18,13 @@ export interface ExplanationProvider {
 
 const model = "@cf/qwen/qwen3-30b-a3b-fp8";
 
+interface QwenInput {
+  messages: Array<{ role: "system" | "user"; content: string }>;
+  max_tokens: number;
+  temperature: number;
+  chat_template_kwargs: { enable_thinking: boolean };
+}
+
 const plainChineseText = (raw: unknown) => {
   if (typeof raw !== "string") throw new Error("invalid_explanation_text");
   const text = raw
@@ -44,7 +51,10 @@ export class WorkersAiExplanationProvider implements ExplanationProvider {
       };
     }
 
-    const result = await this.ai.run(model, {
+    const qwen = this.ai as unknown as {
+      run(modelName: string, input: QwenInput): Promise<unknown>;
+    };
+    const result = await qwen.run(model, {
       messages: [
         {
           role: "system",
@@ -68,12 +78,24 @@ export class WorkersAiExplanationProvider implements ExplanationProvider {
       ],
       max_tokens: 320,
       temperature: 0.1,
+      chat_template_kwargs: { enable_thinking: false },
     });
     const output = result as {
       response?: unknown;
-      choices?: Array<{ message?: { content?: unknown } }>;
+      choices?: Array<{
+        message?: {
+          content?: unknown;
+          reasoning_content?: unknown;
+          reasoning?: unknown;
+        };
+      }>;
     };
-    const raw = output.response ?? output.choices?.[0]?.message?.content;
+    const message = output.choices?.[0]?.message;
+    const raw =
+      output.response ??
+      message?.content ??
+      message?.reasoning_content ??
+      message?.reasoning;
     return {
       explanationZhCn: plainChineseText(raw),
       model,

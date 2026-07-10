@@ -57,7 +57,9 @@ describe("WorkersAiExplanationProvider", () => {
     expect(ai.run).toHaveBeenCalledOnce();
     expect(ai.run).toHaveBeenCalledWith(
       "@cf/qwen/qwen3-30b-a3b-fp8",
-      expect.not.objectContaining({ response_format: expect.anything() }),
+      expect.objectContaining({
+        chat_template_kwargs: { enable_thinking: false },
+      }),
     );
   });
 
@@ -82,7 +84,8 @@ describe("WorkersAiExplanationProvider", () => {
         choices: [
           {
             message: {
-              content:
+              content: null,
+              reasoning_content:
                 "多篇报道提到存储芯片需求改善。这可能与本次股价上涨有关。",
             },
           },
