@@ -28,8 +28,12 @@ describe("portfolio ledger migration", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "tickers",
+        "backfill_jobs",
         "report_runs",
         "screenings",
+        "dispatch_events",
+        "analyses",
+        "sources",
         "instruments",
         "transactions",
         "corporate_actions",
@@ -66,7 +70,17 @@ describe("portfolio ledger migration", () => {
         `INSERT INTO transactions
          (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
           revision, created_at, updated_at)
-         VALUES ('tx-bad', 'instrument-1', '2026-01-03', 'hold', '1', '1', 0, ?1, ?1)`,
+         VALUES ('tx-bad-side', 'instrument-1', '2026-01-03', 'hold', '1', '1', 1, ?1, ?1)`,
+      )
+        .bind(now)
+        .run(),
+    ).rejects.toThrow();
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO transactions
+         (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+          revision, created_at, updated_at)
+         VALUES ('tx-bad-revision', 'instrument-1', '2026-01-03', 'buy', '1', '1', 0, ?1, ?1)`,
       )
         .bind(now)
         .run(),
@@ -148,6 +162,86 @@ describe("portfolio ledger migration", () => {
     });
   });
 
+  it.each([
+    [
+      "snapshot revision",
+      null,
+      now,
+      "2020-01-01",
+      "2026-07-10",
+      "snapshot-r1",
+      now,
+    ],
+    [
+      "retrieval time",
+      "snapshot-r1",
+      null,
+      "2020-01-01",
+      "2026-07-10",
+      "snapshot-r1",
+      now,
+    ],
+    [
+      "confirmed start",
+      "snapshot-r1",
+      now,
+      null,
+      "2026-07-10",
+      "snapshot-r1",
+      now,
+    ],
+    [
+      "confirmed end",
+      "snapshot-r1",
+      now,
+      "2020-01-01",
+      null,
+      "snapshot-r1",
+      now,
+    ],
+    [
+      "confirmed revision",
+      "snapshot-r1",
+      now,
+      "2020-01-01",
+      "2026-07-10",
+      null,
+      now,
+    ],
+    [
+      "confirmation time",
+      "snapshot-r1",
+      now,
+      "2020-01-01",
+      "2026-07-10",
+      "snapshot-r1",
+      null,
+    ],
+  ])("rejects confirmed coverage missing %s", async (_label, snapshotProviderRevision, retrievedAt, confirmedStartDate, confirmedEndDate, confirmedProviderRevision, confirmedAt) => {
+    await insertInstrument();
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO corporate_action_coverage
+           (instrument_id, provider, requested_start_date, requested_end_date,
+            snapshot_provider_revision, retrieved_at, confirmed_start_date,
+            confirmed_end_date, confirmed_provider_revision, confirmed_at,
+            status, updated_at)
+           VALUES ('instrument-1', 'yahoo', '2020-01-01', '2026-07-10',
+                   ?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7)`,
+      )
+        .bind(
+          snapshotProviderRevision,
+          retrievedAt,
+          confirmedStartDate,
+          confirmedEndDate,
+          confirmedProviderRevision,
+          confirmedAt,
+          now,
+        )
+        .run(),
+    ).rejects.toThrow();
+  });
+
   it("supports candidate, active, superseded, and quarantined split revisions", async () => {
     await insertInstrument();
     for (const [index, status] of [
@@ -226,6 +320,93 @@ describe("portfolio ledger migration", () => {
     ).toEqual({ count: 0 });
   });
 
+  it("retains import identity while cascading job-owned planning links", async () => {
+    await env.DB.prepare(
+      `INSERT INTO pipeline_jobs
+       (id, trigger_type, affected_instruments_json, eligibility_intervals_json,
+        priority, status, created_at, updated_at)
+       VALUES ('job-retained', 'ledger_reconciliation', '[]', '[]', 1,
+               'complete', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO import_batches
+       (id, file_digest, original_filename, base_position_basis_revision,
+        status, result_pipeline_job_id, expires_at, committed_at,
+        created_at, updated_at)
+       VALUES ('batch-retained', 'digest-retained', 'events.csv', 0,
+               'committed', 'job-retained', '2026-07-11T12:00:00.000Z', ?1,
+               ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO work_items
+       (id, scope, pipeline_job_id, work_type, deterministic_key, state,
+        priority, attempt_count, max_attempts, created_at, updated_at)
+       VALUES ('planning-retained', 'job_planning', 'job-retained',
+               'reconciliation_plan', 'job:job-retained:plan', 'complete',
+               1, 1, 3, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO job_work_items
+       (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+       VALUES ('job-retained', 'planning-retained', 'required', 'processed', ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO work_items
+       (id, scope, pipeline_job_id, work_type, deterministic_key, state,
+        priority, attempt_count, max_attempts, created_at, updated_at)
+       VALUES ('global-retained', 'global_fact', NULL, 'market_fact',
+               'global:retained', 'complete', 1, 1, 3, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO job_work_items
+       (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+       VALUES ('job-retained', 'global-retained', 'required', 'reused', ?1)`,
+    )
+      .bind(now)
+      .run();
+
+    await env.DB.prepare(
+      "DELETE FROM pipeline_jobs WHERE id = 'job-retained'",
+    ).run();
+
+    expect(
+      await env.DB.prepare(
+        `SELECT file_digest, status, result_pipeline_job_id
+         FROM import_batches WHERE id = 'batch-retained'`,
+      ).first(),
+    ).toEqual({
+      file_digest: "digest-retained",
+      status: "committed",
+      result_pipeline_job_id: null,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM work_items WHERE id = 'planning-retained'",
+      ).first(),
+    ).toEqual({ count: 0 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM work_items WHERE id = 'global-retained'",
+      ).first(),
+    ).toEqual({ count: 1 });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM job_work_items
+         WHERE work_item_id IN ('planning-retained', 'global-retained')`,
+      ).first(),
+    ).toEqual({ count: 0 });
+  });
+
   it("models complete job-scoped and global deterministic work", async () => {
     await insertInstrument();
     await env.DB.prepare(
@@ -281,6 +462,70 @@ describe("portfolio ledger migration", () => {
 });
 
 describe("ledger mutation token", () => {
+  it("fails closed when the singleton position-basis row is absent", async () => {
+    await env.DB.prepare("DELETE FROM position_basis_state WHERE id = 1").run();
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO ledger_mutations
+         (id, expected_revision, resulting_revision, mutation_kind, created_at)
+         VALUES ('mutation-missing-state', 0, 1, 'transaction_create', ?1)`,
+      )
+        .bind(now)
+        .run(),
+    ).rejects.toThrow();
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM ledger_mutations WHERE id = 'mutation-missing-state'",
+      ).first(),
+    ).toEqual({ count: 0 });
+    await env.DB.prepare(
+      "INSERT INTO position_basis_state (id, revision) VALUES (1, 0)",
+    ).run();
+  });
+
+  it("rolls back the token, revision, and prior writes when a later batch statement fails", async () => {
+    await insertInstrument();
+    await expect(
+      env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO ledger_mutations
+           (id, expected_revision, resulting_revision, mutation_kind, created_at)
+           VALUES ('mutation-rollback', 0, 1, 'transaction_create', ?1)`,
+        ).bind(now),
+        env.DB.prepare(
+          `INSERT INTO transactions
+           (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+            revision, created_at, updated_at)
+           VALUES ('tx-before-failure', 'instrument-1', '2026-01-02', 'buy',
+                   '1', '10', 1, ?1, ?1)`,
+        ).bind(now),
+        env.DB.prepare(
+          `INSERT INTO transactions
+           (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
+            revision, created_at, updated_at)
+           VALUES ('tx-invalid', 'instrument-1', '2026-01-03', 'invalid',
+                   '1', '10', 1, ?1, ?1)`,
+        ).bind(now),
+      ]),
+    ).rejects.toThrow();
+
+    expect(
+      await env.DB.prepare(
+        "SELECT revision, last_mutation_id FROM position_basis_state WHERE id = 1",
+      ).first(),
+    ).toEqual({ revision: 0, last_mutation_id: null });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM ledger_mutations WHERE id = 'mutation-rollback'",
+      ).first(),
+    ).toEqual({ count: 0 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM transactions",
+      ).first(),
+    ).toEqual({ count: 0 });
+  });
+
   it("supports an atomic mutation with its job-scoped planning item", async () => {
     await insertInstrument();
     const basis = new PositionBasisRepository(env.DB);

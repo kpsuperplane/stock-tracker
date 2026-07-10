@@ -91,7 +91,13 @@ CREATE TABLE corporate_action_coverage (
   ),
   CHECK (
     status <> 'confirmed'
-    OR (confirmed_provider_revision = snapshot_provider_revision
+    OR (snapshot_provider_revision IS NOT NULL
+      AND retrieved_at IS NOT NULL
+      AND confirmed_start_date IS NOT NULL
+      AND confirmed_end_date IS NOT NULL
+      AND confirmed_provider_revision IS NOT NULL
+      AND confirmed_at IS NOT NULL
+      AND confirmed_provider_revision = snapshot_provider_revision
       AND confirmed_start_date = requested_start_date
       AND confirmed_end_date = requested_end_date)
   )
@@ -126,7 +132,8 @@ CREATE TRIGGER ledger_mutations_revision_guard
 BEFORE INSERT ON ledger_mutations
 BEGIN
   SELECT CASE
-    WHEN NEW.expected_revision <> (SELECT revision FROM position_basis_state WHERE id = 1)
+    WHEN NOT EXISTS (SELECT 1 FROM position_basis_state WHERE id = 1)
+      OR NEW.expected_revision IS NOT (SELECT revision FROM position_basis_state WHERE id = 1)
     THEN RAISE(ABORT, 'ledger_conflict')
   END;
 END;
@@ -139,6 +146,9 @@ BEGIN
       updated_at = NEW.created_at,
       last_mutation_id = NEW.id
   WHERE id = 1;
+  SELECT CASE
+    WHEN changes() <> 1 THEN RAISE(ABORT, 'ledger_state_missing')
+  END;
 END;
 
 CREATE TABLE pipeline_jobs (
