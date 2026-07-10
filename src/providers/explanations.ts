@@ -16,7 +16,7 @@ export interface ExplanationProvider {
   explain(input: ExplanationInput): Promise<ExplanationResult>;
 }
 
-const model = "@cf/meta/llama-3.1-8b-instruct-fast";
+const model = "@cf/qwen/qwen3-30b-a3b-fp8";
 
 const plainChineseText = (raw: unknown) => {
   if (typeof raw !== "string") throw new Error("invalid_explanation_text");
@@ -69,7 +69,11 @@ export class WorkersAiExplanationProvider implements ExplanationProvider {
       max_tokens: 320,
       temperature: 0.1,
     });
-    const raw = (result as { response: unknown }).response;
+    const output = result as {
+      response?: unknown;
+      choices?: Array<{ message?: { content?: unknown } }>;
+    };
+    const raw = output.response ?? output.choices?.[0]?.message?.content;
     return {
       explanationZhCn: plainChineseText(raw),
       model,

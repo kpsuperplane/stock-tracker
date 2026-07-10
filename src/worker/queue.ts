@@ -1,5 +1,7 @@
 import { RunRepository } from "../db/runs";
+import { ExaNewsProvider } from "../providers/exa";
 import { WorkersAiExplanationProvider } from "../providers/explanations";
+import { FallbackNewsProvider } from "../providers/fallback-news";
 import { GoogleNewsProvider } from "../providers/google-news";
 import { MarketauxNewsProvider } from "../providers/marketaux";
 import { YahooMarketDataProvider } from "../providers/yahoo";
@@ -20,9 +22,14 @@ export const handleQueue = async (
   env: Env,
 ) => {
   const repository = new RunRepository(env.DB);
-  const news = env.MARKETAUX_API_TOKEN
+  const exa = env.EXA_API_KEY ? new ExaNewsProvider(env.EXA_API_KEY) : null;
+  const marketaux = env.MARKETAUX_API_TOKEN
     ? new MarketauxNewsProvider(env.MARKETAUX_API_TOKEN)
-    : new GoogleNewsProvider();
+    : null;
+  const news =
+    exa && marketaux
+      ? new FallbackNewsProvider(exa, marketaux)
+      : (exa ?? marketaux ?? new GoogleNewsProvider());
   const service = new ScreeningService(
     repository,
     new YahooMarketDataProvider(),
@@ -46,9 +53,13 @@ export const handleQueue = async (
         const provider = text.includes("market_")
           ? "yahoo"
           : text.includes("news_")
-            ? env.MARKETAUX_API_TOKEN
-              ? "marketaux"
-              : "google-news"
+            ? env.EXA_API_KEY
+              ? env.MARKETAUX_API_TOKEN
+                ? "exa/marketaux"
+                : "exa"
+              : env.MARKETAUX_API_TOKEN
+                ? "marketaux"
+                : "google-news"
             : "workers-ai";
         const row = await env.DB.prepare(
           "SELECT attempt_count AS attemptCount FROM screenings WHERE id = ?1",

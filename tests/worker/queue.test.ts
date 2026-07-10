@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { RunRepository } from "../../src/db/runs";
 import { TickerRepository } from "../../src/db/tickers";
+import { ExaNewsProvider } from "../../src/providers/exa";
 import { WorkersAiExplanationProvider } from "../../src/providers/explanations";
 import { GoogleNewsProvider } from "../../src/providers/google-news";
 import { MarketauxNewsProvider } from "../../src/providers/marketaux";
@@ -56,7 +57,7 @@ describe("Queue consumer", () => {
     vi.spyOn(GoogleNewsProvider.prototype, "search").mockRejectedValue(
       new Error("google_should_not_be_used"),
     );
-    vi.spyOn(MarketauxNewsProvider.prototype, "search").mockResolvedValue([
+    vi.spyOn(ExaNewsProvider.prototype, "search").mockResolvedValue([
       {
         title: "Enterprise growth lifts Shopify",
         publisher: "Reuters",
@@ -64,6 +65,9 @@ describe("Queue consumer", () => {
         url: "https://news/1",
       },
     ]);
+    vi.spyOn(MarketauxNewsProvider.prototype, "search").mockRejectedValue(
+      new Error("marketaux_should_not_be_used"),
+    );
     vi.spyOn(
       WorkersAiExplanationProvider.prototype,
       "explain",
@@ -80,9 +84,9 @@ describe("Queue consumer", () => {
       { messages: [message] } as unknown as MessageBatch<ScreeningJobMessage>,
       new Proxy(env, {
         get(target, property) {
-          return property === "MARKETAUX_API_TOKEN"
-            ? "test-token"
-            : Reflect.get(target, property);
+          if (property === "EXA_API_KEY") return "test-exa-key";
+          if (property === "MARKETAUX_API_TOKEN") return "test-marketaux-token";
+          return Reflect.get(target, property);
         },
       }),
     );

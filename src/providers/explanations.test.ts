@@ -52,11 +52,11 @@ describe("WorkersAiExplanationProvider", () => {
     expect(result).toEqual({
       explanationZhCn:
         "企业客户增长和分析师上调目标价可能推动股价上涨。现有报道无法证明单一原因。",
-      model: "@cf/meta/llama-3.1-8b-instruct-fast",
+      model: "@cf/qwen/qwen3-30b-a3b-fp8",
     });
     expect(ai.run).toHaveBeenCalledOnce();
     expect(ai.run).toHaveBeenCalledWith(
-      "@cf/meta/llama-3.1-8b-instruct-fast",
+      "@cf/qwen/qwen3-30b-a3b-fp8",
       expect.not.objectContaining({ response_format: expect.anything() }),
     );
   });
@@ -72,7 +72,30 @@ describe("WorkersAiExplanationProvider", () => {
       new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
     ).resolves.toEqual({
       explanationZhCn: "相关报道可能解释本次上涨。现有证据仍然有限。",
-      model: "@cf/meta/llama-3.1-8b-instruct-fast",
+      model: "@cf/qwen/qwen3-30b-a3b-fp8",
+    });
+  });
+
+  it("accepts the chat-completions response shape used by Qwen", async () => {
+    const ai = {
+      run: vi.fn(async () => ({
+        choices: [
+          {
+            message: {
+              content:
+                "多篇报道提到存储芯片需求改善。这可能与本次股价上涨有关。",
+            },
+          },
+        ],
+      })),
+    } as unknown as Ai;
+
+    await expect(
+      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
+    ).resolves.toEqual({
+      explanationZhCn:
+        "多篇报道提到存储芯片需求改善。这可能与本次股价上涨有关。",
+      model: "@cf/qwen/qwen3-30b-a3b-fp8",
     });
   });
 
