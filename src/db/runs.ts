@@ -484,4 +484,77 @@ export class RunRepository {
       )
       .run();
   }
+
+  async createBackfill(input: {
+    startDate: string;
+    endDate: string;
+    reprocessExisting: boolean;
+    now: string;
+    datesTotal: number;
+  }): Promise<string> {
+    const id = crypto.randomUUID();
+    const status = input.datesTotal === 0 ? "complete" : "running";
+    await this.db
+      .prepare(
+        `INSERT INTO backfill_jobs
+         (id, start_date, end_date, reprocess_existing, status, dates_total,
+          created_at, started_at, completed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)`,
+      )
+      .bind(
+        id,
+        input.startDate,
+        input.endDate,
+        input.reprocessExisting ? 1 : 0,
+        status,
+        input.datesTotal,
+        input.now,
+        input.datesTotal === 0 ? input.now : null,
+      )
+      .run();
+    return id;
+  }
+
+  async hasPublishedDate(date: string): Promise<boolean> {
+    return Boolean(
+      await this.db
+        .prepare(
+          "SELECT 1 FROM report_runs WHERE trading_date = ?1 AND published = 1",
+        )
+        .bind(date)
+        .first(),
+    );
+  }
+
+  async findScheduledRun(date: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT id FROM report_runs WHERE trading_date = ?1
+         AND origin = 'scheduled' LIMIT 1`,
+      )
+      .bind(date)
+      .first<{ id: string }>();
+    return row?.id ?? null;
+  }
+
+  async getBackfill(id: string): Promise<Record<string, unknown> | null> {
+    const job = await this.db
+      .prepare("SELECT * FROM backfill_jobs WHERE id = ?1")
+      .bind(id)
+      .first<Record<string, unknown>>();
+    if (!job) return null;
+    const runs = await this.db
+      .prepare(
+        `SELECT trading_date AS tradingDate, status,
+         tickers_failed AS tickersFailed FROM report_runs
+         WHERE backfill_job_id = ?1 ORDER BY trading_date`,
+      )
+      .bind(id)
+      .all<{
+        tradingDate: string;
+        status: string;
+        tickersFailed: number;
+      }>();
+    return { ...job, runs: runs.results };
+  }
 }
