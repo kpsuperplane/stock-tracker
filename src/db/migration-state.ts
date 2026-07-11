@@ -220,6 +220,42 @@ export class MigrationStateRepository {
     return result.meta.changes === 1;
   }
 
+  async captureHighWater(input: {
+    owner: string;
+    now: string;
+    id?: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE portfolio_migration_state
+            SET high_water_trading_date = (
+                  SELECT trading_date FROM report_runs
+                   WHERE published = 1
+                   ORDER BY trading_date DESC, generation DESC, id DESC LIMIT 1
+                ),
+                high_water_generation = (
+                  SELECT generation FROM report_runs
+                   WHERE published = 1
+                   ORDER BY trading_date DESC, generation DESC, id DESC LIMIT 1
+                ),
+                high_water_run_id = (
+                  SELECT id FROM report_runs
+                   WHERE published = 1
+                   ORDER BY trading_date DESC, generation DESC, id DESC LIMIT 1
+                ),
+                updated_at = ?1
+          WHERE id = ?2 AND lease_owner = ?3
+            AND (
+              high_water_trading_date IS NULL OR
+              high_water_generation IS NULL OR
+              high_water_run_id IS NULL
+            )`,
+      )
+      .bind(input.now, input.id ?? LEGACY_MIGRATION_ID, input.owner)
+      .run();
+    return result.meta.changes === 1;
+  }
+
   async advance(input: {
     owner: string;
     now: string;
@@ -338,6 +374,27 @@ export class MigrationStateRepository {
           outcome: string;
         }>()) ?? null
     );
+  }
+
+  async hasMismatchedAudit(input: {
+    screeningId: string;
+    generation: number;
+    id?: string;
+  }): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT 1 FROM portfolio_migration_audit
+          WHERE migration_id = ?1 AND legacy_screening_id = ?2
+            AND legacy_generation = ?3 AND outcome = 'mismatched'
+          LIMIT 1`,
+      )
+      .bind(
+        input.id ?? LEGACY_MIGRATION_ID,
+        input.screeningId,
+        input.generation,
+      )
+      .first();
+    return Boolean(row);
   }
 
   auditStatement(input: {

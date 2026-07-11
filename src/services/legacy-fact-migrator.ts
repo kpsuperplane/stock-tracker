@@ -274,6 +274,12 @@ export class LegacyFactMigrator {
         current = await this.state.get();
         if (!current) throw new Error("migration_state_missing");
       }
+      if (!current.highWater) {
+        await this.state.captureHighWater({ owner, now });
+        current = await this.state.get();
+        if (!current) throw new Error("migration_state_missing");
+      }
+      await this.sweepTickerIdentities(now);
       await this.beforePage?.();
       const rows = await this.page(current.cursor, current.highWater, pageSize);
       const stats: MigrationPageStats = {
@@ -492,6 +498,55 @@ export class LegacyFactMigrator {
     return resolved.id;
   }
 
+  /**
+   * Preserve every currently known legacy ticker identity, including deleted
+   * watchlist entries. The watchlist is capped at 100 active entries, so this
+   * set-based sweep is bounded by the personal ticker table (active watchlist
+   * entries are capped at 100); referenced identities are always ensured by
+   * the row materializer as well.
+   */
+  private async sweepTickerIdentities(now: string): Promise<void> {
+    await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO instruments
+             (id, symbol, company_name, exchange, currency, instrument_type,
+              provider, provider_symbol, provider_metadata_json, created_at,
+              updated_at)
+           SELECT 'legacy-ticker:' || id, symbol, company_name, exchange,
+                  currency, 'stock', ?1, symbol,
+                  json_object(
+                    'legacyTickerId', id,
+                    'legacyActive', CASE WHEN active = 1 THEN json('true') ELSE json('false') END,
+                    'legacyDeletedAt', deleted_at
+                  ),
+                  ?2, ?2
+             FROM tickers`,
+        )
+        .bind(LEGACY_PROVIDER, now),
+      this.db
+        .prepare(
+          `UPDATE instruments
+              SET provider_metadata_json = (
+                    SELECT json_object(
+                      'legacyTickerId', t.id,
+                      'legacyActive', CASE WHEN t.active = 1 THEN json('true') ELSE json('false') END,
+                      'legacyDeletedAt', t.deleted_at
+                    )
+                      FROM tickers t
+                     WHERE 'legacy-ticker:' || t.id = instruments.id
+                  ),
+                  updated_at = ?1
+            WHERE provider = ?2
+              AND EXISTS (
+                SELECT 1 FROM tickers t
+                 WHERE 'legacy-ticker:' || t.id = instruments.id
+              )`,
+        )
+        .bind(now, LEGACY_PROVIDER),
+    ]);
+  }
+
   private async existingFact(
     instrumentId: string,
     tradingDate: string,
@@ -578,6 +633,22 @@ export class LegacyFactMigrator {
       contentHash = await digest(hashPayload(row, sources));
       provenanceHash = await digest(provenancePayload);
       auditId = `${LEGACY_MIGRATION_ID}:${row.runId}:${row.screeningId}:${row.generation}:${contentHash}`;
+      if (
+        await this.state.hasMismatchedAudit({
+          screeningId: row.screeningId,
+          generation: row.generation,
+        })
+      ) {
+        await this.db.batch([
+          audit({
+            outcome: "mismatched",
+            reasonCode: "migration_hash_mismatch",
+            reasonMessage:
+              "A prior hash mismatch remains unresolved; manual review is required.",
+          }),
+        ]);
+        return { outcome: "mismatched", contentHash };
+      }
       const auditPrevious = await this.state.latestAudit({
         screeningId: row.screeningId,
         generation: row.generation,

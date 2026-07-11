@@ -274,7 +274,9 @@ describe("legacy published-generation migrator", () => {
   it("keeps deleted identities, exposes missing analysis/price, and resumes pages", async () => {
     const priced = await insertTicker("migrator-deleted", "MDEL");
     const missing = await insertTicker("migrator-missing", "MMISS");
+    const orphan = await insertTicker("migrator-orphan", "MORPH");
     await new TickerRepository(env.DB).softDelete(priced.id, now);
+    await new TickerRepository(env.DB).softDelete(orphan.id, now);
     const repository = new RunRepository(env.DB);
     await prepareRun({
       date: "2026-07-05",
@@ -316,7 +318,20 @@ describe("legacy published-generation migrator", () => {
       await env.DB.prepare(
         "SELECT symbol FROM instruments ORDER BY symbol",
       ).all(),
-    ).toMatchObject({ results: [{ symbol: "MDEL" }, { symbol: "MMISS" }] });
+    ).toMatchObject({
+      results: [{ symbol: "MDEL" }, { symbol: "MMISS" }, { symbol: "MORPH" }],
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT provider_metadata_json FROM instruments WHERE symbol = 'MORPH'",
+      ).first(),
+    ).toEqual({
+      provider_metadata_json: JSON.stringify({
+        legacyTickerId: orphan.id,
+        legacyActive: false,
+        legacyDeletedAt: now,
+      }),
+    });
     expect(
       await env.DB.prepare("SELECT status FROM movement_analyses").first(),
     ).toEqual({ status: "pending" });
@@ -375,6 +390,24 @@ describe("legacy published-generation migrator", () => {
     ).toEqual({
       outcome: "mismatched",
       reason_code: "migration_hash_mismatch",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT provider_revision FROM daily_market_facts",
+      ).first(),
+    ).toEqual(firstFact);
+    const failingRetry = migrator({
+      beforeSourceRead: () => {
+        throw new Error("source_read_after_mismatch");
+      },
+    });
+    expect((await failingRetry.runPage({ now })).errors).toBe(1);
+    const successfulRetry = await migrator().runPage({ now });
+    expect(successfulRetry).toMatchObject({
+      status: "complete",
+      mismatched: 1,
+      inserted: 0,
+      updated: 0,
     });
     expect(
       await env.DB.prepare(
@@ -470,5 +503,92 @@ describe("legacy published-generation migrator", () => {
         "SELECT COUNT(*) AS count FROM daily_market_facts",
       ).first(),
     ).toEqual({ count: 2 });
+  });
+
+  it("captures a missing high-water mark before resuming an active cursor", async () => {
+    const firstTicker = await insertTicker("migrator-hwm-repair-1", "MHRP1");
+    const secondTicker = await insertTicker("migrator-hwm-repair-2", "MHRP2");
+    const repository = new RunRepository(env.DB);
+    await prepareRun({
+      date: "2026-07-01",
+      ticker: firstTicker,
+      repository,
+      price: {
+        previousDate: "2026-06-30",
+        previousPrice: 100,
+        currentPrice: 110,
+        changeAmount: 10,
+        changePct: 10,
+      },
+    });
+    await prepareRun({
+      date: "2026-07-02",
+      ticker: secondTicker,
+      repository,
+      price: {
+        previousDate: "2026-07-01",
+        previousPrice: 100,
+        currentPrice: 120,
+        changeAmount: 20,
+        changePct: 20,
+      },
+    });
+    const service = migrator();
+    const first = await service.runPage({ pageSize: 1, now });
+    expect(first.status).toBe("running");
+    await env.DB.prepare(
+      `UPDATE portfolio_migration_state
+          SET high_water_generation = NULL`,
+    ).run();
+    const resumed = await service.runPage({ pageSize: 1, now });
+    expect(resumed.examined).toBe(1);
+    expect(resumed.highWater).toMatchObject({
+      tradingDate: "2026-07-02",
+      generation: 1,
+    });
+    await runUntilComplete(service, 1);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM daily_market_facts",
+      ).first(),
+    ).toEqual({ count: 2 });
+  });
+
+  it("repairs a null high-water tuple when a running pass has no cursor", async () => {
+    const ticker = await insertTicker("migrator-hwm-repair-running", "MHRUN");
+    const repository = new RunRepository(env.DB);
+    await prepareRun({
+      date: "2026-07-03",
+      ticker,
+      repository,
+      price: {
+        previousDate: "2026-07-02",
+        previousPrice: 100,
+        currentPrice: 115,
+        changeAmount: 15,
+        changePct: 15,
+      },
+    });
+    await env.DB.prepare(
+      `UPDATE portfolio_migration_state
+          SET status = 'running',
+              cursor_trading_date = NULL,
+              cursor_generation = NULL,
+              cursor_run_id = NULL,
+              cursor_screening_id = NULL,
+              high_water_trading_date = NULL,
+              high_water_generation = NULL,
+              high_water_run_id = NULL,
+              lease_owner = NULL,
+              lease_until = NULL`,
+    ).run();
+
+    const result = await migrator().runPage({ pageSize: 2, now });
+    expect(result).toMatchObject({
+      status: "complete",
+      examined: 1,
+      inserted: 1,
+      highWater: { tradingDate: "2026-07-03", generation: 1 },
+    });
   });
 });
