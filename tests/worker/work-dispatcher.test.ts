@@ -331,4 +331,284 @@ describe("normalized work dispatcher and queue consumer", () => {
       }),
     ).toBe(false);
   });
+
+  it("reserves the daily ceiling across concurrent dispatchers", async () => {
+    await insertInstrument();
+    await insertWork({ id: "concurrent-a", date: "2026-01-01" });
+    await insertWork({ id: "concurrent-b", date: "2026-01-02" });
+    const first = dispatcher({
+      dailyCeiling: 1,
+      newId: () => "batch-concurrent-a",
+    });
+    const second = dispatcher({
+      dailyCeiling: 1,
+      newId: () => "batch-concurrent-b",
+    });
+    await Promise.all([first.service.dispatch(), second.service.dispatch()]);
+    const reservation = await env.DB.prepare(
+      `SELECT COALESCE(SUM(work_count), 0) AS count
+       FROM dispatch_daily_reservations WHERE reservation_day = '2026-07-10'`,
+    ).first<{ count: number }>();
+    expect(reservation).toEqual({ count: 1 });
+    const rows = await env.DB.prepare(
+      `SELECT id, state FROM work_items ORDER BY id`,
+    ).all<{ id: string; state: string }>();
+    expect(rows.results).toEqual([
+      { id: "concurrent-a", state: "queued" },
+      { id: "concurrent-b", state: "pending" },
+    ]);
+  });
+
+  it("coalesces sparse trading dates within the provider calendar span", async () => {
+    await insertInstrument();
+    await insertWork({ id: "sparse-1", date: "2026-01-02" });
+    await insertWork({ id: "sparse-2", date: "2026-01-05" });
+    await insertWork({ id: "sparse-3", date: "2026-01-07" });
+    const { service } = dispatcher({ maxBatchCalendarDays: 6 });
+    await service.dispatch();
+    const range = await env.DB.prepare(
+      `SELECT requested_start_date, requested_end_date
+       FROM dispatch_batches WHERE id = 'batch-1'`,
+    ).first();
+    expect(range).toEqual({
+      requested_start_date: "2026-01-02",
+      requested_end_date: "2026-01-07",
+    });
+  });
+
+  it("terminalizes exhausted queue sends and records durable DLQ delivery", async () => {
+    await insertInstrument();
+    await insertWork({ id: "send-exhausted", date: "2026-01-01" });
+    const first = dispatcher({
+      dispatchMaxAttempts: 1,
+    });
+    first.queue.send = vi.fn(async () => {
+      throw new Error("queue_unavailable");
+    });
+    const dlq = fakeQueue();
+    first.service = new WorkDispatcherService({
+      db: env.DB,
+      queue: first.queue,
+      dlq: dlq.queue,
+      dispatchMaxAttempts: 1,
+      now: () => new Date(now),
+      newId: () => "batch-1",
+    });
+    const result = await first.service.dispatch();
+    expect(result.sendFailures).toBe(1);
+    expect(dlq.sent).toEqual([{ dispatchBatchId: "batch-1" }]);
+    expect(
+      await env.DB.prepare(
+        `SELECT batch.state, batch.dlq_state, work.state AS work_state
+         FROM dispatch_batches batch
+         JOIN dispatch_batch_items item ON item.dispatch_batch_id = batch.id
+         JOIN work_items work ON work.id = item.work_item_id
+         WHERE batch.id = 'batch-1'`,
+      ).first(),
+    ).toEqual({
+      state: "terminal",
+      dlq_state: "delivered",
+      work_state: "terminal",
+    });
+  });
+
+  it("retries a failed DLQ send from durable terminal state", async () => {
+    await insertInstrument();
+    await insertWork({ id: "dlq-retry", date: "2026-01-01" });
+    const first = dispatcher({ dispatchMaxAttempts: 1 });
+    first.queue.send = vi.fn(async () => {
+      throw new Error("queue_unavailable");
+    });
+    const failedDlq = fakeQueue();
+    failedDlq.queue.send = vi.fn(async () => {
+      throw new Error("dlq_unavailable");
+    });
+    first.service = new WorkDispatcherService({
+      db: env.DB,
+      queue: first.queue,
+      dlq: failedDlq.queue,
+      dispatchMaxAttempts: 1,
+      now: () => new Date(now),
+      newId: () => "batch-1",
+    });
+    await first.service.dispatch();
+    expect(
+      await env.DB.prepare(
+        "SELECT state, dlq_state FROM dispatch_batches WHERE id = 'batch-1'",
+      ).first(),
+    ).toEqual({ state: "terminal", dlq_state: "pending" });
+    const recoveredDlq = fakeQueue();
+    const recovered = new WorkDispatcherService({
+      db: env.DB,
+      queue: fakeQueue().queue,
+      dlq: recoveredDlq.queue,
+      now: () => new Date("2026-07-10T21:06:00.000Z"),
+    });
+    await recovered.dispatch();
+    expect(recoveredDlq.sent).toEqual([{ dispatchBatchId: "batch-1" }]);
+    expect(
+      await env.DB.prepare(
+        "SELECT dlq_state FROM dispatch_batches WHERE id = 'batch-1'",
+      ).first(),
+    ).toEqual({ dlq_state: "delivered" });
+  });
+
+  it("does not let a stale processing consumer acknowledge after lease loss", async () => {
+    await insertInstrument();
+    await insertWork({ id: "stale-processing", date: "2026-01-01" });
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const staleMessage = message(sent[0] as PipelineDispatchMessage);
+    const consumer = new PipelineQueueConsumer({
+      db: env.DB,
+      now: () => new Date(now),
+      processor: {
+        process: async ({ work }) => {
+          await env.DB.batch([
+            env.DB.prepare(
+              `UPDATE dispatch_batches
+               SET processing_lease_until = '2026-07-10T22:00:00.000Z'
+               WHERE id = 'batch-1'`,
+            ),
+            env.DB.prepare(
+              `UPDATE work_items
+               SET processing_lease_until = '2026-07-10T22:00:00.000Z'
+               WHERE id = ?1`,
+            ).bind(work[0]?.id),
+          ]);
+          return [
+            {
+              workItemId: work[0]?.id ?? "",
+              kind: "complete" as const,
+            },
+          ];
+        },
+      },
+    });
+    await consumer.handle({ messages: [staleMessage] } as never);
+    expect(staleMessage.ack).not.toHaveBeenCalled();
+    expect(staleMessage.retry).toHaveBeenCalledOnce();
+  });
+
+  it("aggregates settled duplicate recovery and keeps per-item link outcomes", async () => {
+    await insertInstrument();
+    await env.DB.prepare(
+      `INSERT INTO pipeline_jobs
+       (id, trigger_type, affected_instruments_json, eligibility_intervals_json,
+        priority, status, created_at, updated_at)
+       VALUES ('job-settled', 'backfill', '[]', '[]', 1, 'running', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await insertWork({ id: "settled-complete", date: "2026-01-01" });
+    await insertWork({ id: "settled-terminal", date: "2026-01-02" });
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+         (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+         VALUES ('job-settled', 'settled-complete', 'required', 'pending', ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+         (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+         VALUES ('job-settled', 'settled-terminal', 'required', 'pending', ?1)`,
+      ).bind(now),
+    ]);
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE dispatch_batches SET state = 'processing',
+         dispatch_lease_until = NULL,
+         processing_lease_until = '2026-07-10T20:00:00.000Z'
+         WHERE id = 'batch-1'`,
+      ),
+      env.DB.prepare(
+        `UPDATE work_items SET state = 'complete', processing_lease_until = NULL
+         WHERE id = 'settled-complete'`,
+      ),
+      env.DB.prepare(
+        `UPDATE work_items SET state = 'terminal', processing_lease_until = NULL,
+         terminal_error_code = 'provider_failed', completed_at = ?1
+         WHERE id = 'settled-terminal'`,
+      ).bind(now),
+    ]);
+    const recoveredMessage = message(sent[0] as PipelineDispatchMessage);
+    const consumer = new PipelineQueueConsumer({
+      db: env.DB,
+      now: () => new Date("2026-07-10T21:00:00.000Z"),
+      dlq: fakeQueue().queue,
+    });
+    await consumer.handle({ messages: [recoveredMessage] } as never);
+    expect(recoveredMessage.ack).toHaveBeenCalledOnce();
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM dispatch_batches WHERE id = 'batch-1'",
+      ).first(),
+    ).toEqual({ state: "terminal" });
+    const links = await env.DB.prepare(
+      `SELECT work_item_id, outcome FROM job_work_items
+       WHERE pipeline_job_id = 'job-settled' ORDER BY work_item_id`,
+    ).all<{ work_item_id: string; outcome: string }>();
+    expect(links.results).toEqual([
+      { work_item_id: "settled-complete", outcome: "processed" },
+      { work_item_id: "settled-terminal", outcome: "failed" },
+    ]);
+  });
+
+  it("keeps successful siblings processed when another child exhausts retries", async () => {
+    await insertInstrument();
+    await env.DB.prepare(
+      `INSERT INTO pipeline_jobs
+       (id, trigger_type, affected_instruments_json, eligibility_intervals_json,
+        priority, status, created_at, updated_at)
+       VALUES ('job-mixed', 'backfill', '[]', '[]', 1, 'running', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await insertWork({ id: "mixed-complete", date: "2026-01-01" });
+    await insertWork({ id: "mixed-terminal", date: "2026-01-02" });
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+         (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+         VALUES ('job-mixed', 'mixed-complete', 'required', 'pending', ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+         (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+         VALUES ('job-mixed', 'mixed-terminal', 'required', 'pending', ?1)`,
+      ).bind(now),
+    ]);
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const first = message(sent[0] as PipelineDispatchMessage);
+    const consumer = new PipelineQueueConsumer({
+      db: env.DB,
+      processor: {
+        process: async ({ work }) => [
+          {
+            workItemId: work[0]?.id ?? "",
+            kind: "complete" as const,
+          },
+          {
+            workItemId: work[1]?.id ?? "",
+            kind: "terminal" as const,
+            errorCode: "provider_failed",
+          },
+        ],
+      },
+      now: () => new Date(now),
+    });
+    await consumer.handle({ messages: [first] } as never);
+    expect(first.ack).toHaveBeenCalledOnce();
+    const links = await env.DB.prepare(
+      `SELECT work_item_id, outcome FROM job_work_items
+       WHERE pipeline_job_id = 'job-mixed' ORDER BY work_item_id`,
+    ).all<{ work_item_id: string; outcome: string }>();
+    expect(links.results).toEqual([
+      { work_item_id: "mixed-complete", outcome: "processed" },
+      { work_item_id: "mixed-terminal", outcome: "failed" },
+    ]);
+  });
 });

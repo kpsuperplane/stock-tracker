@@ -594,6 +594,7 @@ export class WorkItemRepository {
   async requeueBatchItems(input: {
     dispatchBatchId: string;
     now: string;
+    expectedLeaseUntil?: string;
   }): Promise<number> {
     const result = await this.db
       .prepare(
@@ -604,9 +605,10 @@ export class WorkItemRepository {
            AND id IN (
              SELECT work_item_id FROM dispatch_batch_items
              WHERE dispatch_batch_id = ?2
-           )`,
+           )
+           AND (?3 IS NULL OR processing_lease_until IS ?3)`,
       )
-      .bind(input.now, input.dispatchBatchId)
+      .bind(input.now, input.dispatchBatchId, input.expectedLeaseUntil ?? null)
       .run();
     return result.meta.changes;
   }
@@ -636,6 +638,7 @@ export class WorkItemRepository {
     errorCode: string;
     errorMessage: string;
     expectedLeaseUntil?: string;
+    expectedDispatchLeaseUntil?: string;
   }): Promise<number> {
     const result = await this.db
       .prepare(
@@ -648,7 +651,11 @@ export class WorkItemRepository {
              SELECT work_item_id FROM dispatch_batch_items
              WHERE dispatch_batch_id = ?4
            )
-           AND (?5 IS NULL OR processing_lease_until IS ?5)`,
+           AND (
+             (?5 IS NULL AND ?6 IS NULL)
+             OR (?5 IS NOT NULL AND processing_lease_until IS ?5)
+             OR (?6 IS NOT NULL AND dispatch_lease_until IS ?6)
+           )`,
       )
       .bind(
         input.errorCode,
@@ -656,6 +663,7 @@ export class WorkItemRepository {
         input.now,
         input.dispatchBatchId,
         input.expectedLeaseUntil ?? null,
+        input.expectedDispatchLeaseUntil ?? null,
       )
       .run();
     return result.meta.changes;
@@ -676,6 +684,22 @@ export class WorkItemRepository {
          ) AND outcome = 'pending'`,
       )
       .bind(input.outcome, input.now, input.dispatchBatchId)
+      .run();
+    return result.meta.changes;
+  }
+
+  async markJobLinkForItem(input: {
+    workItemId: string;
+    outcome: "processed" | "failed";
+    now: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE job_work_items
+         SET outcome = ?1, updated_at = ?2
+         WHERE work_item_id = ?3 AND outcome = 'pending'`,
+      )
+      .bind(input.outcome, input.now, input.workItemId)
       .run();
     return result.meta.changes;
   }

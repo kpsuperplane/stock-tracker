@@ -40,6 +40,7 @@ export interface PipelineQueueConsumerDependencies {
   now?: () => Date;
   processingLeaseMs?: number;
   retryDelaySeconds?: number;
+  dlqLeaseMs?: number;
 }
 
 const retryable = (error: unknown): boolean =>
@@ -81,6 +82,7 @@ export class PipelineQueueConsumer {
   private readonly now: () => Date;
   private readonly processingLeaseMs: number;
   private readonly retryDelaySeconds: number;
+  private readonly dlqLeaseMs: number;
 
   constructor(
     private readonly dependencies: PipelineQueueConsumerDependencies,
@@ -95,6 +97,10 @@ export class PipelineQueueConsumer {
     this.retryDelaySeconds = Math.max(
       1,
       Math.floor(dependencies.retryDelaySeconds ?? DEFAULT_RETRY_DELAY_SECONDS),
+    );
+    this.dlqLeaseMs = Math.max(
+      1_000,
+      Math.floor(dependencies.dlqLeaseMs ?? DEFAULT_PROCESSING_LEASE_MS),
     );
   }
 
@@ -122,11 +128,19 @@ export class PipelineQueueConsumer {
       return;
     }
     const batch = await this.batches.findById(message.body.dispatchBatchId);
-    if (!batch || batch.state === "complete" || batch.state === "terminal") {
+    if (!batch) {
       message.ack();
       return;
     }
     const timestamp = this.now().toISOString();
+    if (batch.state === "complete") {
+      message.ack();
+      return;
+    }
+    if (batch.state === "terminal") {
+      await this.ackAfterDlq(batch.id, timestamp, message);
+      return;
+    }
     if (
       batch.state === "processing" &&
       batch.processingLeaseUntil !== null &&
@@ -141,16 +155,17 @@ export class PipelineQueueConsumer {
         await this.workItems.requeueBatchItems({
           dispatchBatchId: batch.id,
           now: timestamp,
+          expectedLeaseUntil: batch.processingLeaseUntil,
         });
       }
     }
     const current = await this.batches.findById(batch.id);
-    if (
-      !current ||
-      current.state === "complete" ||
-      current.state === "terminal"
-    ) {
+    if (!current || current.state === "complete") {
       message.ack();
+      return;
+    }
+    if (current.state === "terminal") {
+      await this.ackAfterDlq(current.id, timestamp, message);
       return;
     }
     const leaseUntil = new Date(
@@ -162,8 +177,25 @@ export class PipelineQueueConsumer {
       leaseUntil,
     });
     if (!claimed) {
-      if (current.attemptCount >= current.maxAttempts) {
-        await this.terminalizeUnclaimedBatch(current, timestamp, message);
+      const latest = await this.batches.findById(current.id);
+      if (!latest || latest.state === "complete") {
+        message.ack();
+        return;
+      }
+      if (latest.state === "terminal") {
+        await this.ackAfterDlq(latest.id, timestamp, message);
+        return;
+      }
+      if (
+        latest.state === "processing" &&
+        latest.processingLeaseUntil !== null &&
+        latest.processingLeaseUntil > timestamp
+      ) {
+        message.retry({ delaySeconds: this.retryDelaySeconds });
+        return;
+      }
+      if (latest.attemptCount >= latest.maxAttempts) {
+        await this.terminalizeUnclaimedBatch(latest, timestamp, message);
         return;
       }
       message.retry({ delaySeconds: this.retryDelaySeconds });
@@ -185,14 +217,12 @@ export class PipelineQueueConsumer {
     const work = await this.batches.listWork(current.id);
     const activeWork = work.filter((item) => item.state === "processing");
     if (activeWork.length === 0) {
-      await this.batches.transition({
-        id: current.id,
-        from: "processing",
-        to: "complete",
-        now: timestamp,
-        expectedProcessingLeaseUntil: leaseUntil,
+      await this.finalizeSettledBatch({
+        batch: claimedBatch,
+        leaseUntil,
+        timestamp,
+        message,
       });
-      message.ack();
       return;
     }
 
@@ -271,6 +301,7 @@ export class PipelineQueueConsumer {
     );
     let hasRetry = false;
     let hasTerminal = false;
+    let lostLease = false;
     for (const item of input.work) {
       const outcome = outcomeById.get(item.id);
       if (!outcome || outcome.kind === "retry") {
@@ -278,8 +309,7 @@ export class PipelineQueueConsumer {
         continue;
       }
       if (outcome.kind === "terminal") {
-        hasTerminal = true;
-        await this.workItems.transition({
+        const changed = await this.workItems.transition({
           id: item.id,
           from: "processing",
           to: "terminal",
@@ -289,8 +319,10 @@ export class PipelineQueueConsumer {
           errorMessage:
             outcome.errorMessage ?? "Pipeline work was terminalized.",
         });
+        if (!changed) lostLease = true;
+        else hasTerminal = true;
       } else {
-        await this.workItems.transition({
+        const changed = await this.workItems.transition({
           id: item.id,
           from: "processing",
           to: "complete",
@@ -298,61 +330,122 @@ export class PipelineQueueConsumer {
           expectedProcessingLeaseUntil: input.leaseUntil,
           resultRevision: outcome.resultRevision ?? null,
         });
+        if (!changed) lostLease = true;
       }
     }
-    if (
-      !hasRetry &&
-      (await this.batches.listWork(input.batch.id)).some(
-        (item) => item.state === "terminal",
-      )
-    ) {
-      hasTerminal = true;
+    if (lostLease) {
+      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
     }
     if (hasRetry) {
-      await this.workItems.requeueBatchItems({
+      const requeued = await this.workItems.requeueBatchItems({
         dispatchBatchId: input.batch.id,
         now: input.timestamp,
+        expectedLeaseUntil: input.leaseUntil,
       });
-      await this.batches.requeueProcessing({
+      const batchRequeued = await this.batches.requeueProcessing({
         id: input.batch.id,
         expectedLeaseUntil: input.leaseUntil,
         now: input.timestamp,
       });
+      if (!requeued && !batchRequeued) {
+        input.message.retry({ delaySeconds: this.retryDelaySeconds });
+        return;
+      }
       input.message.retry({ delaySeconds: this.retryDelaySeconds });
       return;
     }
-    if (hasTerminal) {
-      await this.batches.transition({
-        id: input.batch.id,
-        from: "processing",
-        to: "terminal",
-        now: input.timestamp,
-        expectedProcessingLeaseUntil: input.leaseUntil,
-        errorCode: "pipeline_work_terminal",
-        errorMessage: "One or more pipeline work items failed permanently.",
-      });
-      await this.workItems.markJobLinksForBatch({
-        dispatchBatchId: input.batch.id,
-        outcome: "failed",
-        now: input.timestamp,
-      });
-      await this.sendDlq(input.message.body);
-      input.message.ack();
-      return;
-    }
-    await this.batches.transition({
+    const settled = await this.batches.listWork(input.batch.id);
+    hasTerminal =
+      hasTerminal || settled.some((item) => item.state === "terminal");
+    const transitioned = await this.batches.transition({
       id: input.batch.id,
       from: "processing",
-      to: "complete",
+      to: hasTerminal ? "terminal" : "complete",
       now: input.timestamp,
       expectedProcessingLeaseUntil: input.leaseUntil,
+      ...(hasTerminal
+        ? {
+            errorCode: "pipeline_work_terminal",
+            errorMessage: "One or more pipeline work items failed permanently.",
+          }
+        : {}),
     });
-    await this.workItems.markJobLinksForBatch({
-      dispatchBatchId: input.batch.id,
-      outcome: "processed",
-      now: input.timestamp,
-    });
+    if (!transitioned) {
+      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
+    await this.markLinksForSettledWork(settled, input.timestamp);
+    if (
+      hasTerminal &&
+      !(await this.deliverDlq(input.batch.id, input.timestamp))
+    ) {
+      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
     input.message.ack();
+  }
+
+  private async finalizeSettledBatch(input: {
+    batch: DispatchBatchRecord;
+    leaseUntil: string;
+    timestamp: string;
+    message: Message<PipelineDispatchMessage>;
+  }): Promise<void> {
+    const work = await this.batches.listWork(input.batch.id);
+    if (
+      work.some(
+        (item) =>
+          item.state === "processing" ||
+          item.state === "queued" ||
+          item.state === "dispatching",
+      )
+    ) {
+      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
+    const hasTerminal = work.some((item) => item.state === "terminal");
+    const transitioned = await this.batches.transition({
+      id: input.batch.id,
+      from: "processing",
+      to: hasTerminal ? "terminal" : "complete",
+      now: input.timestamp,
+      expectedProcessingLeaseUntil: input.leaseUntil,
+      ...(hasTerminal
+        ? {
+            errorCode: "pipeline_work_terminal",
+            errorMessage: "One or more pipeline work items failed permanently.",
+          }
+        : {}),
+    });
+    if (!transitioned) {
+      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
+    await this.markLinksForSettledWork(work, input.timestamp);
+    if (
+      hasTerminal &&
+      !(await this.deliverDlq(input.batch.id, input.timestamp))
+    ) {
+      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
+    input.message.ack();
+  }
+
+  private async markLinksForSettledWork(
+    work: readonly WorkItemRecord[],
+    timestamp: string,
+  ): Promise<void> {
+    await Promise.all(
+      work.map((item) =>
+        this.workItems.markJobLinkForItem({
+          workItemId: item.id,
+          outcome: item.state === "complete" ? "processed" : "failed",
+          now: timestamp,
+        }),
+      ),
+    );
   }
 
   private async handleFailure(input: {
@@ -368,6 +461,7 @@ export class PipelineQueueConsumer {
       await this.workItems.requeueBatchItems({
         dispatchBatchId: input.batch.id,
         now: input.timestamp,
+        expectedLeaseUntil: input.leaseUntil,
       });
       await this.batches.requeueProcessing({
         id: input.batch.id,
@@ -386,7 +480,7 @@ export class PipelineQueueConsumer {
         : "pipeline_failed",
       errorMessage: String(input.error),
     });
-    await this.batches.transition({
+    const transitioned = await this.batches.transition({
       id: input.batch.id,
       from: "processing",
       to: "terminal",
@@ -397,18 +491,69 @@ export class PipelineQueueConsumer {
         : "pipeline_failed",
       errorMessage: String(input.error),
     });
-    await this.workItems.markJobLinksForBatch({
-      dispatchBatchId: input.batch.id,
-      outcome: "failed",
-      now: input.timestamp,
-    });
-    await this.sendDlq(input.message.body);
+    if (!transitioned) {
+      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
+    await this.markLinksForSettledWork(
+      await this.batches.listWork(input.batch.id),
+      input.timestamp,
+    );
+    if (!(await this.deliverDlq(input.batch.id, input.timestamp))) {
+      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
     input.message.ack();
   }
 
-  private async sendDlq(body: PipelineDispatchMessage): Promise<void> {
-    if (!this.dependencies.dlq) return;
-    await this.dependencies.dlq.send(body);
+  private async ackAfterDlq(
+    batchId: string,
+    timestamp: string,
+    message: Message<PipelineDispatchMessage>,
+  ): Promise<void> {
+    if (await this.deliverDlq(batchId, timestamp)) message.ack();
+    else message.retry({ delaySeconds: this.retryDelaySeconds });
+  }
+
+  private async deliverDlq(
+    batchId: string,
+    timestamp: string,
+  ): Promise<boolean> {
+    const leaseUntil = new Date(
+      Date.parse(timestamp) + this.dlqLeaseMs,
+    ).toISOString();
+    const claimed = await this.batches.claimDlqDelivery({
+      id: batchId,
+      now: timestamp,
+      leaseUntil,
+    });
+    if (!claimed) {
+      const current = await this.batches.findById(batchId);
+      return current?.dlqState === "delivered";
+    }
+    if (!this.dependencies.dlq) {
+      return this.batches.markDlqDelivered({
+        id: batchId,
+        now: timestamp,
+        expectedLeaseUntil: leaseUntil,
+      });
+    }
+    try {
+      await this.dependencies.dlq.send({ dispatchBatchId: batchId });
+      return this.batches.markDlqDelivered({
+        id: batchId,
+        now: timestamp,
+        expectedLeaseUntil: leaseUntil,
+      });
+    } catch (error) {
+      await this.batches.releaseDlqDelivery({
+        id: batchId,
+        now: timestamp,
+        expectedLeaseUntil: leaseUntil,
+        error: String(error),
+      });
+      return false;
+    }
   }
 
   private async terminalizeUnclaimedBatch(
@@ -416,57 +561,86 @@ export class PipelineQueueConsumer {
     timestamp: string,
     message: Message<PipelineDispatchMessage>,
   ): Promise<void> {
-    await this.workItems.terminalizeBatchItems({
-      dispatchBatchId: batch.id,
-      now: timestamp,
-      errorCode: "pipeline_attempts_exhausted",
-      errorMessage: "Dispatch attempt ceiling exhausted.",
-    });
     const current = await this.batches.findById(batch.id);
-    if (
-      current &&
-      current.state !== "terminal" &&
-      current.state !== "complete"
-    ) {
-      if (current.state === "dispatching") {
-        if (!current.dispatchLeaseUntil) return;
-        await this.batches.transition({
-          id: batch.id,
-          from: "dispatching",
-          to: "terminal",
-          now: timestamp,
-          errorCode: "pipeline_attempts_exhausted",
-          errorMessage: "Dispatch attempt ceiling exhausted.",
-          expectedDispatchLeaseUntil: current.dispatchLeaseUntil,
-        });
-      } else if (current.state === "processing") {
-        if (!current.processingLeaseUntil) return;
-        await this.batches.transition({
-          id: batch.id,
-          from: "processing",
-          to: "terminal",
-          now: timestamp,
-          errorCode: "pipeline_attempts_exhausted",
-          errorMessage: "Dispatch attempt ceiling exhausted.",
-          expectedProcessingLeaseUntil: current.processingLeaseUntil,
-        });
-      } else {
-        await this.batches.transition({
-          id: batch.id,
-          from: "queued",
-          to: "terminal",
-          now: timestamp,
-          errorCode: "pipeline_attempts_exhausted",
-          errorMessage: "Dispatch attempt ceiling exhausted.",
-        });
-      }
+    if (!current || current.state === "complete") {
+      message.ack();
+      return;
     }
-    await this.workItems.markJobLinksForBatch({
-      dispatchBatchId: batch.id,
-      outcome: "failed",
-      now: timestamp,
-    });
-    await this.sendDlq(message.body);
+    if (current.state === "terminal") {
+      await this.ackAfterDlq(current.id, timestamp, message);
+      return;
+    }
+    let transitioned = false;
+    if (current.state === "dispatching") {
+      if (!current.dispatchLeaseUntil) {
+        message.retry({ delaySeconds: this.retryDelaySeconds });
+        return;
+      }
+      await this.workItems.terminalizeBatchItems({
+        dispatchBatchId: current.id,
+        now: timestamp,
+        errorCode: "pipeline_attempts_exhausted",
+        errorMessage: "Dispatch attempt ceiling exhausted.",
+        expectedDispatchLeaseUntil: current.dispatchLeaseUntil,
+      });
+      transitioned = await this.batches.transition({
+        id: current.id,
+        from: "dispatching",
+        to: "terminal",
+        now: timestamp,
+        errorCode: "pipeline_attempts_exhausted",
+        errorMessage: "Dispatch attempt ceiling exhausted.",
+        expectedDispatchLeaseUntil: current.dispatchLeaseUntil,
+      });
+    } else if (current.state === "processing") {
+      if (!current.processingLeaseUntil) {
+        message.retry({ delaySeconds: this.retryDelaySeconds });
+        return;
+      }
+      await this.workItems.terminalizeBatchItems({
+        dispatchBatchId: current.id,
+        now: timestamp,
+        errorCode: "pipeline_attempts_exhausted",
+        errorMessage: "Dispatch attempt ceiling exhausted.",
+        expectedLeaseUntil: current.processingLeaseUntil,
+      });
+      transitioned = await this.batches.transition({
+        id: current.id,
+        from: "processing",
+        to: "terminal",
+        now: timestamp,
+        errorCode: "pipeline_attempts_exhausted",
+        errorMessage: "Dispatch attempt ceiling exhausted.",
+        expectedProcessingLeaseUntil: current.processingLeaseUntil,
+      });
+    } else {
+      await this.workItems.terminalizeBatchItems({
+        dispatchBatchId: current.id,
+        now: timestamp,
+        errorCode: "pipeline_attempts_exhausted",
+        errorMessage: "Dispatch attempt ceiling exhausted.",
+      });
+      transitioned = await this.batches.transition({
+        id: current.id,
+        from: "queued",
+        to: "terminal",
+        now: timestamp,
+        errorCode: "pipeline_attempts_exhausted",
+        errorMessage: "Dispatch attempt ceiling exhausted.",
+      });
+    }
+    if (!transitioned) {
+      message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
+    await this.markLinksForSettledWork(
+      await this.batches.listWork(current.id),
+      timestamp,
+    );
+    if (!(await this.deliverDlq(current.id, timestamp))) {
+      message.retry({ delaySeconds: this.retryDelaySeconds });
+      return;
+    }
     message.ack();
   }
 }

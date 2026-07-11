@@ -18,6 +18,13 @@ export interface DispatchBatchRecord {
   processingLeaseUntil: string | null;
   attemptCount: number;
   maxAttempts: number;
+  dispatchAttemptCount?: number;
+  dispatchMaxAttempts?: number;
+  dlqState?: "none" | "pending" | "sending" | "delivered";
+  dlqAttemptCount?: number;
+  dlqLeaseUntil?: string | null;
+  dlqLastError?: string | null;
+  dlqDeliveredAt?: string | null;
   terminalErrorCode: string | null;
   terminalErrorMessage: string | null;
   createdAt: string;
@@ -37,6 +44,13 @@ interface DispatchBatchRow {
   processing_lease_until: string | null;
   attempt_count: number;
   max_attempts: number;
+  dispatch_attempt_count: number;
+  dispatch_max_attempts: number;
+  dlq_state: "none" | "pending" | "sending" | "delivered";
+  dlq_attempt_count: number;
+  dlq_lease_until: string | null;
+  dlq_last_error: string | null;
+  dlq_delivered_at: string | null;
   terminal_error_code: string | null;
   terminal_error_message: string | null;
   created_at: string;
@@ -56,6 +70,13 @@ const mapBatch = (row: DispatchBatchRow): DispatchBatchRecord => ({
   processingLeaseUntil: row.processing_lease_until,
   attemptCount: row.attempt_count,
   maxAttempts: row.max_attempts,
+  dispatchAttemptCount: row.dispatch_attempt_count ?? 0,
+  dispatchMaxAttempts: row.dispatch_max_attempts ?? 3,
+  dlqState: row.dlq_state ?? "none",
+  dlqAttemptCount: row.dlq_attempt_count ?? 0,
+  dlqLeaseUntil: row.dlq_lease_until ?? null,
+  dlqLastError: row.dlq_last_error ?? null,
+  dlqDeliveredAt: row.dlq_delivered_at ?? null,
   terminalErrorCode: row.terminal_error_code,
   terminalErrorMessage: row.terminal_error_message,
   createdAt: row.created_at,
@@ -170,17 +191,154 @@ export class DispatchBatchRepository {
     ]);
   }
 
+  /**
+   * Claims work and writes the dispatch batch plus its outbox rows in one D1
+   * transaction. If any claim or compatibility check loses a race, the whole
+   * transaction rolls back so no work can remain stranded without a batch.
+   */
+  async createClaimedForWork(input: {
+    batch: DispatchBatchRecord;
+    work: readonly WorkItemRecord[];
+  }): Promise<void> {
+    if (input.work.length === 0) throw new Error("dispatch_batch_empty");
+    if (input.batch.state !== "dispatching") {
+      throw new Error("dispatch_batch_not_dispatching");
+    }
+    const workIds = [...new Set(input.work.map((item) => item.id))];
+    if (workIds.length !== input.work.length) {
+      throw new Error("dispatch_batch_duplicate_work");
+    }
+    const claimStatements = input.work.map((item) =>
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'dispatching', dispatch_lease_until = ?1,
+               attempt_count = attempt_count + 1, updated_at = ?2
+           WHERE id = ?3 AND scope = 'global_fact' AND state = 'pending'
+             AND attempt_count < max_attempts
+             AND (available_at IS NULL OR available_at <= ?2)`,
+        )
+        .bind(input.batch.dispatchLeaseUntil, input.batch.createdAt, item.id),
+    );
+    await this.db.batch([
+      ...claimStatements,
+      this.createStatement(input.batch),
+      ...input.work.map((item) =>
+        this.db
+          .prepare(
+            `INSERT INTO dispatch_batch_items
+             (dispatch_batch_id, work_item_id, created_at)
+             VALUES (?1, ?2, ?3)`,
+          )
+          .bind(input.batch.id, item.id, input.batch.createdAt),
+      ),
+    ]);
+  }
+
+  async reserveDailyCapacity(input: {
+    dispatchBatchId: string;
+    reservationDay: string;
+    workCount: number;
+    dailyCeiling: number;
+    createdAt: string;
+    expiresAt: string;
+  }): Promise<boolean> {
+    if (input.workCount <= 0 || input.dailyCeiling <= 0) return false;
+    const result = await this.db
+      .prepare(
+        `INSERT INTO dispatch_daily_reservations
+         (dispatch_batch_id, reservation_day, work_count, created_at, expires_at)
+         SELECT ?1, ?2, ?3, ?4, ?5
+         WHERE COALESCE(
+           (SELECT SUM(work_count)
+            FROM dispatch_daily_reservations
+            WHERE reservation_day = ?2), 0
+         ) + COALESCE(
+           (SELECT COUNT(*)
+            FROM dispatch_batch_items item
+            JOIN dispatch_batches batch ON batch.id = item.dispatch_batch_id
+            LEFT JOIN dispatch_daily_reservations reservation
+              ON reservation.dispatch_batch_id = item.dispatch_batch_id
+            WHERE reservation.dispatch_batch_id IS NULL
+              AND substr(item.created_at, 1, 10) = ?2), 0
+         ) + ?3 <= ?6
+           AND NOT EXISTS (
+             SELECT 1 FROM dispatch_daily_reservations
+             WHERE dispatch_batch_id = ?1
+           )`,
+      )
+      .bind(
+        input.dispatchBatchId,
+        input.reservationDay,
+        input.workCount,
+        input.createdAt,
+        input.expiresAt,
+        input.dailyCeiling,
+      )
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async releaseDailyCapacity(dispatchBatchId: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        "DELETE FROM dispatch_daily_reservations WHERE dispatch_batch_id = ?1",
+      )
+      .bind(dispatchBatchId)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async recoverExpiredDailyReservations(): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `DELETE FROM dispatch_daily_reservations
+         WHERE NOT EXISTS (
+             SELECT 1 FROM dispatch_batches
+             WHERE dispatch_batches.id = dispatch_daily_reservations.dispatch_batch_id
+           )`,
+      )
+      .run();
+    return result.meta.changes;
+  }
+
+  async countReservedWork(reservationDay: string): Promise<number> {
+    const row = await this.db
+      .prepare(
+        `SELECT COALESCE(SUM(work_count), 0) AS count
+         FROM dispatch_daily_reservations
+         WHERE reservation_day = ?1`,
+      )
+      .bind(reservationDay)
+      .first<{ count: number }>();
+    const legacy = await this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM dispatch_batch_items item
+         JOIN dispatch_batches batch ON batch.id = item.dispatch_batch_id
+         LEFT JOIN dispatch_daily_reservations reservation
+           ON reservation.dispatch_batch_id = item.dispatch_batch_id
+         WHERE reservation.dispatch_batch_id IS NULL
+           AND substr(item.created_at, 1, 10) = ?1`,
+      )
+      .bind(reservationDay)
+      .first<{ count: number }>();
+    return (row?.count ?? 0) + (legacy?.count ?? 0);
+  }
+
   createStatement(batch: DispatchBatchRecord): D1PreparedStatement {
     return this.db
       .prepare(
         `INSERT INTO dispatch_batches
          (id, work_type, instrument_id, requested_start_date,
-          requested_end_date, state, dispatch_lease_until,
-          processing_lease_until, attempt_count, max_attempts,
-          terminal_error_code, terminal_error_message, created_at,
-          updated_at, completed_at, retention_until)
+         requested_end_date, state, dispatch_lease_until,
+         processing_lease_until, attempt_count, max_attempts,
+         dispatch_attempt_count, dispatch_max_attempts, dlq_state,
+         dlq_attempt_count, dlq_lease_until, dlq_last_error, dlq_delivered_at,
+         terminal_error_code, terminal_error_message, created_at,
+         updated_at, completed_at, retention_until)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                 ?13, ?14, ?15, ?16)`,
+                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)`,
       )
       .bind(
         batch.id,
@@ -193,6 +351,13 @@ export class DispatchBatchRepository {
         batch.processingLeaseUntil,
         batch.attemptCount,
         batch.maxAttempts,
+        batch.dispatchAttemptCount ?? 0,
+        batch.dispatchMaxAttempts ?? 3,
+        batch.dlqState ?? "none",
+        batch.dlqAttemptCount ?? 0,
+        batch.dlqLeaseUntil ?? null,
+        batch.dlqLastError ?? null,
+        batch.dlqDeliveredAt ?? null,
         batch.terminalErrorCode,
         batch.terminalErrorMessage,
         batch.createdAt,
@@ -309,6 +474,98 @@ export class DispatchBatchRepository {
     return result.meta.changes === 1;
   }
 
+  async claimDispatchAttempt(input: {
+    id: string;
+    now: string;
+    expectedDispatchLeaseUntil?: string;
+  }): Promise<boolean> {
+    const result = input.expectedDispatchLeaseUntil
+      ? await this.db
+          .prepare(
+            `UPDATE dispatch_batches
+             SET dispatch_attempt_count = dispatch_attempt_count + 1,
+                 updated_at = ?1
+             WHERE id = ?2 AND state = 'dispatching'
+               AND dispatch_lease_until IS ?3
+               AND dispatch_attempt_count < dispatch_max_attempts`,
+          )
+          .bind(input.now, input.id, input.expectedDispatchLeaseUntil)
+          .run()
+      : await this.db
+          .prepare(
+            `UPDATE dispatch_batches
+             SET dispatch_attempt_count = dispatch_attempt_count + 1,
+                 updated_at = ?1
+             WHERE id = ?2 AND state = 'queued'
+               AND dispatch_attempt_count < dispatch_max_attempts`,
+          )
+          .bind(input.now, input.id)
+          .run();
+    return result.meta.changes === 1;
+  }
+
+  async claimDlqDelivery(input: {
+    id: string;
+    now: string;
+    leaseUntil: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+         SET dlq_state = 'sending', dlq_lease_until = ?1,
+             dlq_attempt_count = dlq_attempt_count + 1,
+             dlq_last_error = NULL, updated_at = ?2
+         WHERE id = ?3 AND state = 'terminal'
+           AND (
+             dlq_state = 'none'
+             OR
+             dlq_state = 'pending'
+             OR (dlq_state = 'sending' AND dlq_lease_until IS NOT NULL
+                 AND dlq_lease_until <= ?2)
+           )`,
+      )
+      .bind(input.leaseUntil, input.now, input.id)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async markDlqDelivered(input: {
+    id: string;
+    now: string;
+    expectedLeaseUntil: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+         SET dlq_state = 'delivered', dlq_lease_until = NULL,
+             dlq_delivered_at = ?1, dlq_last_error = NULL, updated_at = ?1
+         WHERE id = ?2 AND state = 'terminal' AND dlq_state = 'sending'
+           AND dlq_lease_until IS ?3`,
+      )
+      .bind(input.now, input.id, input.expectedLeaseUntil)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async releaseDlqDelivery(input: {
+    id: string;
+    now: string;
+    expectedLeaseUntil: string;
+    error: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+         SET dlq_state = 'pending', dlq_lease_until = NULL,
+             dlq_last_error = ?1, updated_at = ?2
+         WHERE id = ?3 AND state = 'terminal' AND dlq_state = 'sending'
+           AND dlq_lease_until IS ?4`,
+      )
+      .bind(input.error, input.now, input.id, input.expectedLeaseUntil)
+      .run();
+    return result.meta.changes === 1;
+  }
+
   async transition(input: {
     id: string;
     from: DispatchBatchState;
@@ -350,6 +607,11 @@ export class DispatchBatchRepository {
              processing_lease_until = ?2,
              terminal_error_code = ?3, terminal_error_message = ?4,
              completed_at = ?5, retention_until = ?6, updated_at = ?7
+             ${
+               input.to === "terminal"
+                 ? ", dlq_state = CASE WHEN dlq_state = 'delivered' THEN 'delivered' ELSE 'pending' END, dlq_lease_until = NULL"
+                 : ""
+}
          WHERE id = ?8 AND state = ?9${leasePredicate}`,
     );
     const bindings = [
