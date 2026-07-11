@@ -270,6 +270,26 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
     return attempted;
   }
 
+  /** Seed only the newest published runs so a transient marker-write failure
+   * can recover without turning the scheduled retry into a historical scan. */
+  async seedRecentPublishedRuns(now: string, maxRuns = 3): Promise<number> {
+    if (!this.enabled) return 0;
+    const limit = Math.max(1, Math.min(maxRuns, 3));
+    const runs = await this.db
+      .prepare(
+        `SELECT id FROM report_runs
+          WHERE published = 1
+          ORDER BY trading_date DESC, generation DESC
+          LIMIT ?1`,
+      )
+      .bind(limit)
+      .all<{ id: string }>();
+    for (const run of runs.results) {
+      await this.seedRepairMarkers(run.id, now);
+    }
+    return runs.results.length;
+  }
+
   private async seedRepairMarkers(runId: string, now: string): Promise<void> {
     await this.db
       .prepare(

@@ -32,9 +32,11 @@ export const handleScheduled = async (
   );
   const runId = await jobs.startScheduled(now.slice(0, 10), now);
   const dispatched = await jobs.dispatch(now);
+  let compatibilitySeeded = 0;
   let compatibilityRetried = 0;
   if (portfolioFlags.dualWrite) {
     try {
+      compatibilitySeeded = await dualWrite.seedRecentPublishedRuns(now, 3);
       compatibilityRetried = await dualWrite.retryPending(now);
     } catch (error) {
       logEvent("legacy_dual_write_retry_failed", {
@@ -68,6 +70,7 @@ export const handleScheduled = async (
     runId,
     tradingDate: now.slice(0, 10),
     dispatched,
+    compatibilitySeeded,
     compatibilityRetried,
   });
 };

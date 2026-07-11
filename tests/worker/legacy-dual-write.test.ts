@@ -312,7 +312,7 @@ describe("legacy compatibility dual-write", () => {
     ).toEqual({ state: "resolved" });
   });
 
-  it("does not migrate an old published run that has no seeded repair marker", async () => {
+  it("recovers an unseeded recent published run without scanning old history", async () => {
     const ticker = await insertTicker("legacy-old-unseeded", "OLDMARK");
     const repository = new RunRepository(env.DB);
     const run = await prepareRun({
@@ -337,6 +337,15 @@ describe("legacy compatibility dual-write", () => {
         "SELECT COUNT(*) AS count FROM legacy_dual_write_repairs",
       ).first(),
     ).toEqual({ count: 0 });
+    expect(await dualWrite.seedRecentPublishedRuns(now, 1)).toBe(1);
+    expect(await dualWrite.retryPending(now)).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM legacy_dual_write_repairs WHERE legacy_screening_id = ?1",
+      )
+        .bind(run.screeningIds[0])
+        .first(),
+    ).toEqual({ state: "resolved" });
   });
 
   it("keeps duplicate finalization idempotent", async () => {
