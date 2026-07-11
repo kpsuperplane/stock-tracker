@@ -13,6 +13,7 @@ import {
 import type { ReactNode } from "react";
 import type { Locale } from "../i18n/catalog";
 import { I18nProvider, useI18n } from "../i18n/I18nProvider";
+import { CalendarPage } from "../pages/CalendarPage";
 import { EventsPage } from "../pages/EventsPage";
 import { PortfolioPage } from "../pages/PortfolioPage";
 import {
@@ -184,6 +185,8 @@ export const ProductApp = ({
             <EventsPage />
           ) : router.route === "portfolio" ? (
             <PortfolioPage />
+          ) : router.route === "calendar" ? (
+            <CalendarPage />
           ) : (
             <ProductPage route={router.route} />
           ))}

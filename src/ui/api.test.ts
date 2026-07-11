@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ApiClientError,
+  calendarApi,
   eventImportsApi,
   eventsApi,
   portfolioApi,
@@ -189,6 +190,73 @@ describe("product event API clients", () => {
     const secondInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
     expect(new Headers(secondInit.headers).get("If-None-Match")).toBe(
       '"portfolio-1"',
+    );
+  });
+
+  it("uses the cached calendar body for conditional 304 responses", async () => {
+    calendarApi.clearCache?.();
+    const calendar = {
+      startDate: "2026-07-05",
+      endDate: "2026-07-11",
+      asOfDate: "2026-07-11",
+      locale: "en" as const,
+      actualTradingDates: ["2026-07-10"],
+      movers: [],
+      dividends: [],
+      events: [],
+      pending: [],
+      pendingFacts: [],
+      splitReview: [],
+      futureDividendStatus: "not_currently_known" as const,
+      conflicts: [],
+      nextCursor: null,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ calendar }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            ETag: '"calendar-1"',
+            "X-Position-Basis-Revision": "4",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 304,
+          headers: {
+            ETag: '"calendar-1"',
+            "X-Position-Basis-Revision": "4",
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const options = {
+      locale: "en" as const,
+      view: "week" as const,
+      startDate: "2026-07-05",
+      endDate: "2026-07-11",
+      asOfDate: "2026-07-11",
+    };
+    const first = await calendarApi.read(options);
+    const second = await calendarApi.read(options);
+
+    expect(first.notModified).toBe(false);
+    expect(second.notModified).toBe(true);
+    expect(second.calendar).toEqual(calendar);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/calendar?locale=en&view=week&startDate=2026-07-05&endDate=2026-07-11&asOfDate=2026-07-11",
+    );
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      expect.stringContaining("/api/calendar?"),
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+    const secondInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(new Headers(secondInit.headers).get("If-None-Match")).toBe(
+      '"calendar-1"',
     );
   });
 });

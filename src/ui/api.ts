@@ -1,4 +1,5 @@
 import type {
+  CalendarReadModelDto,
   EventsTimelineDto,
   PortfolioReadModelDto,
   ReportDto,
@@ -140,6 +141,28 @@ export type PortfolioReadResult = {
 
 export interface PortfolioApiClient {
   read: (options: PortfolioReadOptions) => Promise<PortfolioReadResult>;
+  clearCache?: () => void;
+}
+
+export type CalendarReadOptions = {
+  locale: "en" | "cn";
+  view: "month" | "week";
+  startDate: string;
+  endDate: string;
+  asOfDate: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type CalendarReadResult = {
+  calendar: CalendarReadModelDto | null;
+  notModified: boolean;
+  etag: string | null;
+  positionBasisRevision: number | null;
+};
+
+export interface CalendarApiClient {
+  read: (options: CalendarReadOptions) => Promise<CalendarReadResult>;
   clearCache?: () => void;
 }
 
@@ -348,6 +371,14 @@ type PortfolioCacheEntry = {
 
 const portfolioCache = new Map<string, PortfolioCacheEntry>();
 
+type CalendarCacheEntry = {
+  calendar: CalendarReadModelDto;
+  etag: string | null;
+  positionBasisRevision: number | null;
+};
+
+const calendarCache = new Map<string, CalendarCacheEntry>();
+
 const portfolioQuery = (options: PortfolioReadOptions): string => {
   const params = new URLSearchParams({ locale: options.locale });
   if (options.today) params.set("today", options.today);
@@ -389,8 +420,55 @@ export const portfolioApi: PortfolioApiClient = {
   clearCache: () => portfolioCache.clear(),
 };
 
+const calendarQuery = (options: CalendarReadOptions): string => {
+  const params = new URLSearchParams({
+    locale: options.locale,
+    view: options.view,
+    startDate: options.startDate,
+    endDate: options.endDate,
+    asOfDate: options.asOfDate,
+  });
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  return `?${params.toString()}`;
+};
+
+export const calendarApi: CalendarApiClient = {
+  read: async (options) => {
+    const key = JSON.stringify(options);
+    const cached = calendarCache.get(key);
+    const response = await requestWithMeta<{
+      calendar: CalendarReadModelDto;
+    }>(
+      `/api/calendar${calendarQuery(options)}`,
+      cached?.etag ? { headers: { "If-None-Match": cached.etag } } : undefined,
+      { allowNotModified: true },
+    );
+    const etag = response.headers.get("ETag") ?? cached?.etag ?? null;
+    const revisionHeader = response.headers.get("X-Position-Basis-Revision");
+    const parsedRevision =
+      revisionHeader === null ? null : Number(revisionHeader);
+    const positionBasisRevision = Number.isSafeInteger(parsedRevision)
+      ? parsedRevision
+      : (cached?.positionBasisRevision ?? null);
+    if (response.data === undefined) {
+      return {
+        calendar: cached?.calendar ?? null,
+        notModified: true,
+        etag,
+        positionBasisRevision,
+      };
+    }
+    const calendar = response.data.calendar;
+    calendarCache.set(key, { calendar, etag, positionBasisRevision });
+    return { calendar, notModified: false, etag, positionBasisRevision };
+  },
+  clearCache: () => calendarCache.clear(),
+};
+
 export const api = {
   portfolio: portfolioApi,
+  calendar: calendarApi,
   events: eventsApi,
   eventImports: eventImportsApi,
   history: (cursor?: string) =>
