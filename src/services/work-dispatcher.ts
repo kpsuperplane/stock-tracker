@@ -444,6 +444,7 @@ export class WorkDispatcherService {
     dispatchBatchIds: string[];
     processingBatchIds: string[];
   }> {
+    await this.workItems.recoverOrphanedDispatches(timestamp);
     const expiredDispatches = await this.dependencies.db
       .prepare(
         `SELECT id, dispatch_lease_until AS leaseUntil

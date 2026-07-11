@@ -514,6 +514,24 @@ export class WorkItemRepository {
     return result.meta.changes === 1;
   }
 
+  async recoverOrphanedDispatches(now: string): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
+         WHERE scope = 'global_fact' AND state = 'dispatching'
+           AND dispatch_lease_until IS NOT NULL
+           AND dispatch_lease_until <= ?1
+           AND NOT EXISTS (
+             SELECT 1 FROM dispatch_batch_items item
+             WHERE item.work_item_id = work_items.id
+           )`,
+      )
+      .bind(now)
+      .run();
+    return result.meta.changes;
+  }
+
   async releaseDispatchClaim(input: {
     id: string;
     expectedLeaseUntil: string;
