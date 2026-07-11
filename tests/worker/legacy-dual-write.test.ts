@@ -32,6 +32,7 @@ const prepareRun = async (input: {
     currentPrice: number;
     changeAmount: number;
     changePct: number;
+    priceBasis?: "adjusted" | "close";
   } | null>;
   withAnalysis?: boolean;
 }) => {
@@ -47,7 +48,7 @@ const prepareRun = async (input: {
     if (price) {
       await input.repository.savePrice(screeningId, {
         ...price,
-        priceBasis: "adjusted",
+        priceBasis: price.priceBasis ?? "adjusted",
         qualified: price.changePct >= 5,
       });
       if (input.withAnalysis !== false && price.changePct >= 5) {
@@ -74,7 +75,7 @@ const prepareRun = async (input: {
   return run;
 };
 
-const enabledService = (beforeAttempt?: () => void) =>
+const enabledService = (beforeAttempt?: () => void | Promise<void>) =>
   new LegacyDualWriteService(env.DB, {
     enabled: true,
     now: () => new Date(now),
@@ -111,7 +112,8 @@ describe("legacy compatibility dual-write", () => {
       await env.DB.prepare(
         `SELECT instrument_id, trading_date, current_raw_close_decimal,
                 previous_raw_close_decimal, movement_basis, provider,
-                provider_revision FROM daily_market_facts`,
+                provider_revision, raw_close_difference_decimal
+           FROM daily_market_facts`,
       ).first(),
     ).toEqual({
       instrument_id: "legacy-ticker:legacy-aapl",
@@ -121,6 +123,7 @@ describe("legacy compatibility dual-write", () => {
       movement_basis: "legacy_migration",
       provider: "legacy-report",
       provider_revision: `legacy-report:${run.runId}:1:${run.screeningIds[0]}`,
+      raw_close_difference_decimal: null,
     });
     expect(
       await env.DB.prepare(
@@ -144,6 +147,103 @@ describe("legacy compatibility dual-write", () => {
       failure_code: null,
       attempt_count: 1,
       resolved_at: now,
+    });
+  });
+
+  it("uses close-only raw differences and preserves pre-existing normalized IDs and source metadata", async () => {
+    const ticker = await insertTicker("legacy-existing", "EXIST");
+    await env.DB.prepare(
+      `INSERT INTO instruments
+       (id, symbol, company_name, exchange, currency, instrument_type,
+        provider, provider_symbol, created_at, updated_at)
+       VALUES ('normalized-instrument', 'EXIST', 'Existing Corp', 'NMS', 'USD',
+               'stock', 'yahoo', 'EXIST', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO daily_market_facts
+       (id, instrument_id, trading_date, previous_trading_date,
+        previous_raw_close_decimal, current_raw_close_decimal,
+        crossing_split_numerator, crossing_split_denominator,
+        split_adjusted_previous_close_decimal, movement_amount_decimal,
+        movement_percent_decimal, raw_close_difference_decimal, movement_basis,
+        provider, provider_revision, retrieved_at, status, created_at, updated_at)
+       VALUES ('normalized-fact-existing', 'normalized-instrument', '2026-07-09',
+               '2026-07-08', '100', '101', '1', '1', '100', '1', '1', '1',
+               'split_adjusted_price_return', 'yahoo', 'normalized-r1', ?1,
+               'valid', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO movement_analyses
+       (id, daily_market_fact_id, dependency_fingerprint, summary_zh_cn,
+        model, status, created_at, updated_at)
+       VALUES ('normalized-analysis-existing', 'normalized-fact-existing',
+               'old-fingerprint', '旧摘要', 'old-model', 'complete', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO news_sources
+       (id, movement_analysis_id, source_order, title, publisher, published_at,
+        source_url, cited, created_at)
+       VALUES ('normalized-source-existing', 'normalized-analysis-existing', 0,
+               'Old source', 'Old Publisher', ?1, 'https://example.com/old', 0, ?1)`,
+    )
+      .bind(now)
+      .run();
+
+    const repository = new RunRepository(env.DB, enabledService());
+    const run = await prepareRun({
+      date: "2026-07-09",
+      tickers: [ticker],
+      repository,
+      prices: [
+        {
+          previousDate: "2026-07-08",
+          previousPrice: 100,
+          currentPrice: 110,
+          changeAmount: 10,
+          changePct: 10,
+          priceBasis: "close",
+        },
+      ],
+    });
+    await env.DB.prepare("UPDATE sources SET cited = 0 WHERE screening_id = ?1")
+      .bind(run.screeningIds[0])
+      .run();
+    await repository.finalizeRun(run.runId, now);
+
+    expect(
+      await env.DB.prepare(
+        `SELECT id, raw_close_difference_decimal, provider_revision
+           FROM daily_market_facts`,
+      ).first(),
+    ).toEqual({
+      id: "normalized-fact-existing",
+      raw_close_difference_decimal: "10",
+      provider_revision: `legacy-report:${run.runId}:1:${run.screeningIds[0]}`,
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT id, daily_market_fact_id, summary_zh_cn
+           FROM movement_analyses`,
+      ).first(),
+    ).toEqual({
+      id: "normalized-analysis-existing",
+      daily_market_fact_id: "normalized-fact-existing",
+      summary_zh_cn: "业绩更新推动股价变化。",
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT movement_analysis_id, cited, source_url FROM news_sources`,
+      ).first(),
+    ).toEqual({
+      movement_analysis_id: "normalized-analysis-existing",
+      cited: 0,
+      source_url: "https://example.com/earnings",
     });
   });
 
@@ -217,6 +317,42 @@ describe("legacy compatibility dual-write", () => {
         "SELECT COUNT(*) AS count FROM news_sources",
       ).first(),
     ).toEqual({ count: 1 });
+  });
+
+  it("refreshes normalized source metadata when a legacy source changes", async () => {
+    const ticker = await insertTicker("legacy-source-refresh", "SRC");
+    const dualWrite = enabledService();
+    const repository = new RunRepository(env.DB, dualWrite);
+    const run = await prepareRun({
+      date: "2026-07-08",
+      tickers: [ticker],
+      repository,
+      prices: [
+        {
+          previousDate: "2026-07-07",
+          previousPrice: 100,
+          currentPrice: 110,
+          changeAmount: 10,
+          changePct: 10,
+        },
+      ],
+    });
+    await repository.finalizeRun(run.runId, now);
+    await env.DB.prepare(
+      `UPDATE sources SET publisher = 'Updated Publisher', published_at = ?1
+         WHERE screening_id = ?2`,
+    )
+      .bind("2026-07-10T23:00:00.000Z", run.screeningIds[0])
+      .run();
+    await dualWrite.onPublishedRun(run.runId, now);
+    expect(
+      await env.DB.prepare(
+        "SELECT publisher, published_at FROM news_sources",
+      ).first(),
+    ).toEqual({
+      publisher: "Updated Publisher",
+      published_at: "2026-07-10T23:00:00.000Z",
+    });
   });
 
   it("updates only the currently published replacement and ignores an unpublished generation", async () => {
@@ -377,7 +513,7 @@ describe("legacy compatibility dual-write", () => {
         .first(),
     ).toEqual({ published: 1 });
     fail = false;
-    await repository.finalizeRun(run.runId, now);
+    expect(await dualWrite.retryPending(now)).toBe(1);
     expect(
       await env.DB.prepare(
         "SELECT state, attempt_count, instrument_id FROM legacy_dual_write_repairs",
@@ -395,5 +531,86 @@ describe("legacy compatibility dual-write", () => {
         "SELECT COUNT(*) AS count FROM daily_market_facts",
       ).first(),
     ).toEqual({ count: 1 });
+  });
+
+  it("does not let a stale compatibility hook overwrite a newer published generation", async () => {
+    const ticker = await insertTicker("legacy-race", "RACE");
+    let releaseOld!: () => void;
+    let markOldStarted!: () => void;
+    const oldStarted = new Promise<void>((resolve) => {
+      markOldStarted = resolve;
+    });
+    const oldRelease = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    const oldService = enabledService(async () => {
+      markOldStarted();
+      await oldRelease;
+    });
+    const oldRepository = new RunRepository(env.DB, oldService);
+    const oldRun = await prepareRun({
+      date: "2026-07-02",
+      tickers: [ticker],
+      repository: oldRepository,
+      prices: [
+        {
+          previousDate: "2026-07-01",
+          previousPrice: 100,
+          currentPrice: 101,
+          changeAmount: 1,
+          changePct: 1,
+        },
+      ],
+      withAnalysis: false,
+    });
+    const oldFinalization = oldRepository.finalizeRun(oldRun.runId, now);
+    await oldStarted;
+
+    const replacementService = enabledService();
+    const replacementRepository = new RunRepository(env.DB, replacementService);
+    const replacement = await prepareRun({
+      date: "2026-07-02",
+      origin: "backfill",
+      tickers: [ticker],
+      repository: replacementRepository,
+      prices: [
+        {
+          previousDate: "2026-07-01",
+          previousPrice: 100,
+          currentPrice: 120,
+          changeAmount: 20,
+          changePct: 20,
+        },
+      ],
+    });
+    await replacementRepository.finalizeRun(replacement.runId, now);
+    releaseOld();
+    await oldFinalization;
+
+    expect(
+      await env.DB.prepare(
+        `SELECT current_raw_close_decimal, provider_revision
+           FROM daily_market_facts`,
+      ).first(),
+    ).toEqual({
+      current_raw_close_decimal: "120",
+      provider_revision: `legacy-report:${replacement.runId}:2:${replacement.screeningIds[0]}`,
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT state, failure_code FROM legacy_dual_write_repairs
+           WHERE legacy_screening_id = ?1`,
+      )
+        .bind(oldRun.screeningIds[0])
+        .first(),
+    ).toEqual({ state: "skipped", failure_code: "legacy_stale_generation" });
+    expect(
+      await env.DB.prepare(
+        `SELECT state FROM legacy_dual_write_repairs
+           WHERE legacy_screening_id = ?1`,
+      )
+        .bind(replacement.screeningIds[0])
+        .first(),
+    ).toEqual({ state: "resolved" });
   });
 });

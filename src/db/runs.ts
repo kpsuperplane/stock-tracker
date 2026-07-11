@@ -361,31 +361,33 @@ export class RunRepository {
       .bind(runId)
       .first<{ tradingDate: string; generation: number }>();
     if (!run) throw new Error("run_not_publishable");
-    const current = await this.db
-      .prepare(
-        `SELECT generation FROM report_runs
-           WHERE trading_date = ?1 AND published = 1`,
-      )
-      .bind(run.tradingDate)
-      .first<{ generation: number }>();
-    // A late duplicate finalization from an older generation must not undo a
-    // newer published winner. This also keeps the compatibility hook scoped to
-    // the currently published generation.
-    if (current && current.generation > run.generation) return false;
-    await this.db.batch([
+    // The unpublish and conditional winner update are one D1 transaction.
+    // Both statements re-check the generation, so concurrent finalizers
+    // cannot let an older generation win after a newer one commits.
+    const results = await this.db.batch([
       this.db
         .prepare(
-          "UPDATE report_runs SET published = 0 WHERE trading_date = ?1 AND published = 1",
+          `UPDATE report_runs SET published = 0
+             WHERE trading_date = ?1 AND published = 1
+               AND generation < ?2`,
         )
-        .bind(run.tradingDate),
+        .bind(run.tradingDate, run.generation),
       this.db
         .prepare(
           `UPDATE report_runs SET published = 1,
-           completed_at = COALESCE(completed_at, ?1) WHERE id = ?2`,
+           completed_at = COALESCE(completed_at, ?1)
+           WHERE id = ?2
+             AND status IN ('complete', 'complete_with_errors')
+             AND NOT EXISTS (
+               SELECT 1 FROM report_runs newer
+                WHERE newer.trading_date = ?3
+                  AND newer.published = 1
+                  AND newer.generation > ?4
+             )`,
         )
-        .bind(now, runId),
+        .bind(now, runId, run.tradingDate, run.generation),
     ]);
-    return true;
+    return (results[1]?.meta.changes ?? 0) === 1;
   }
 
   async reconcileStaleLeases(cutoff: string): Promise<number> {

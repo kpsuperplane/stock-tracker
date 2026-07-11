@@ -26,18 +26,33 @@ export interface NewsSourceRecord {
 export class MovementAnalysisRepository {
   constructor(private readonly db: D1Database) {}
 
-  upsertStatement(analysis: MovementAnalysisRecord): D1PreparedStatement {
+  upsertStatement(
+    analysis: MovementAnalysisRecord,
+    publicationGuard?: { tradingDate: string; generation: number },
+  ): D1PreparedStatement {
     return this.db
       .prepare(
         `INSERT INTO movement_analyses
          (id, daily_market_fact_id, dependency_fingerprint, summary_zh_cn,
           model, status, error_code, error_message, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+          WHERE ?11 IS NULL OR EXISTS (
+            SELECT 1 FROM report_runs winner
+             WHERE winner.trading_date = ?11
+               AND winner.published = 1
+               AND winner.generation = ?12
+          )
          ON CONFLICT(daily_market_fact_id) DO UPDATE SET
           dependency_fingerprint = excluded.dependency_fingerprint,
           summary_zh_cn = excluded.summary_zh_cn, model = excluded.model,
           status = excluded.status, error_code = excluded.error_code,
-          error_message = excluded.error_message, updated_at = excluded.updated_at`,
+          error_message = excluded.error_message, updated_at = excluded.updated_at
+          WHERE ?11 IS NULL OR EXISTS (
+            SELECT 1 FROM report_runs winner
+             WHERE winner.trading_date = ?11
+               AND winner.published = 1
+               AND winner.generation = ?12
+          )`,
       )
       .bind(
         analysis.id,
@@ -50,24 +65,48 @@ export class MovementAnalysisRepository {
         analysis.errorMessage,
         analysis.createdAt,
         analysis.updatedAt,
+        publicationGuard?.tradingDate ?? null,
+        publicationGuard?.generation ?? null,
       );
   }
 
-  replaceSourcesStatements(input: {
-    movementAnalysisId: string;
-    sources: readonly NewsSourceRecord[];
-  }): D1PreparedStatement[] {
+  replaceSourcesStatements(
+    input: {
+      movementAnalysisId: string;
+      sources: readonly NewsSourceRecord[];
+    },
+    publicationGuard?: { tradingDate: string; generation: number },
+  ): D1PreparedStatement[] {
     return [
       this.db
-        .prepare("DELETE FROM news_sources WHERE movement_analysis_id = ?1")
-        .bind(input.movementAnalysisId),
+        .prepare(
+          `DELETE FROM news_sources
+            WHERE movement_analysis_id = ?1
+              AND (?2 IS NULL OR EXISTS (
+                SELECT 1 FROM report_runs winner
+                 WHERE winner.trading_date = ?2
+                   AND winner.published = 1
+                   AND winner.generation = ?3
+              ))`,
+        )
+        .bind(
+          input.movementAnalysisId,
+          publicationGuard?.tradingDate ?? null,
+          publicationGuard?.generation ?? null,
+        ),
       ...input.sources.map((source) =>
         this.db
           .prepare(
             `INSERT INTO news_sources
              (id, movement_analysis_id, source_order, title, publisher,
               published_at, source_url, cited, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+              WHERE ?10 IS NULL OR EXISTS (
+                SELECT 1 FROM report_runs winner
+                 WHERE winner.trading_date = ?10
+                   AND winner.published = 1
+                   AND winner.generation = ?11
+              )`,
           )
           .bind(
             source.id,
@@ -79,6 +118,8 @@ export class MovementAnalysisRepository {
             source.sourceUrl,
             source.cited ? 1 : 0,
             source.createdAt,
+            publicationGuard?.tradingDate ?? null,
+            publicationGuard?.generation ?? null,
           ),
       ),
     ];

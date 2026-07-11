@@ -28,7 +28,10 @@ export interface DailyMarketFactRecord {
 export class MarketFactRepository {
   constructor(private readonly db: D1Database) {}
 
-  upsertStatement(fact: DailyMarketFactRecord): D1PreparedStatement {
+  upsertStatement(
+    fact: DailyMarketFactRecord,
+    publicationGuard?: { tradingDate: string; generation: number },
+  ): D1PreparedStatement {
     return this.db
       .prepare(
         `INSERT INTO daily_market_facts
@@ -39,8 +42,14 @@ export class MarketFactRepository {
           movement_percent_decimal, raw_close_difference_decimal, movement_basis,
           provider, provider_revision, retrieved_at, status, error_code,
           error_message, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+          WHERE ?22 IS NULL OR EXISTS (
+            SELECT 1 FROM report_runs winner
+             WHERE winner.trading_date = ?22
+               AND winner.published = 1
+               AND winner.generation = ?23
+          )
          ON CONFLICT(instrument_id, trading_date) DO UPDATE SET
           previous_trading_date = excluded.previous_trading_date,
           previous_raw_close_decimal = excluded.previous_raw_close_decimal,
@@ -55,7 +64,13 @@ export class MarketFactRepository {
           provider_revision = excluded.provider_revision,
           retrieved_at = excluded.retrieved_at, status = excluded.status,
           error_code = excluded.error_code, error_message = excluded.error_message,
-          updated_at = excluded.updated_at`,
+          updated_at = excluded.updated_at
+          WHERE ?22 IS NULL OR EXISTS (
+            SELECT 1 FROM report_runs winner
+             WHERE winner.trading_date = ?22
+               AND winner.published = 1
+               AND winner.generation = ?23
+          )`,
       )
       .bind(
         fact.id,
@@ -79,6 +94,8 @@ export class MarketFactRepository {
         fact.errorMessage,
         fact.createdAt,
         fact.updatedAt,
+        publicationGuard?.tradingDate ?? null,
+        publicationGuard?.generation ?? null,
       );
   }
 

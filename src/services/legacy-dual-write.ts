@@ -11,7 +11,6 @@ import { logEvent } from "../worker/log";
 
 const LEGACY_PROVIDER = "legacy-report";
 const LEGACY_INSTRUMENT_PREFIX = "legacy-ticker:";
-const LEGACY_FACT_PREFIX = "legacy-fact:";
 const LEGACY_ANALYSIS_PREFIX = "legacy-analysis:";
 const LEGACY_REPAIR_PREFIX = "legacy-dual-write:";
 
@@ -47,6 +46,7 @@ type LegacySourceRow = {
   publisher: string | null;
   publishedAt: string | null;
   sourceUrl: string;
+  cited: number;
 };
 
 interface ExistingFactRow {
@@ -56,10 +56,17 @@ interface ExistingFactRow {
   previous_raw_close_decimal: string | null;
   movement_amount_decimal: string | null;
   movement_percent_decimal: string | null;
+  raw_close_difference_decimal: string | null;
 }
 
 interface ExistingAnalysisRow {
+  id: string;
   dependency_fingerprint: string;
+}
+
+interface RepairRetryRow extends LegacyScreeningRow {
+  repairState: "pending" | "failed";
+  attemptCount: number;
 }
 
 export interface LegacyDualWriteOptions {
@@ -177,6 +184,74 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
     }
   }
 
+  /**
+   * Retry a bounded number of compatibility repairs for rows that are still
+   * owned by the currently published generation. Skipped rows are intentionally
+   * excluded: they represent source data that cannot be mapped safely (for
+   * example, a missing price), while failed/pending rows are operationally
+   * retryable. The attempt cap prevents a permanently malformed row from
+   * consuming every scheduled invocation.
+   */
+  async retryPending(
+    now: string,
+    options: { limit?: number; maxAttempts?: number } = {},
+  ): Promise<number> {
+    if (!this.enabled) return 0;
+    const limit = Math.max(0, Math.min(options.limit ?? 100, 500));
+    const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
+    if (limit === 0) return 0;
+    const rows = await this.db
+      .prepare(
+        `SELECT r.id AS runId, r.generation, r.trading_date AS tradingDate,
+                s.id AS screeningId, s.ticker_id AS tickerId, s.symbol,
+                s.company_name AS companyName, s.exchange, s.currency,
+                s.previous_bar_date AS previousDate,
+                s.previous_price AS previousPrice,
+                s.current_price AS currentPrice,
+                s.change_amount AS changeAmount, s.change_pct AS changePct,
+                s.price_basis AS priceBasis, s.qualified,
+                s.status AS screeningStatus,
+                s.error_code AS screeningErrorCode,
+                s.error_message AS screeningErrorMessage,
+                a.explanation_zh_cn AS analysisSummary,
+                a.model AS analysisModel, a.status AS analysisStatus,
+                repair.state AS repairState,
+                repair.attempt_count AS attemptCount
+           FROM legacy_dual_write_repairs repair
+           JOIN report_runs r ON r.id = repair.legacy_run_id
+           JOIN screenings s ON s.id = repair.legacy_screening_id
+           LEFT JOIN analyses a ON a.screening_id = s.id
+          WHERE repair.state IN ('pending', 'failed')
+            AND repair.attempt_count < ?1
+            AND r.published = 1
+            AND r.generation = repair.legacy_generation
+          ORDER BY repair.last_attempted_at, repair.id
+          LIMIT ?2`,
+      )
+      .bind(maxAttempts, limit)
+      .all<RepairRetryRow>();
+    if (rows.results.length === 0) return 0;
+
+    const sourcesByRun = new Map<string, LegacySourceRow[]>();
+    for (const runId of new Set(rows.results.map((row) => row.runId))) {
+      for (const source of await this.loadSources(runId)) {
+        const list = sourcesByRun.get(runId) ?? [];
+        list.push(source);
+        sourcesByRun.set(runId, list);
+      }
+    }
+    for (const screening of rows.results) {
+      await this.writeScreening(
+        screening,
+        (sourcesByRun.get(screening.runId) ?? []).filter(
+          (source) => source.screeningId === screening.screeningId,
+        ),
+        now,
+      );
+    }
+    return rows.results.length;
+  }
+
   private async loadPublishedScreenings(
     runId: string,
   ): Promise<LegacyScreeningRow[]> {
@@ -211,7 +286,7 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
       .prepare(
         `SELECT s.id AS screeningId, src.source_index AS sourceOrder,
                 src.title, src.publisher, src.published_at AS publishedAt,
-                src.url AS sourceUrl
+                src.url AS sourceUrl, src.cited
            FROM screenings s
            JOIN sources src ON src.screening_id = s.id
           WHERE s.report_run_id = ?1
@@ -344,6 +419,24 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
     await this.startAttempt(screening, now);
     try {
       await this.beforeAttempt?.(screening);
+      const currentWinner = await this.db
+        .prepare(
+          `SELECT generation FROM report_runs
+             WHERE id = ?1 AND trading_date = ?2 AND published = 1`,
+        )
+        .bind(screening.runId, screening.tradingDate)
+        .first<{ generation: number }>();
+      if (currentWinner?.generation !== screening.generation) {
+        await this.markFailure({
+          screening,
+          state: "skipped",
+          code: "legacy_stale_generation",
+          message:
+            "Published generation was superseded before compatibility write.",
+          now,
+        });
+        return;
+      }
       const instrumentId = await this.ensureInstrument(screening, now);
       const current = legacyNumberToDecimal(screening.currentPrice, true);
       if (!current) {
@@ -373,7 +466,18 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
       const movementPercentDecimal = hasMovement
         ? legacyNumberToDecimal(screening.changePct)
         : null;
-      const factId = `${LEGACY_FACT_PREFIX}${instrumentId}:${screening.tradingDate}`;
+      const existingFact = await this.db
+        .prepare(
+          `SELECT id, provider_revision, current_raw_close_decimal,
+                  previous_raw_close_decimal, movement_amount_decimal,
+                  movement_percent_decimal, raw_close_difference_decimal
+             FROM daily_market_facts
+            WHERE instrument_id = ?1 AND trading_date = ?2`,
+        )
+        .bind(instrumentId, screening.tradingDate)
+        .first<ExistingFactRow>();
+      const factId =
+        existingFact?.id ?? `${instrumentId}:${screening.tradingDate}`;
       const providerRevision = `${LEGACY_PROVIDER}:${screening.runId}:${screening.generation}:${screening.screeningId}`;
       const fact = {
         id: factId,
@@ -387,7 +491,8 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         splitAdjustedPreviousCloseDecimal: previousRawCloseDecimal,
         movementAmountDecimal,
         movementPercentDecimal,
-        rawCloseDifferenceDecimal: movementAmountDecimal,
+        rawCloseDifferenceDecimal:
+          screening.priceBasis === "close" ? movementAmountDecimal : null,
         movementBasis: "legacy_migration" as const,
         provider: LEGACY_PROVIDER,
         providerRevision,
@@ -398,30 +503,37 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         createdAt: now,
         updatedAt: now,
       };
+      const existingAnalysis = await this.db
+        .prepare(
+          `SELECT id, dependency_fingerprint
+             FROM movement_analyses WHERE daily_market_fact_id = ?1`,
+        )
+        .bind(factId)
+        .first<ExistingAnalysisRow>();
+      const analysisId =
+        existingAnalysis?.id ?? `${LEGACY_ANALYSIS_PREFIX}${factId}`;
       const validSources = legacySources
         .map((source) => {
           const sourceUrl = validSourceUrl(source.sourceUrl);
           if (!sourceUrl) return null;
           const normalized: NewsSourceRecord = {
-            id: `${LEGACY_ANALYSIS_PREFIX}${factId}:source:${source.sourceOrder}`,
-            movementAnalysisId: `${LEGACY_ANALYSIS_PREFIX}${factId}`,
+            id: `${analysisId}:source:${source.sourceOrder}`,
+            movementAnalysisId: analysisId,
             sourceOrder: source.sourceOrder,
             title: source.title,
             publisher: source.publisher,
             publishedAt: source.publishedAt,
             sourceUrl,
-            cited: true,
+            cited: source.cited === 1,
             createdAt: now,
           };
           return normalized;
         })
         .filter((source): source is NewsSourceRecord => source !== null);
-      const analysis = this.analysisRecord(
-        screening,
-        factId,
-        now,
-        validSources,
-      );
+      const analysis = {
+        ...this.analysisRecord(screening, factId, now, validSources),
+        id: analysisId,
+      };
       const dependencyFingerprint = await digest(
         JSON.stringify({
           providerRevision,
@@ -431,6 +543,9 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
           sources: validSources.map((source) => [
             source.sourceOrder,
             source.title,
+            source.publisher,
+            source.publishedAt,
+            source.cited,
             source.sourceUrl,
           ]),
         }),
@@ -439,54 +554,73 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         ...analysis,
         dependencyFingerprint,
       };
-      const existingFact = await this.db
-        .prepare(
-          `SELECT id, provider_revision, current_raw_close_decimal,
-                  previous_raw_close_decimal, movement_amount_decimal,
-                  movement_percent_decimal
-             FROM daily_market_facts
-            WHERE instrument_id = ?1 AND trading_date = ?2`,
-        )
-        .bind(instrumentId, screening.tradingDate)
-        .first<ExistingFactRow>();
-      const existingAnalysis = await this.db
-        .prepare(
-          `SELECT dependency_fingerprint
-             FROM movement_analyses WHERE daily_market_fact_id = ?1`,
-        )
-        .bind(factId)
-        .first<ExistingAnalysisRow>();
       const factChanged =
         !existingFact ||
         existingFact.provider_revision !== providerRevision ||
         existingFact.current_raw_close_decimal !== current ||
         existingFact.previous_raw_close_decimal !== previousRawCloseDecimal ||
         existingFact.movement_amount_decimal !== movementAmountDecimal ||
-        existingFact.movement_percent_decimal !== movementPercentDecimal;
+        existingFact.movement_percent_decimal !== movementPercentDecimal ||
+        existingFact.raw_close_difference_decimal !==
+          fact.rawCloseDifferenceDecimal;
       const analysisChanged =
         !existingAnalysis ||
         existingAnalysis.dependency_fingerprint !== dependencyFingerprint;
+      const publicationGuard = {
+        tradingDate: screening.tradingDate,
+        generation: screening.generation,
+      };
       if (factChanged || analysisChanged) {
         const statements: D1PreparedStatement[] = [];
-        if (factChanged) statements.push(this.facts.upsertStatement(fact));
+        if (factChanged) {
+          statements.push(this.facts.upsertStatement(fact, publicationGuard));
+        }
         if (analysisChanged) {
           statements.push(
-            this.analyses.upsertStatement(analysisWithFingerprint),
+            this.analyses.upsertStatement(
+              analysisWithFingerprint,
+              publicationGuard,
+            ),
           );
           statements.push(
-            ...this.analyses.replaceSourcesStatements({
-              movementAnalysisId: analysisWithFingerprint.id,
-              sources: validSources,
-            }),
+            ...this.analyses.replaceSourcesStatements(
+              {
+                movementAnalysisId: analysisWithFingerprint.id,
+                sources: validSources,
+              },
+              publicationGuard,
+            ),
           );
         }
-        statements.push(
-          this.buckets.bumpStatement(
-            await bucketForDate(this.db, screening.tradingDate),
+        const results = await this.db.batch(statements);
+        const changed = results.some((result) => result.meta.changes > 0);
+        const winnerAfterWrite = await this.db
+          .prepare(
+            `SELECT generation FROM report_runs
+               WHERE id = ?1 AND trading_date = ?2 AND published = 1`,
+          )
+          .bind(screening.runId, screening.tradingDate)
+          .first<{ generation: number }>();
+        if (!changed && winnerAfterWrite?.generation !== screening.generation) {
+          await this.markFailure({
+            screening,
+            state: "skipped",
+            code: "legacy_stale_generation",
+            message:
+              "Published generation was superseded before compatibility write.",
+            instrumentId,
             now,
-          ),
-        );
-        await this.db.batch(statements);
+          });
+          return;
+        }
+        if (changed) {
+          await this.buckets
+            .bumpStatement(
+              await bucketForDate(this.db, screening.tradingDate),
+              now,
+            )
+            .run();
+        }
       }
       await this.markResolved(screening.screeningId, instrumentId, now);
     } catch (error) {

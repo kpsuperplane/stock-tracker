@@ -21,8 +21,9 @@ export const handleScheduled = async (
   // trigger remains unchanged until that cutover is explicitly implemented.
   if (controller.cron !== LEGACY_SCREENING_CRON) return;
   const now = new Date(controller.scheduledTime).toISOString();
+  const portfolioFlags = readPortfolioFeatureFlags(env);
   const dualWrite = new LegacyDualWriteService(env.DB, {
-    enabled: readPortfolioFeatureFlags(env).dualWrite,
+    enabled: portfolioFlags.dualWrite,
   });
   const jobs = new JobsService(
     new RunRepository(env.DB, dualWrite),
@@ -31,6 +32,17 @@ export const handleScheduled = async (
   );
   const runId = await jobs.startScheduled(now.slice(0, 10), now);
   const dispatched = await jobs.dispatch(now);
+  let compatibilityRetried = 0;
+  if (portfolioFlags.dualWrite) {
+    try {
+      compatibilityRetried = await dualWrite.retryPending(now);
+    } catch (error) {
+      logEvent("legacy_dual_write_retry_failed", {
+        code: "legacy_dual_write_retry_failed",
+        message: String(error).slice(0, 500),
+      });
+    }
+  }
   if (backfillPipelineFlagEnabled(env)) {
     const pendingBackfills = await env.DB.prepare(
       `SELECT id FROM pipeline_jobs
@@ -56,5 +68,6 @@ export const handleScheduled = async (
     runId,
     tradingDate: now.slice(0, 10),
     dispatched,
+    compatibilityRetried,
   });
 };
