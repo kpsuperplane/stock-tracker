@@ -83,4 +83,39 @@ export class MovementAnalysisRepository {
       ),
     ];
   }
+
+  async findByFact(
+    dailyMarketFactId: string,
+  ): Promise<MovementAnalysisRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT id, daily_market_fact_id AS dailyMarketFactId,
+                dependency_fingerprint AS dependencyFingerprint,
+                summary_zh_cn AS summaryZhCn, model, status,
+                error_code AS errorCode, error_message AS errorMessage,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM movement_analyses WHERE daily_market_fact_id = ?1`,
+      )
+      .bind(dailyMarketFactId)
+      .first<MovementAnalysisRecord>();
+    return row ?? null;
+  }
+
+  async listSources(movementAnalysisId: string): Promise<NewsSourceRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT id, movement_analysis_id AS movementAnalysisId,
+                source_order AS sourceOrder, title, publisher,
+                published_at AS publishedAt, source_url AS sourceUrl,
+                cited, created_at AS createdAt
+         FROM news_sources WHERE movement_analysis_id = ?1
+         ORDER BY source_order`,
+      )
+      .bind(movementAnalysisId)
+      .all<Omit<NewsSourceRecord, "cited"> & { cited: number }>();
+    return result.results.map((source) => ({
+      ...source,
+      cited: Boolean(source.cited),
+    }));
+  }
 }

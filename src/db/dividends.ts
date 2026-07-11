@@ -65,4 +65,51 @@ export class DividendRepository {
         event.updatedAt,
       );
   }
+
+  async listByIdentity(input: {
+    instrumentId: string;
+    provider: string;
+    providerEventId: string;
+  }): Promise<DividendEventRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT id, instrument_id AS instrumentId, ex_date AS exDate,
+                declaration_date AS declarationDate, record_date AS recordDate,
+                payment_date AS paymentDate,
+                amount_per_share_decimal AS amountPerShareDecimal, currency,
+                provider, provider_event_id AS providerEventId,
+                provider_revision AS providerRevision, source_url AS sourceUrl,
+                announced_at AS announcedAt, retrieved_at AS retrievedAt,
+                status, error_code AS errorCode, error_message AS errorMessage,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM dividend_events
+         WHERE instrument_id = ?1 AND provider = ?2 AND provider_event_id = ?3
+         ORDER BY provider_revision`,
+      )
+      .bind(input.instrumentId, input.provider, input.providerEventId)
+      .all<DividendEventRecord>();
+    return result.results;
+  }
+
+  supersedeIdentityStatement(input: {
+    instrumentId: string;
+    provider: string;
+    providerEventId: string;
+    providerRevision: string;
+    updatedAt: string;
+  }): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE dividend_events SET status = 'superseded', updated_at = ?1
+         WHERE instrument_id = ?2 AND provider = ?3 AND provider_event_id = ?4
+           AND provider_revision <> ?5 AND status = 'active'`,
+      )
+      .bind(
+        input.updatedAt,
+        input.instrumentId,
+        input.provider,
+        input.providerEventId,
+        input.providerRevision,
+      );
+  }
 }
