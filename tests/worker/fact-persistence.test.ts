@@ -708,6 +708,49 @@ describe("normalized fact persistence", () => {
     ).toEqual({ count: 2 });
   });
 
+  it("treats a malformed provider payload as an invalid scoped refresh", async () => {
+    await insertInstrument();
+    const provider: DividendProvider = {
+      getDividends: vi.fn(async () =>
+        dividendRange([dividendEvent("0.25", "valid-r1", "2026-06-30")]),
+      ),
+    };
+    const service = new DividendFactsService({
+      db: env.DB,
+      provider,
+      now: () => new Date(now),
+    });
+    await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    (provider.getDividends as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      {} as DividendEventRange,
+    );
+    const result = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(result).toEqual({
+      kind: "provider_invalid",
+      code: "provider_snapshot_mismatch",
+      preserved: true,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT amount_per_share_decimal, status, error_code FROM dividend_events",
+      ).first(),
+    ).toEqual({
+      amount_per_share_decimal: "0.25",
+      status: "error",
+      error_code: "provider_snapshot_mismatch",
+    });
+  });
+
   it("does not mark every provider when a refresh fails before provider identity is known", async () => {
     await insertInstrument();
     const seed = async (

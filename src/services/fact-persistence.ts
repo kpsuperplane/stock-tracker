@@ -326,23 +326,51 @@ export class DividendFactsService {
       };
     }
     const timestamp = this.now().toISOString();
-    const rangeProvider = range.range.provider;
+    const rawRange = range as unknown as {
+      symbol?: unknown;
+      range?: {
+        requestedStartDate?: unknown;
+        requestedEndDate?: unknown;
+        basis?: unknown;
+        isComplete?: unknown;
+        provider?: unknown;
+      };
+      events?: unknown;
+    };
+    const rangeProvider =
+      typeof rawRange.range?.provider === "string"
+        ? rawRange.range.provider
+        : undefined;
+    const providerForFailure =
+      rangeProvider ?? this.knownProviderByInstrument.get(input.instrumentId);
+    const snapshotShapeValid =
+      typeof rawRange.symbol === "string" &&
+      typeof rawRange.range?.requestedStartDate === "string" &&
+      typeof rawRange.range?.requestedEndDate === "string" &&
+      rawRange.range?.basis === "source-reported" &&
+      rawRange.range?.isComplete === false &&
+      typeof rangeProvider === "string" &&
+      Array.isArray(rawRange.events);
     if (
-      range.symbol.toUpperCase() !== input.symbol.toUpperCase() ||
-      range.range.requestedStartDate !== input.startDate ||
-      range.range.requestedEndDate !== input.endDate ||
-      range.range.basis !== "source-reported" ||
-      range.range.isComplete
+      !snapshotShapeValid ||
+      typeof rawRange.symbol !== "string" ||
+      rawRange.symbol.toUpperCase() !== input.symbol.toUpperCase() ||
+      rawRange.range?.requestedStartDate !== input.startDate ||
+      rawRange.range?.requestedEndDate !== input.endDate
     ) {
-      this.knownProviderByInstrument.set(input.instrumentId, rangeProvider);
+      if (rangeProvider) {
+        this.knownProviderByInstrument.set(input.instrumentId, rangeProvider);
+      }
       const persistenceCode = await this.markProviderRowsError({
         instrumentId: input.instrumentId,
-        provider: rangeProvider,
         startDate: input.startDate,
         endDate: input.endDate,
         errorCode: "provider_snapshot_mismatch",
         errorMessage: "Provider response did not match the requested range.",
         updatedAt: timestamp,
+        ...(providerForFailure === undefined
+          ? {}
+          : { provider: providerForFailure }),
       });
       if (persistenceCode) {
         return {
@@ -364,6 +392,21 @@ export class DividendFactsService {
     const buckets = new Set<string>();
     let correctionConflict = false;
     try {
+      const eventsAreValid = (range.events as unknown[]).every((event) => {
+        if (typeof event !== "object" || event === null) return false;
+        const candidate = event as Record<string, unknown>;
+        return (
+          candidate.type === "dividend" &&
+          typeof candidate.symbol === "string" &&
+          typeof candidate.exDate === "string" &&
+          typeof candidate.amount === "string" &&
+          typeof candidate.currency === "string" &&
+          typeof candidate.provider === "string" &&
+          typeof candidate.providerEventId === "string" &&
+          typeof candidate.providerRevision === "string"
+        );
+      });
+      if (!eventsAreValid) throw new Error("provider_snapshot_mismatch");
       const existingProviderRows = await this.dividends.listForProvider({
         instrumentId: input.instrumentId,
         provider: range.range.provider,
