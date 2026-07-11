@@ -4,7 +4,7 @@ Personal, password-protected daily reports for US and Canadian watchlist symbols
 
 ## Local development
 
-Requirements: Node.js 22.12 or newer and npm.
+Requirements: Node.js 22.13 or newer and npm.
 
 ```bash
 npm ci
