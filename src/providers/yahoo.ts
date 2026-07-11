@@ -26,6 +26,33 @@ const chartSchema = z.object({
   chart: z.object({ result: z.array(resultSchema).min(1) }),
 });
 
+type RawDecimalToken = string | null;
+
+const rawDecimalTokenPattern =
+  /^(?:null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)$/;
+
+/**
+ * JSON.parse converts long price tokens to binary numbers before the
+ * normalizer sees them. Extract the number-array token text alongside the
+ * parsed payload so the decimal boundary can retain the provider's exact
+ * spelling. Yahoo's close/adjclose arrays are flat number-or-null arrays.
+ */
+const rawDecimalArray = (
+  body: string,
+  key: "close" | "adjclose",
+): RawDecimalToken[] | undefined => {
+  const pattern = new RegExp(`"${key}"\\s*:\\s*\\[([^\\[\\]]*)\\]`, "g");
+  for (const match of body.matchAll(pattern)) {
+    const content = match[1]?.trim() ?? "";
+    if (!content) return [];
+    const tokens = content.split(",").map((token) => token.trim());
+    if (tokens.every((token) => rawDecimalTokenPattern.test(token))) {
+      return tokens.map((token) => (token === "null" ? null : token));
+    }
+  }
+  return undefined;
+};
+
 const epoch = (date: string) =>
   Math.floor(Date.parse(`${date}T00:00:00Z`) / 1000);
 const isoDate = (seconds: number) =>
@@ -54,22 +81,34 @@ export class YahooMarketDataProvider implements MarketDataProvider {
     if (!response.ok) throw new Error(`market_http_${response.status}`);
     const contentLength = Number(response.headers.get("content-length") ?? 0);
     if (contentLength > 2_000_000) throw new Error("market_response_too_large");
-    const result = chartSchema.parse(await response.json()).chart.result[0];
+    const body = await response.text();
+    let payload: unknown;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      throw new Error("market_schema");
+    }
+    const result = chartSchema.parse(payload).chart.result[0];
     if (!result) throw new Error("market_schema");
     const adjusted = result.indicators.adjclose?.[0]?.adjclose ?? [];
     const closes = result.indicators.quote[0]?.close ?? [];
+    const rawCloses = rawDecimalArray(body, "close");
+    if (!rawCloses || rawCloses.length !== closes.length) {
+      throw new Error("market_schema");
+    }
+    const rawAdjusted = rawDecimalArray(body, "adjclose");
+    if (
+      adjusted.length > 0 &&
+      (!rawAdjusted || rawAdjusted.length !== adjusted.length)
+    ) {
+      throw new Error("market_schema");
+    }
     const bars = result.timestamp.map((timestamp, index) => ({
       date: isoDate(timestamp),
       close: closes[index] ?? null,
       adjustedClose: adjusted[index] ?? null,
-      closeDecimal:
-        closes[index] === null || closes[index] === undefined
-          ? null
-          : String(closes[index]),
-      adjustedCloseDecimal:
-        adjusted[index] === null || adjusted[index] === undefined
-          ? null
-          : String(adjusted[index]),
+      closeDecimal: rawCloses[index] ?? null,
+      adjustedCloseDecimal: rawAdjusted?.[index] ?? null,
     }));
     const corporateActionDates = new Set(
       Object.values(result.events ?? {}).flatMap((group) =>

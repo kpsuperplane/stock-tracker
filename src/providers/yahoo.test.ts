@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
+import { MarketFactsService } from "../services/market-facts";
 import { YahooMarketDataProvider } from "./yahoo";
 
 describe("YahooMarketDataProvider", () => {
@@ -27,6 +28,59 @@ describe("YahooMarketDataProvider", () => {
     await expect(
       provider.getInstrument("AAPL", "2026-07-08", "2026-07-10"),
     ).rejects.toThrow();
+  });
+
+  it("preserves raw high-precision price tokens through normalization", async () => {
+    const body = `{
+      "chart": {
+        "result": [{
+          "meta": {
+            "symbol": "AAPL",
+            "longName": "Apple Inc.",
+            "exchangeName": "NMS",
+            "currency": "USD",
+            "instrumentType": "EQUITY"
+          },
+          "timestamp": [1783517400, 1783603800],
+          "indicators": {
+            "quote": [{ "close": [123.4567890123456789, 124.4567890123456789] }],
+            "adjclose": [{ "adjclose": [123.4567890123456789, 124.4567890123456789] }]
+          },
+          "events": {}
+        }]
+      }
+    }`;
+    const provider = new YahooMarketDataProvider(
+      async () => new Response(body, { status: 200 }),
+    );
+
+    const series = await provider.getInstrument(
+      "AAPL",
+      "2026-07-08",
+      "2026-07-09",
+    );
+    expect(series.bars[0]).toMatchObject({
+      closeDecimal: "123.4567890123456789",
+      adjustedCloseDecimal: "123.4567890123456789",
+    });
+
+    const facts = await new MarketFactsService(
+      provider,
+      () => new Date(0),
+    ).normalize({
+      instrumentId: "instrument-1",
+      symbol: "AAPL",
+      startDate: "2026-07-09",
+      endDate: "2026-07-09",
+      provider: "yahoo-chart-v8",
+      providerRevision: "raw-token-test",
+      activeSplits: [],
+    });
+    expect(facts[0]).toMatchObject({
+      previousRawCloseDecimal: "123.4567890123456789",
+      currentRawCloseDecimal: "124.4567890123456789",
+      movementAmountDecimal: "1",
+    });
   });
 
   it("accepts a null events field when Yahoo reports no corporate actions", async () => {
