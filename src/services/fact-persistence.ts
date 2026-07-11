@@ -367,7 +367,22 @@ export class DividendFactsService {
             row.amountPerShareDecimal === amount &&
             row.exDate === event.exDate,
         );
-        if (identityCorrection) {
+        const sameConflict = existing.some(
+          (row) =>
+            row.providerRevision === event.providerRevision &&
+            row.status === "error" &&
+            row.errorCode === "provider_identity_changed" &&
+            row.amountPerShareDecimal === amount &&
+            row.exDate === event.exDate,
+        );
+        const priorIdentityConflict = existing.some(
+          (row) =>
+            row.status === "error" &&
+            row.errorCode === "provider_identity_changed",
+        );
+        if (sameConflict) {
+          correctionConflict = true;
+        } else if (identityCorrection) {
           correctionConflict = true;
           statements.push(
             this.dividends.supersedeIdentityStatement({
@@ -407,7 +422,9 @@ export class DividendFactsService {
           )) {
             buckets.add(row.exDate.slice(0, 7));
           }
-          const quarantined = quarantineUnmatchedEvents;
+          const quarantined =
+            quarantineUnmatchedEvents || priorIdentityConflict;
+          if (quarantined) correctionConflict = true;
           statements.push(
             this.dividends.supersedeIdentityStatement({
               instrumentId: input.instrumentId,

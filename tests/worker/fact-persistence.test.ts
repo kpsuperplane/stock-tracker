@@ -423,6 +423,30 @@ describe("normalized fact persistence", () => {
     ).toMatchObject({
       results: [{ bucket_key: "2026-06" }, { bucket_key: "2026-08" }],
     });
+    const repeated = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(repeated).toMatchObject({
+      kind: "refreshed",
+      correctionConflict: true,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT ex_date, status, error_code FROM dividend_events ORDER BY ex_date",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        { ex_date: "2026-06-30", status: "superseded", error_code: null },
+        {
+          ex_date: "2026-08-01",
+          status: "error",
+          error_code: "provider_identity_changed",
+        },
+      ],
+    });
   });
 
   it("reuses analyses for unchanged dependencies, invalidates on movement changes, and preserves last valid summaries on failure", async () => {
