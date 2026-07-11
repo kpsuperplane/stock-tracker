@@ -161,6 +161,13 @@ describe("legacy published-generation migrator", () => {
       reason_code: "migration_materialization_failed",
       reason_message: "source_read_transient",
     });
+    const retry = await migrator().runPage({ now });
+    expect(retry).toMatchObject({ status: "complete", inserted: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM daily_market_facts",
+      ).first(),
+    ).toEqual({ count: 1 });
   });
 
   it("selects only the published replacement generation and preserves provenance", async () => {
@@ -411,5 +418,57 @@ describe("legacy published-generation migrator", () => {
     expect(second.status).toBe("leased");
     release();
     expect((await firstRun).status).toBe("complete");
+  });
+
+  it("defers a newly published run beyond the pass-start high-water mark", async () => {
+    const initialTicker = await insertTicker("migrator-hwm-initial", "MHWM1");
+    const laterTicker = await insertTicker("migrator-hwm-later", "MHWM2");
+    const repository = new RunRepository(env.DB);
+    await prepareRun({
+      date: "2026-07-09",
+      ticker: initialTicker,
+      repository,
+      price: {
+        previousDate: "2026-07-08",
+        previousPrice: 100,
+        currentPrice: 110,
+        changeAmount: 10,
+        changePct: 10,
+      },
+    });
+    let insertedLater = false;
+    const service = migrator({
+      beforePage: async () => {
+        if (insertedLater) return;
+        insertedLater = true;
+        await prepareRun({
+          date: "2026-07-10",
+          ticker: laterTicker,
+          repository,
+          price: {
+            previousDate: "2026-07-09",
+            previousPrice: 100,
+            currentPrice: 120,
+            changeAmount: 20,
+            changePct: 20,
+          },
+        });
+      },
+    });
+    const first = await service.runPage({ pageSize: 100, now });
+    expect(first.status).toBe("complete");
+    expect(first.highWater?.tradingDate).toBe("2026-07-09");
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM daily_market_facts",
+      ).first(),
+    ).toEqual({ count: 1 });
+    const second = await service.runPage({ pageSize: 100, now });
+    expect(second.status).toBe("complete");
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM daily_market_facts",
+      ).first(),
+    ).toEqual({ count: 2 });
   });
 });

@@ -4,6 +4,9 @@ CREATE TABLE portfolio_migration_state (
   cursor_run_id TEXT,
   cursor_generation INTEGER,
   cursor_screening_id TEXT,
+  high_water_trading_date TEXT,
+  high_water_generation INTEGER,
+  high_water_run_id TEXT,
   pass_number INTEGER NOT NULL DEFAULT 0 CHECK (pass_number >= 0),
   status TEXT NOT NULL DEFAULT 'idle'
     CHECK (status IN ('idle', 'running', 'complete', 'failed')),

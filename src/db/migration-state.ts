@@ -10,6 +10,7 @@ export interface MigrationCursor {
 export interface MigrationStateRecord {
   id: string;
   cursor: MigrationCursor | null;
+  highWater: { tradingDate: string; generation: number; runId: string } | null;
   passNumber: number;
   status: "idle" | "running" | "complete" | "failed";
   leaseOwner: string | null;
@@ -38,6 +39,9 @@ interface MigrationStateRow {
   cursorRunId: string | null;
   cursorGeneration: number | null;
   cursorScreeningId: string | null;
+  highWaterTradingDate: string | null;
+  highWaterGeneration: number | null;
+  highWaterRunId: string | null;
   passNumber: number;
   status: MigrationStateRecord["status"];
   leaseOwner: string | null;
@@ -74,6 +78,16 @@ const mapState = (row: MigrationStateRow): MigrationStateRecord => ({
           screeningId: row.cursorScreeningId,
         }
       : null,
+  highWater:
+    row.highWaterTradingDate &&
+    row.highWaterGeneration !== null &&
+    row.highWaterRunId
+      ? {
+          tradingDate: row.highWaterTradingDate,
+          generation: row.highWaterGeneration,
+          runId: row.highWaterRunId,
+        }
+      : null,
   passNumber: row.passNumber,
   status: row.status,
   leaseOwner: row.leaseOwner,
@@ -102,6 +116,9 @@ const stateSelect = `
          cursor_run_id AS cursorRunId,
          cursor_generation AS cursorGeneration,
          cursor_screening_id AS cursorScreeningId,
+         high_water_trading_date AS highWaterTradingDate,
+         high_water_generation AS highWaterGeneration,
+         high_water_run_id AS highWaterRunId,
          pass_number AS passNumber, status,
          lease_owner AS leaseOwner, lease_until AS leaseUntil,
          examined_count AS examinedCount, inserted_count AS insertedCount,
@@ -178,6 +195,21 @@ export class MigrationStateRepository {
             SET cursor_trading_date = NULL, cursor_run_id = NULL,
                 cursor_generation = NULL,
                 cursor_screening_id = NULL, pass_number = pass_number + 1,
+                high_water_trading_date = (
+                  SELECT trading_date FROM report_runs
+                   WHERE published = 1
+                   ORDER BY trading_date DESC, generation DESC, id DESC LIMIT 1
+                ),
+                high_water_generation = (
+                  SELECT generation FROM report_runs
+                   WHERE published = 1
+                   ORDER BY trading_date DESC, generation DESC, id DESC LIMIT 1
+                ),
+                high_water_run_id = (
+                  SELECT id FROM report_runs
+                   WHERE published = 1
+                   ORDER BY trading_date DESC, generation DESC, id DESC LIMIT 1
+                ),
                 status = 'running', pass_unexplained_count = 0,
                 last_error_code = NULL, last_error_message = NULL,
                 last_started_at = ?1, updated_at = ?1

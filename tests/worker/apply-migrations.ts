@@ -26,6 +26,8 @@ beforeEach(async () => {
       `UPDATE portfolio_migration_state SET
          cursor_trading_date = NULL, cursor_run_id = NULL,
          cursor_generation = NULL, cursor_screening_id = NULL,
+         high_water_trading_date = NULL, high_water_generation = NULL,
+         high_water_run_id = NULL,
          pass_number = 0, status = 'idle', lease_owner = NULL,
          lease_until = NULL, examined_count = 0, inserted_count = 0,
          updated_count = 0, unchanged_count = 0, skipped_count = 0,

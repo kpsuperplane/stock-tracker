@@ -94,6 +94,11 @@ export interface MigrationPageResult {
   mismatched: number;
   errors: number;
   cursor: MigrationCursor | null;
+  highWater: {
+    tradingDate: string;
+    generation: number;
+    runId: string;
+  } | null;
   consecutiveCleanPasses: number;
   message?: string;
 }
@@ -243,6 +248,7 @@ export class LegacyFactMigrator {
         mismatched: 0,
         errors: 0,
         cursor: null,
+        highWater: null,
         consecutiveCleanPasses: 0,
       };
     }
@@ -269,7 +275,7 @@ export class LegacyFactMigrator {
         if (!current) throw new Error("migration_state_missing");
       }
       await this.beforePage?.();
-      const rows = await this.page(current.cursor, pageSize);
+      const rows = await this.page(current.cursor, current.highWater, pageSize);
       const stats: MigrationPageStats = {
         examined: 0,
         inserted: 0,
@@ -358,6 +364,7 @@ export class LegacyFactMigrator {
       mismatched: stats?.mismatched ?? 0,
       errors: stats?.errors ?? 0,
       cursor: state?.cursor ?? null,
+      highWater: state?.highWater ?? null,
       consecutiveCleanPasses: state?.consecutiveCleanPasses ?? 0,
       ...(message ? { message } : {}),
     };
@@ -365,6 +372,11 @@ export class LegacyFactMigrator {
 
   private async page(
     cursor: MigrationCursor | null,
+    highWater: {
+      tradingDate: string;
+      generation: number;
+      runId: string;
+    } | null,
     pageSize: number,
   ): Promise<MigrationScreeningRow[]> {
     const result = await this.db
@@ -386,6 +398,7 @@ export class LegacyFactMigrator {
            JOIN screenings s ON s.report_run_id = r.id
            LEFT JOIN analyses a ON a.screening_id = s.id
           WHERE r.published = 1
+            AND ?5 IS NOT NULL
             AND (
               ?1 IS NULL OR r.trading_date > ?1 OR
               (r.trading_date = ?1 AND (
@@ -395,14 +408,24 @@ export class LegacyFactMigrator {
                 ))
               ))
             )
+            AND (
+              r.trading_date < ?5 OR
+              (r.trading_date = ?5 AND (
+                r.generation < ?6 OR
+                (r.generation = ?6 AND r.id <= ?7)
+              ))
+            )
           ORDER BY r.trading_date, r.generation, r.id, s.id
-          LIMIT ?5`,
+          LIMIT ?8`,
       )
       .bind(
         cursor?.tradingDate ?? null,
         cursor?.generation ?? null,
         cursor?.runId ?? null,
         cursor?.screeningId ?? null,
+        highWater?.tradingDate ?? null,
+        highWater?.generation ?? null,
+        highWater?.runId ?? null,
         pageSize,
       )
       .all<MigrationScreeningRow>();
@@ -559,8 +582,12 @@ export class LegacyFactMigrator {
         screeningId: row.screeningId,
         generation: row.generation,
       });
+      const retryableAudit =
+        auditPrevious?.outcome === "error" ||
+        auditPrevious?.outcome === "skipped";
       if (
         auditPrevious &&
+        !retryableAudit &&
         (auditPrevious.outcome === "mismatched" ||
           auditPrevious.contentHash !== contentHash ||
           auditPrevious.provenanceHash !== provenanceHash)
