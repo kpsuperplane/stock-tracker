@@ -308,6 +308,8 @@ export class DividendFactsService {
         errorCode: providerErrorCode(error),
         errorMessage: providerErrorCode(error),
         updatedAt: timestamp,
+        startDate: input.startDate,
+        endDate: input.endDate,
         ...(knownProvider === undefined ? {} : { provider: knownProvider }),
       });
       if (persistenceCode) {

@@ -827,6 +827,56 @@ describe("normalized fact persistence", () => {
     });
   });
 
+  it("scopes a known-provider failure to the requested date range", async () => {
+    await insertInstrument();
+    const current = dividendRange([
+      dividendEvent("0.25", "known-june-r1", "2026-06-30"),
+      dividendEvent("0.3", "known-august-r1", "2026-08-01"),
+    ]);
+    const provider: DividendProvider = {
+      getDividends: vi.fn(async () => current),
+    };
+    const service = new DividendFactsService({
+      db: env.DB,
+      provider,
+      now: () => new Date(now),
+    });
+    await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    (provider.getDividends as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("provider_http_503"),
+    );
+    const failed = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-06-30",
+    });
+    expect(failed).toEqual({
+      kind: "provider_unavailable",
+      code: "provider_http_503",
+      preserved: true,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT ex_date, status, error_code FROM dividend_events ORDER BY ex_date",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        {
+          ex_date: "2026-06-30",
+          status: "error",
+          error_code: "provider_http_503",
+        },
+        { ex_date: "2026-08-01", status: "active", error_code: null },
+      ],
+    });
+  });
+
   it("reuses analyses for unchanged dependencies, invalidates on movement changes, and preserves last valid summaries on failure", async () => {
     await insertInstrument();
     const marketService = new MarketFactsPersistenceService(
