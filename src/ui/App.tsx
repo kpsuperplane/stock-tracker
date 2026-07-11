@@ -5,7 +5,7 @@ import { WatchlistPage } from "./pages/WatchlistPage";
 import { ProductApp } from "./system/AppShell";
 
 const LegacyApp = () => (
-  <>
+  <div className="legacy-app">
     <a className="skip-link" href="#main-content">
       跳至报告
     </a>
@@ -28,7 +28,7 @@ const LegacyApp = () => (
         </section>
       </div>
     </main>
-  </>
+  </div>
 );
 
 export const App = () =>

@@ -38,6 +38,19 @@ export const routeForPath = (pathname: string): AppRoute => {
 export const readPathname = () =>
   typeof window === "undefined" ? "/portfolio" : window.location.pathname;
 
+export const isPlainLeftClick = (event: {
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}) =>
+  event.button === 0 &&
+  !event.metaKey &&
+  !event.ctrlKey &&
+  !event.shiftKey &&
+  !event.altKey;
+
 export interface AppRouter {
   pathname: string;
   route: AppRoute;

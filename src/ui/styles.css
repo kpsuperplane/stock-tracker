@@ -3,7 +3,7 @@
 @import "@astryxdesign/core/astryx.css";
 @import "@astryxdesign/theme-neutral/theme.css";
 
-:root {
+.legacy-app {
   color: #1b1d20;
   background: #f3f4f6;
   font-family:
@@ -25,7 +25,8 @@
   --z-skip: 30;
 }
 
-* {
+.legacy-app,
+.legacy-app * {
   box-sizing: border-box;
 }
 
@@ -33,54 +34,56 @@ html {
   min-width: 320px;
   min-height: 100%;
   scroll-padding-top: 1rem;
-  background: var(--background);
 }
 
 body {
   min-height: 100dvh;
   margin: 0;
+}
+
+.legacy-app {
   color: var(--text);
   background: var(--background);
   font-size: 14px;
   line-height: 1.45;
 }
 
-button,
-input,
-select {
+.legacy-app button,
+.legacy-app input,
+.legacy-app select {
   font: inherit;
 }
 
-button,
-a,
-input,
-select {
+.legacy-app button,
+.legacy-app a,
+.legacy-app input,
+.legacy-app select {
   outline-offset: 2px;
 }
 
-:focus-visible {
+.legacy-app :focus-visible {
   outline: 2px solid var(--focus);
 }
 
-a {
+.legacy-app a {
   color: var(--accent);
   text-underline-offset: 0.15em;
 }
 
-h1,
-h2,
-h3,
-p {
+.legacy-app h1,
+.legacy-app h2,
+.legacy-app h3,
+.legacy-app p {
   margin-top: 0;
 }
 
-h1,
-h2,
-h3 {
+.legacy-app h1,
+.legacy-app h2,
+.legacy-app h3 {
   color: var(--text);
 }
 
-h1 {
+.legacy-app h1 {
   margin-bottom: 0;
   font-size: 1.3rem;
   font-weight: 650;
@@ -88,13 +91,13 @@ h1 {
   line-height: 1.25;
 }
 
-h2 {
+.legacy-app h2 {
   margin-bottom: 0;
   font-size: 1rem;
   font-weight: 650;
 }
 
-h3 {
+.legacy-app h3 {
   margin-bottom: 0.5rem;
   font-size: 0.9rem;
 }
@@ -362,9 +365,9 @@ h3 {
   line-height: 1.55;
 }
 
-.explanation--unavailable,
-[role="alert"],
-.inline-alert {
+.legacy-app .explanation--unavailable,
+.legacy-app [role="alert"],
+.legacy-app .inline-alert {
   color: var(--negative);
 }
 
@@ -401,7 +404,7 @@ h3 {
   font-size: 0.74rem;
 }
 
-button {
+.legacy-app button {
   min-height: 2rem;
   padding: 0.3rem 0.55rem;
   color: #fff;
@@ -413,9 +416,10 @@ button {
   font-weight: 600;
 }
 
-button:hover:not(:disabled):not(.timeline-day):not(.button--secondary):not(
-  .link-button
-):not(.button--danger) {
+.legacy-app
+  button:hover:not(:disabled):not(.timeline-day):not(.button--secondary):not(
+    .link-button
+  ):not(.button--danger) {
   background: #3b4046;
 }
 
@@ -428,11 +432,11 @@ button:hover:not(:disabled):not(.timeline-day):not(.button--secondary):not(
   background: #e7eef6;
 }
 
-button:active:not(:disabled) {
+.legacy-app button:active:not(:disabled) {
   transform: translateY(1px);
 }
 
-button:disabled {
+.legacy-app button:disabled {
   cursor: wait;
   opacity: 0.55;
 }
@@ -505,8 +509,8 @@ button:disabled {
   accent-color: var(--accent);
 }
 
-input,
-select {
+.legacy-app input,
+.legacy-app select {
   width: 100%;
   min-height: 2.15rem;
   padding: 0.35rem 0.5rem;
@@ -518,12 +522,12 @@ select {
   font-size: 0.76rem;
 }
 
-input:focus,
-select:focus {
+.legacy-app input:focus,
+.legacy-app select:focus {
   border-color: var(--accent);
 }
 
-input::placeholder {
+.legacy-app input::placeholder {
   color: #9298a1;
 }
 
@@ -560,7 +564,7 @@ input::placeholder {
   margin-top: 0.75rem;
 }
 
-.inline-alert {
+.legacy-app .inline-alert {
   margin: 0 0 0.75rem;
   padding: 0.5rem 0.65rem;
   background: #fff5f5;
@@ -689,7 +693,7 @@ input::placeholder {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  button:active:not(:disabled) {
+  .legacy-app button:active:not(:disabled) {
     transform: none;
   }
 }

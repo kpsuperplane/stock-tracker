@@ -14,6 +14,7 @@ describe("static locale catalog", () => {
       "english",
       "chinese",
       "collapseSidebar",
+      "expandSidebar",
     ] as const;
 
     for (const locale of ["en", "cn"] as Locale[]) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   APP_ROUTES,
   type AppRoute,
+  isPlainLeftClick,
   pathForRoute,
   routeForPath,
 } from "./routing";
@@ -35,5 +36,21 @@ describe("product routing", () => {
     expect(routeForPath("/")).toBe("portfolio");
     expect(routeForPath("/unknown")).toBe("portfolio");
     expect(routeForPath("not-a-path")).toBe("portfolio");
+  });
+
+  it("only intercepts unmodified primary-button clicks", () => {
+    const plain = {
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+    };
+    expect(isPlainLeftClick(plain)).toBe(true);
+    expect(isPlainLeftClick({ ...plain, button: 1 })).toBe(false);
+    expect(isPlainLeftClick({ ...plain, metaKey: true })).toBe(false);
+    expect(isPlainLeftClick({ ...plain, ctrlKey: true })).toBe(false);
+    expect(isPlainLeftClick({ ...plain, shiftKey: true })).toBe(false);
+    expect(isPlainLeftClick({ ...plain, altKey: true })).toBe(false);
   });
 });
