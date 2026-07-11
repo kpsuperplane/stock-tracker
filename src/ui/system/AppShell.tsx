@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import type { Locale } from "../i18n/catalog";
 import { I18nProvider, useI18n } from "../i18n/I18nProvider";
 import { EventsPage } from "../pages/EventsPage";
+import { PortfolioPage } from "../pages/PortfolioPage";
 import {
   APP_ROUTES,
   type AppRoute,
@@ -181,6 +182,8 @@ export const ProductApp = ({
         {children ??
           (router.route === "events" ? (
             <EventsPage />
+          ) : router.route === "portfolio" ? (
+            <PortfolioPage />
           ) : (
             <ProductPage route={router.route} />
           ))}

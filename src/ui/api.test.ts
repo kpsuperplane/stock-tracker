@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiClientError, eventImportsApi, eventsApi } from "./api";
+import {
+  ApiClientError,
+  eventImportsApi,
+  eventsApi,
+  portfolioApi,
+} from "./api";
 
 describe("product event API clients", () => {
   it("keeps the position revision from timeline headers and serializes filters", async () => {
@@ -131,5 +136,59 @@ describe("product event API clients", () => {
         providerRevision: "snapshot-r2",
       },
     });
+  });
+
+  it("uses the cached portfolio body for conditional 304 responses", async () => {
+    portfolioApi.clearCache?.();
+    const portfolio = {
+      asOfDate: "2026-07-10",
+      latestTradingDate: "2026-07-10",
+      actualTradingDates: ["2026-07-10"],
+      locale: "en" as const,
+      positions: [],
+      totals: { USD: "0", CAD: "0" },
+      conflicts: [],
+      freshness: "fresh" as const,
+      nextCursor: null,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ portfolio }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            ETag: '"portfolio-1"',
+            "X-Position-Basis-Revision": "3",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 304,
+          headers: {
+            ETag: '"portfolio-1"',
+            "X-Position-Basis-Revision": "3",
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await portfolioApi.read({
+      locale: "en",
+      today: "2026-07-10",
+    });
+    const second = await portfolioApi.read({
+      locale: "en",
+      today: "2026-07-10",
+    });
+
+    expect(first.notModified).toBe(false);
+    expect(second.notModified).toBe(true);
+    expect(second.portfolio).toEqual(portfolio);
+    const secondInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(new Headers(secondInit.headers).get("If-None-Match")).toBe(
+      '"portfolio-1"',
+    );
   });
 });

@@ -1,5 +1,6 @@
 import type {
   EventsTimelineDto,
+  PortfolioReadModelDto,
   ReportDto,
   ReportSummaryDto,
   SplitConfirmationDto,
@@ -39,18 +40,26 @@ export interface ApiResponse<T> {
   headers: Headers;
 }
 
+export interface RequestMetaOptions {
+  allowNotModified?: boolean;
+}
+
 const isFormDataBody = (body: BodyInit | null | undefined): boolean =>
   typeof FormData !== "undefined" && body instanceof FormData;
 
 export const requestWithMeta = async <T>(
   path: string,
   init?: RequestInit,
+  options: RequestMetaOptions = {},
 ): Promise<ApiResponse<T>> => {
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && !isFormDataBody(init?.body)) {
     headers.set("Content-Type", "application/json");
   }
   const response = await fetch(path, { ...init, headers });
+  if (response.status === 304 && options.allowNotModified) {
+    return { data: undefined as T, headers: response.headers };
+  }
   if (!response.ok) {
     const payload = await response
       .json<ErrorPayload>()
@@ -114,6 +123,25 @@ export type EventFilters = {
   cursor?: string;
   limit?: number;
 };
+
+export type PortfolioReadOptions = {
+  locale: "en" | "cn";
+  today?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type PortfolioReadResult = {
+  portfolio: PortfolioReadModelDto | null;
+  notModified: boolean;
+  etag: string | null;
+  positionBasisRevision: number | null;
+};
+
+export interface PortfolioApiClient {
+  read: (options: PortfolioReadOptions) => Promise<PortfolioReadResult>;
+  clearCache?: () => void;
+}
 
 export type TransactionMutationInput = {
   instrumentId?: string;
@@ -312,7 +340,57 @@ export const eventImportsApi: EventImportsApiClient = {
     ),
 };
 
+type PortfolioCacheEntry = {
+  portfolio: PortfolioReadModelDto;
+  etag: string | null;
+  positionBasisRevision: number | null;
+};
+
+const portfolioCache = new Map<string, PortfolioCacheEntry>();
+
+const portfolioQuery = (options: PortfolioReadOptions): string => {
+  const params = new URLSearchParams({ locale: options.locale });
+  if (options.today) params.set("today", options.today);
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  return `?${params.toString()}`;
+};
+
+export const portfolioApi: PortfolioApiClient = {
+  read: async (options) => {
+    const key = JSON.stringify(options);
+    const cached = portfolioCache.get(key);
+    const response = await requestWithMeta<{
+      portfolio: PortfolioReadModelDto;
+    }>(
+      `/api/portfolio${portfolioQuery(options)}`,
+      cached?.etag ? { headers: { "If-None-Match": cached.etag } } : undefined,
+      { allowNotModified: true },
+    );
+    const etag = response.headers.get("ETag") ?? cached?.etag ?? null;
+    const revisionHeader = response.headers.get("X-Position-Basis-Revision");
+    const parsedRevision =
+      revisionHeader === null ? null : Number(revisionHeader);
+    const positionBasisRevision = Number.isSafeInteger(parsedRevision)
+      ? parsedRevision
+      : (cached?.positionBasisRevision ?? null);
+    if (response.data === undefined) {
+      return {
+        portfolio: cached?.portfolio ?? null,
+        notModified: true,
+        etag,
+        positionBasisRevision,
+      };
+    }
+    const portfolio = response.data.portfolio;
+    portfolioCache.set(key, { portfolio, etag, positionBasisRevision });
+    return { portfolio, notModified: false, etag, positionBasisRevision };
+  },
+  clearCache: () => portfolioCache.clear(),
+};
+
 export const api = {
+  portfolio: portfolioApi,
   events: eventsApi,
   eventImports: eventImportsApi,
   history: (cursor?: string) =>
