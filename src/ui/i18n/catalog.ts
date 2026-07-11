@@ -103,8 +103,7 @@ export const messageCatalog = {
     workFailed: "Failed",
     runHistory: "Run history",
     noRunHistory: "Run details are not available for this pipeline job.",
-    jobDetailsSummary:
-      "Summary view: run and error details load when you open an active job.",
+    jobDetailsSummary: "Summary view; load details to view run and error rows.",
     loadJobDetails: "Load details",
     loadingJobDetails: "Loading details…",
     jobErrors: "Work item errors",
@@ -383,7 +382,7 @@ export const messageCatalog = {
     workFailed: "失败",
     runHistory: "运行记录",
     noRunHistory: "此流水线任务没有可用的运行详情。",
-    jobDetailsSummary: "摘要视图：打开进行中的任务后加载运行和错误详情。",
+    jobDetailsSummary: "摘要视图；加载详情以查看运行和错误记录。",
     loadJobDetails: "加载详情",
     loadingJobDetails: "正在加载详情…",
     jobErrors: "工作项错误",

@@ -127,7 +127,7 @@ describe("JobProgress", () => {
       </I18nProvider>,
     );
     expect(markup).toContain(
-      "Summary view: run and error details load when you open an active job.",
+      "Summary view; load details to view run and error rows.",
     );
   });
 
