@@ -44,6 +44,12 @@ export const calendarConflictBannerStatus = (
     ? "error"
     : "warning";
 
+export const calendarLoadMoreDisabled = (
+  loading: boolean,
+  refreshing: boolean,
+  loadingMore: boolean,
+): boolean => loading || refreshing || loadingMore;
+
 const mergeUnique = <T,>(
   first: T[],
   second: T[],
@@ -120,6 +126,7 @@ export const CalendarPage = ({
   const [loading, setLoading] = useState(initialCalendar === undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [failedCursor, setFailedCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [readModelDisabled, setReadModelDisabled] = useState(false);
   const [selection, setSelection] = useState<CalendarSelection | null>(null);
@@ -136,6 +143,7 @@ export const CalendarPage = ({
       setLoading(isLoadingMore ? false : !hadCachedCalendar);
       setRefreshing(isLoadingMore ? false : hadCachedCalendar);
       setLoadingMore(isLoadingMore);
+      setFailedCursor(null);
       setError(null);
       setReadModelDisabled(false);
       const range = rangeForView(anchorDate, view);
@@ -162,6 +170,7 @@ export const CalendarPage = ({
         if (requestId === requestIdRef.current) {
           const messageKey = calendarErrorMessageKey(caught);
           setReadModelDisabled(messageKey === "calendarReadModelDisabled");
+          setFailedCursor(isLoadingMore ? (cursor ?? null) : null);
           setError(t(messageKey));
         }
       } finally {
@@ -177,9 +186,14 @@ export const CalendarPage = ({
 
   const loadMore = useCallback(() => {
     const cursor = calendarRef.current?.nextCursor;
-    if (!cursor || loadingMore) return;
+    if (!cursor || calendarLoadMoreDisabled(loading, refreshing, loadingMore))
+      return;
     void load(cursor);
-  }, [load, loadingMore]);
+  }, [load, loading, loadingMore, refreshing]);
+
+  const retry = useCallback(() => {
+    void load(failedCursor ?? undefined);
+  }, [failedCursor, load]);
 
   useEffect(() => {
     void load();
@@ -208,11 +222,7 @@ export const CalendarPage = ({
             ? { description: t("calendarReadModelDisabledDescription") }
             : {})}
           endContent={
-            <Button
-              variant="ghost"
-              label={t("retry")}
-              onClick={() => void load()}
-            />
+            <Button variant="ghost" label={t("retry")} onClick={retry} />
           }
         />
       )}
@@ -288,6 +298,11 @@ export const CalendarPage = ({
                   loadingMore ? t("calendarLoadingMore") : t("calendarLoadMore")
                 }
                 isLoading={loadingMore}
+                isDisabled={calendarLoadMoreDisabled(
+                  loading,
+                  refreshing,
+                  loadingMore,
+                )}
                 onClick={loadMore}
               />
               <span>{t("calendarMoreAvailable")}</span>

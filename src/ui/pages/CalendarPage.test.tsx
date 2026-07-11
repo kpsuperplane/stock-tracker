@@ -12,6 +12,7 @@ import {
   CalendarPage,
   calendarConflictBannerStatus,
   calendarErrorMessageKey,
+  calendarLoadMoreDisabled,
   mergeCalendarPages,
 } from "./CalendarPage";
 
@@ -243,6 +244,10 @@ describe("CalendarPage", () => {
     expect(merged.events).toHaveLength(2);
     expect(merged.actualTradingDates).toEqual(["2026-07-10", "2026-07-11"]);
     expect(merged.nextCursor).toBeNull();
+    expect(calendarLoadMoreDisabled(false, false, false)).toBe(false);
+    expect(calendarLoadMoreDisabled(true, false, false)).toBe(true);
+    expect(calendarLoadMoreDisabled(false, true, false)).toBe(true);
+    expect(calendarLoadMoreDisabled(false, false, true)).toBe(true);
   });
 
   it("uses error severity for failed facts and conflict codes", () => {
