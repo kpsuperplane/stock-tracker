@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { RunRepository } from "../../src/db/runs";
 import type { ReportDto } from "../../src/shared/contracts";
 
-const headers = { Authorization: `Basic ${btoa("owner:password")}` };
+const headers = {
+  Authorization: `Basic ${btoa("owner:password")}`,
+  Host: "local",
+  Origin: "http://local",
+  "X-Stock-Tracker-Request": "1",
+};
 const now = "2026-07-09T22:00:00.000Z";
 
 beforeEach(async () => {

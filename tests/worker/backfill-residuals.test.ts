@@ -9,6 +9,9 @@ import type { PipelineDispatchMessage } from "../../src/shared/contracts";
 const headers = {
   Authorization: `Basic ${btoa("owner:password")}`,
   "Content-Type": "application/json",
+  Host: "local",
+  Origin: "http://local",
+  "X-Stock-Tracker-Request": "1",
 };
 
 const insertHolding = async (suffix: string, now: string): Promise<void> => {

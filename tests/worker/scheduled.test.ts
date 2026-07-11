@@ -66,6 +66,55 @@ describe("scheduled handler", () => {
     expect(after).toEqual(before);
   });
 
+  it("expires and purges stale import staging during the dispatcher tick", async () => {
+    const now = "2026-07-11T20:00:00.000Z";
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO import_batches
+         (id, file_digest, original_filename, base_position_basis_revision,
+          status, expires_at, created_at, updated_at)
+         VALUES ('scheduled-stale-import', 'scheduled-stale-digest',
+                 'events.csv', 0, 'preview', '2026-07-01T12:00:00.000Z',
+                 ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO import_rows
+         (id, import_batch_id, row_number, symbol, status)
+         VALUES ('scheduled-stale-row', 'scheduled-stale-import', 2,
+                 'AAPL', 'invalid')`,
+      ),
+    ]);
+    const disabledEnv = new Proxy(env, {
+      get(target, property) {
+        if (property === "PORTFOLIO_NEW_WRITES_ENABLED") return "false";
+        return Reflect.get(target, property);
+      },
+    });
+    await handleScheduled(
+      {
+        scheduledTime: Date.parse(now),
+        cron: "*/15 * * * *",
+        noRetry() {},
+      } as ScheduledController,
+      disabledEnv,
+    );
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM import_batches WHERE id = 'scheduled-stale-import'",
+      ).first(),
+    ).toEqual({ status: "expired" });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_rows WHERE import_batch_id = 'scheduled-stale-import'",
+      ).first(),
+    ).toEqual({ count: 0 });
+    expect(
+      await env.DB.prepare(
+        "SELECT file_digest FROM import_batches WHERE id = 'scheduled-stale-import'",
+      ).first(),
+    ).toEqual({ file_digest: "scheduled-stale-digest" });
+  });
+
   it("runs one normalized planner job for a Toronto DST candidate and de-dupes repeats", async () => {
     const now = "2026-03-09T20:30:00.000Z"; // 16:30 Toronto after spring DST
     await new TickerRepository(env.DB).insert({

@@ -23,6 +23,7 @@ import type {
   SplitEventRange,
 } from "../providers/corporate-actions";
 import { easternMarketDate } from "../shared/dates";
+import { cleanupImportStaging } from "./retention-cleanup";
 
 const HEADER = "trade_date,symbol,side,quantity,price";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -32,7 +33,6 @@ const MAX_CURRENT_POSITIONS = 100;
 const STAGING_WRITE_BATCH_SIZE = 500;
 const SNAPSHOT_SYNC_BATCH_SIZE = 1_000;
 const PREVIEW_LIFETIME_MS = 24 * 60 * 60 * 1_000;
-const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const PLANNING_WORK_TYPE = "ledger_reconciliation_plan";
 
 type Side = "buy" | "sell";
@@ -299,27 +299,7 @@ export class EventImportsService {
   }
 
   async cleanup(): Promise<void> {
-    const now = this.now();
-    const sevenDaysAgo = new Date(
-      now.valueOf() - STAGING_RETENTION_MS,
-    ).toISOString();
-    await this.dependencies.db.batch([
-      this.dependencies.db
-        .prepare(
-          `UPDATE import_batches SET status = 'expired', updated_at = ?1
-           WHERE status = 'preview' AND expires_at <= ?1`,
-        )
-        .bind(now.toISOString()),
-      this.dependencies.db
-        .prepare(
-          `DELETE FROM import_rows WHERE import_batch_id IN (
-             SELECT id FROM import_batches
-             WHERE (status = 'expired' AND expires_at <= ?1)
-                OR (status = 'committed' AND committed_at IS NOT NULL AND committed_at <= ?1)
-           )`,
-        )
-        .bind(sevenDaysAgo),
-    ]);
+    await cleanupImportStaging({ db: this.dependencies.db, now: this.now });
   }
 
   async preview(input: {

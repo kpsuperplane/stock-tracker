@@ -9,4 +9,10 @@ export class ApiError extends Error {
 }
 
 export const safeErrorMessage = (error: unknown) =>
-  (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  (error instanceof Error ? error.message : String(error))
+    .replace(/(?:Bearer|Basic)\s+[^\s,;]+/gi, "credential=[REDACTED]")
+    .replace(
+      /(?:authorization|api[_-]?key|token|password|secret)\s*[=:]\s*[^\s,;]+/gi,
+      "credential=[REDACTED]",
+    )
+    .slice(0, 500);

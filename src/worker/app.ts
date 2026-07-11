@@ -3,7 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { ZodError } from "zod";
 import { requireBasicAuth } from "./auth";
 import type { Env } from "./env";
-import { ApiError } from "./errors";
+import { ApiError, safeErrorMessage } from "./errors";
 import { backfillRoutes } from "./routes/backfills";
 import { eventImportRoutes } from "./routes/event-imports";
 import { corporateActionRoutes, eventsRoutes } from "./routes/events";
@@ -63,6 +63,54 @@ export const createApp = () => {
     await next();
   });
 
+  // Every browser-originating state change uses the same fail-closed guard,
+  // including multipart imports. Route-level checks remain for the existing
+  // Events/import contracts; this boundary covers legacy mutation routes too.
+  app.use("/api/*", async (context, next) => {
+    if (!["POST", "PATCH", "PUT", "DELETE"].includes(context.req.method)) {
+      return next();
+    }
+    const origin = context.req.header("Origin");
+    const host = context.req.header("Host");
+    let requestUrl: URL;
+    let originUrl: URL;
+    try {
+      requestUrl = new URL(context.req.url);
+      originUrl = new URL(origin ?? "");
+    } catch {
+      return context.json(
+        {
+          error: {
+            code: "csrf_rejected",
+            message: "This mutation must come from the same origin.",
+          },
+        },
+        403,
+      );
+    }
+    if (
+      !host ||
+      /[\s,/@]/.test(host) ||
+      !["http:", "https:"].includes(requestUrl.protocol) ||
+      host.toLowerCase() !== requestUrl.host.toLowerCase() ||
+      origin !== originUrl.origin ||
+      originUrl.protocol !== requestUrl.protocol ||
+      originUrl.host.toLowerCase() !== host.toLowerCase() ||
+      context.req.header("X-Stock-Tracker-Request") !== "1"
+    ) {
+      return context.json(
+        {
+          error: {
+            code: "csrf_rejected",
+            message: "This mutation must come from the same origin.",
+          },
+        },
+        403,
+      );
+    }
+    return next();
+  });
+
   app.get("/api/health", (context) => context.json({ ok: true }));
   app.route("/api/backfills", backfillRoutes);
   app.route("/api/corporate-actions", corporateActionRoutes);
@@ -95,7 +143,11 @@ export const createApp = () => {
       );
     }
     console.error(
-      JSON.stringify({ event: "request_failed", message: String(error) }),
+      JSON.stringify({
+        event: "request_failed",
+        code: "internal_error",
+        message: safeErrorMessage(error),
+      }),
     );
     return context.json(
       { error: { code: "internal_error", message: "The request failed." } },

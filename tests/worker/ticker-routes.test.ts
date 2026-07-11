@@ -5,6 +5,9 @@ import { YahooMarketDataProvider } from "../../src/providers/yahoo";
 const headers = {
   Authorization: `Basic ${btoa("owner:password")}`,
   "Content-Type": "application/json",
+  Host: "local",
+  Origin: "http://local",
+  "X-Stock-Tracker-Request": "1",
 };
 
 describe("ticker routes", () => {

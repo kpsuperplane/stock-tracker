@@ -7,6 +7,7 @@ import {
 } from "../services/backfill-pipeline";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
+import { RetentionCleanupService } from "../services/retention-cleanup";
 import {
   NORMALIZED_DISPATCH_CRON,
   NORMALIZED_PLANNER_CRONS,
@@ -41,7 +42,17 @@ export const handleScheduled = async (
     return;
   }
   if (controller.cron === NORMALIZED_DISPATCH_CRON) {
-    if (!portfolioFlags.newWrites) return;
+    const cleanup = await new RetentionCleanupService({
+      db: env.DB,
+      now: () => scheduledTime,
+    }).run();
+    if (!portfolioFlags.newWrites) {
+      logEvent("portfolio_cleanup_scheduled", {
+        scheduledTime: scheduledTime.toISOString(),
+        cleanup: JSON.stringify(cleanup),
+      });
+      return;
+    }
     const plannerContinuation = await new ScheduledReconciliationService({
       db: env.DB,
       now: () => scheduledTime,
@@ -54,6 +65,7 @@ export const handleScheduled = async (
     }).dispatch();
     logEvent("portfolio_dispatch_scheduled", {
       scheduledTime: scheduledTime.toISOString(),
+      cleanup: JSON.stringify(cleanup),
       plannerContinuation: JSON.stringify(plannerContinuation),
       result: JSON.stringify(result),
     });

@@ -5,6 +5,9 @@ import { TickerRepository } from "../../src/db/tickers";
 const headers = {
   Authorization: `Basic ${btoa("owner:password")}`,
   "Content-Type": "application/json",
+  Host: "local",
+  Origin: "http://local",
+  "X-Stock-Tracker-Request": "1",
 };
 
 describe("backfill routes", () => {
