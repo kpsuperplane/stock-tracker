@@ -118,6 +118,10 @@ export type BackfillJob = {
   work_analyzed?: number;
   work_processed?: number;
   work_failed?: number;
+  /** List responses intentionally carry counts instead of row-level details. */
+  runs_total?: number;
+  errors_total?: number;
+  details_truncated?: boolean;
   progress?: JobReadModelDto["progress"];
   pipeline?: {
     triggerType?: string;

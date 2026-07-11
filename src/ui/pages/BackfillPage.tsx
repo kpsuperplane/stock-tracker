@@ -19,6 +19,7 @@ import {
   type JobError,
   JobProgress,
   type JobSource,
+  sortJobsNewestFirst,
   terminalJobStatuses,
 } from "../components/JobProgress";
 import { useI18n } from "../i18n/I18nProvider";
@@ -335,12 +336,17 @@ const ProductBackfillPage = ({
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [reprocessExisting, setReprocessExisting] = useState(false);
-  const [jobs, setJobs] = useState<JobSource[]>(initialJobs);
+  const [jobs, setJobs] = useState<JobSource[]>(() =>
+    sortJobsNewestFirst(initialJobs),
+  );
   const jobsRef = useRef(jobs);
   const [jobsCursor, setJobsCursor] = useState<string | null>(null);
   const [legacyJobsCursor, setLegacyJobsCursor] = useState<string | null>(null);
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [loadingMoreJobs, setLoadingMoreJobs] = useState(false);
+  const [loadingDetailsJobId, setLoadingDetailsJobId] = useState<string | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -355,9 +361,11 @@ const ProductBackfillPage = ({
     setJobs((currentJobs) => {
       const merged = new Map(currentJobs.map((job) => [job.id, job]));
       for (const job of loadedJobs) {
-        if (!merged.has(job.id)) merged.set(job.id, job);
+        // Both endpoints can expose the same pipeline-backed backfill. Keep a
+        // single row while allowing a later page to replace stale progress.
+        merged.set(job.id, job);
       }
-      return [...merged.values()];
+      return sortJobsNewestFirst([...merged.values()]);
     });
   }, []);
 
@@ -449,6 +457,28 @@ const ProductBackfillPage = ({
     [apiClient],
   );
 
+  const loadJobDetails = useCallback(
+    async (job: JobSource) => {
+      setLoadingDetailsJobId(job.id);
+      setError(null);
+      try {
+        const detail = isReadModelJob(job)
+          ? (await apiClient.job(job.id)).job
+          : (await apiClient.backfill(job.id)).job;
+        setJobs((currentJobs) =>
+          currentJobs.map((candidate) =>
+            candidate.id === job.id ? detail : candidate,
+          ),
+        );
+      } catch {
+        setError(t("backfillLoadError"));
+      } finally {
+        setLoadingDetailsJobId(null);
+      }
+    },
+    [apiClient, t],
+  );
+
   const activeJobIds = jobs
     .filter((job) => !terminal.has(job.status))
     .map((job) => job.id)
@@ -530,6 +560,7 @@ const ProductBackfillPage = ({
       });
       const pendingJob: BackfillJob = {
         id: result.id,
+        created_at: new Date().toISOString(),
         status: "queued",
         dates_total: inclusiveDays(startDate, endDate),
         dates_processed: 0,
@@ -541,10 +572,12 @@ const ProductBackfillPage = ({
         pipeline_job_id: result.id,
         reprocess_existing: reprocessExisting,
       };
-      setJobs((current) => [
-        pendingJob,
-        ...current.filter((job) => job.id !== result.id),
-      ]);
+      setJobs((current) =>
+        sortJobsNewestFirst([
+          pendingJob,
+          ...current.filter((job) => job.id !== result.id),
+        ]),
+      );
     } catch {
       setError(t("backfillStartError"));
     } finally {
@@ -597,6 +630,12 @@ const ProductBackfillPage = ({
               key={job.id}
               job={job}
               onRetry={(jobError) => void retry(job, jobError)}
+              {...(!isReadModelJob(job) && job.details_truncated
+                ? {
+                    onLoadDetails: () => void loadJobDetails(job),
+                    loadingDetails: loadingDetailsJobId === job.id,
+                  }
+                : {})}
               retryingId={
                 retrying?.startsWith(`${job.id}:`)
                   ? retrying.slice(job.id.length + 1)

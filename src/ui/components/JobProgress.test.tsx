@@ -9,12 +9,14 @@ import {
   jobErrors,
   jobProgressCounts,
   jobTriggerType,
+  sortJobsNewestFirst,
   terminalJobStatuses,
 } from "./JobProgress";
 
 const backfillJob: BackfillJob = {
   id: "backfill-1",
   pipeline_job_id: "pipeline-1",
+  created_at: "2026-07-10T12:00:00.000Z",
   triggerType: "backfill",
   status: "complete_with_errors",
   dates_total: 2,
@@ -94,6 +96,7 @@ describe("JobProgress", () => {
     expect(markup).toContain("Provider returned a very long error");
     expect(markup).toContain("Retrying…");
     expect(markup).toContain('role="progressbar"');
+    expect(markup).toContain('role="status" aria-live="polite"');
   });
 
   it("groups automatic reconciliation jobs and translates static labels", () => {
@@ -117,6 +120,30 @@ describe("JobProgress", () => {
     expect(markup).toContain("This job has more work items than shown.");
   });
 
+  it("explains when list results intentionally omit row details", () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <JobProgress job={{ ...backfillJob, details_truncated: true }} />
+      </I18nProvider>,
+    );
+    expect(markup).toContain(
+      "Summary view: run and error details load when you open an active job.",
+    );
+  });
+
+  it("offers a bounded detail load for summary-only legacy rows", () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <JobProgress
+          job={{ ...backfillJob, details_truncated: true }}
+          onLoadDetails={() => undefined}
+        />
+      </I18nProvider>,
+    );
+    expect(markup).toContain("Load details");
+    expect(markup).toContain('type="button"');
+  });
+
   it("normalizes job sources and retryable errors", () => {
     expect(jobTriggerType(backfillJob)).toBe("backfill");
     expect(jobTriggerType(automaticJob)).toBe("ledger_reconciliation");
@@ -135,5 +162,16 @@ describe("JobProgress", () => {
     expect(terminalJobStatuses.has("skipped")).toBe(true);
     expect(terminalJobStatuses.has("terminal")).toBe(true);
     expect(terminalJobStatuses.has("running")).toBe(false);
+  });
+
+  it("sorts mixed job sources newest-first with an id tie-break", () => {
+    const tieDate = "2026-07-10T12:00:00.000Z";
+    expect(
+      sortJobsNewestFirst([
+        backfillJob,
+        { ...automaticJob, id: "pipeline-a", createdAt: tieDate },
+        { ...automaticJob, id: "pipeline-z", createdAt: tieDate },
+      ]).map((job) => job.id),
+    ).toEqual(["pipeline-z", "pipeline-a", "backfill-1"]);
   });
 });

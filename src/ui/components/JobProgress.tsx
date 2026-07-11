@@ -40,6 +40,26 @@ export const jobTriggerType = (job: JobSource): string => {
   return job.triggerType ?? job.pipeline?.triggerType ?? "backfill";
 };
 
+/**
+ * Return the persisted creation timestamp used by the two job APIs.  Legacy
+ * summary rows may omit it for older data, so an empty string sorts those rows
+ * after timestamped jobs without inventing a client-side timestamp.
+ */
+export const jobCreatedAt = (job: JobSource): string =>
+  isReadModelJob(job) ? job.createdAt : (job.created_at ?? "");
+
+/** Stable global ordering for normalized and legacy job pages. */
+export const compareJobsNewestFirst = (
+  left: JobSource,
+  right: JobSource,
+): number => {
+  const byCreatedAt = jobCreatedAt(right).localeCompare(jobCreatedAt(left));
+  return byCreatedAt || right.id.localeCompare(left.id);
+};
+
+export const sortJobsNewestFirst = (jobs: JobSource[]): JobSource[] =>
+  [...jobs].sort(compareJobsNewestFirst);
+
 export const jobGroup = (job: JobSource): "manual" | "automatic" =>
   ["ledger_reconciliation", "scheduled"].includes(jobTriggerType(job))
     ? "automatic"
@@ -168,12 +188,16 @@ export interface JobProgressProps {
   job: JobSource;
   onRetry?: (error: JobError) => void;
   retryingId?: string | null;
+  onLoadDetails?: () => void;
+  loadingDetails?: boolean;
 }
 
 export const JobProgress = ({
   job,
   onRetry,
   retryingId = null,
+  onLoadDetails,
+  loadingDetails = false,
 }: JobProgressProps) => {
   const { t } = useI18n();
   const counts = jobProgressCounts(job);
@@ -190,6 +214,10 @@ export const JobProgress = ({
   const datesTotal = "dates_total" in job ? job.dates_total : null;
   const datesProcessed = "dates_processed" in job ? job.dates_processed : null;
   const runs = "runs" in job ? job.runs : [];
+  const detailsTruncated =
+    "details_truncated" in job && job.details_truncated === true;
+  const runsTotal = "runs_total" in job ? (job.runs_total ?? 0) : 0;
+  const errorsTotal = "errors_total" in job ? (job.errors_total ?? 0) : 0;
   const statusKey = statusCopyKey(job.status);
   const hasMoreWork = isReadModelJob(job) && job.nextCursor !== null;
   return (
@@ -205,7 +233,9 @@ export const JobProgress = ({
             </Heading>
             <span>{job.id}</span>
           </VStack>
-          <Badge variant={statusVariant(job.status)} label={t(statusKey)} />
+          <span role="status" aria-live="polite">
+            <Badge variant={statusVariant(job.status)} label={t(statusKey)} />
+          </span>
         </HStack>
 
         {datesTotal !== null && datesProcessed !== null && (
@@ -264,8 +294,34 @@ export const JobProgress = ({
               </TableBody>
             </Table>
           </VStack>
-        ) : (
+        ) : !detailsTruncated ? (
           <span>{t("noRunHistory")}</span>
+        ) : null}
+
+        {detailsTruncated && (
+          <Banner
+            status="info"
+            title={t("jobDetailsSummary")}
+            description={`${t("runHistory")}: ${runsTotal} · ${t("jobErrors")}: ${errorsTotal}`}
+            {...(onLoadDetails
+              ? {
+                  endContent: (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      label={
+                        loadingDetails
+                          ? t("loadingJobDetails")
+                          : t("loadJobDetails")
+                      }
+                      isLoading={loadingDetails}
+                      onClick={onLoadDetails}
+                    />
+                  ),
+                }
+              : {})}
+          />
         )}
 
         {errors.length > 0 && (

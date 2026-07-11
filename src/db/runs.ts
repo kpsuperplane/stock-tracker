@@ -680,44 +680,91 @@ export class RunRepository {
     jobs: Record<string, unknown>[];
     nextCursor: { createdAt: string; id: string } | null;
   }> {
+    type BackfillListRow = {
+      id: string;
+      start_date: string;
+      end_date: string;
+      reprocess_existing: number;
+      status: string;
+      dates_total: number;
+      dates_processed: number;
+      ticker_jobs_total: number;
+      ticker_jobs_processed: number;
+      ticker_jobs_failed: number;
+      created_at: string;
+      started_at: string | null;
+      completed_at: string | null;
+      runs_total: number;
+      errors_total: number;
+    };
     const limit = Math.min(Math.max(input.limit ?? 25, 1), 50);
     const cursor =
       typeof input.cursor === "string"
         ? { id: input.cursor, createdAt: null }
         : (input.cursor ?? null);
+    const select = `SELECT b.id, b.start_date, b.end_date,
+       b.reprocess_existing, b.status, b.dates_total, b.dates_processed,
+       b.ticker_jobs_total, b.ticker_jobs_processed, b.ticker_jobs_failed,
+       b.created_at, b.started_at, b.completed_at,
+       (SELECT COUNT(*) FROM report_runs r
+        WHERE r.backfill_job_id = b.id) AS runs_total,
+       (SELECT COUNT(*) FROM screenings s
+        JOIN report_runs r ON r.id = s.report_run_id
+        WHERE r.backfill_job_id = b.id AND s.status = 'failed') AS errors_total
+       FROM backfill_jobs b`;
     const rows = cursor?.createdAt
       ? await this.db
           .prepare(
-            `SELECT id, created_at FROM backfill_jobs
-             WHERE created_at < ?1
-                OR (created_at = ?1 AND id < ?2)
-             ORDER BY created_at DESC, id DESC
+            `${select}
+             WHERE b.created_at < ?1
+                OR (b.created_at = ?1 AND b.id < ?2)
+             ORDER BY b.created_at DESC, b.id DESC
              LIMIT ?3`,
           )
           .bind(cursor.createdAt, cursor.id, limit + 1)
-          .all<{ id: string; created_at: string }>()
+          .all<BackfillListRow>()
       : cursor
         ? await this.db
             .prepare(
-              `SELECT id, created_at FROM backfill_jobs
-               WHERE id < ?1
-               ORDER BY id DESC
+              `${select}
+               WHERE b.id < ?1
+               ORDER BY b.id DESC
                LIMIT ?2`,
             )
             .bind(cursor.id, limit + 1)
-            .all<{ id: string; created_at: string }>()
+            .all<BackfillListRow>()
         : await this.db
             .prepare(
-              `SELECT id, created_at FROM backfill_jobs
-               ORDER BY created_at DESC, id DESC
+              `${select}
+               ORDER BY b.created_at DESC, b.id DESC
                LIMIT ?1`,
             )
             .bind(limit + 1)
-            .all<{ id: string; created_at: string }>();
+            .all<BackfillListRow>();
     const page = rows.results.slice(0, limit);
-    const jobs = (
-      await Promise.all(page.map(({ id }) => this.getBackfill(id)))
-    ).filter((job): job is Record<string, unknown> => job !== null);
+    // List views only need progress and aggregate counts. Keep row-level run
+    // and error hydration on getBackfill(), which powers detail and retry
+    // routes, so a page of 50 jobs remains one bounded query instead of 151.
+    const jobs: Record<string, unknown>[] = page.map((row) => ({
+      id: row.id,
+      start_date: row.start_date,
+      end_date: row.end_date,
+      reprocess_existing: row.reprocess_existing === 1,
+      status: row.status,
+      dates_total: row.dates_total,
+      dates_processed: row.dates_processed,
+      ticker_jobs_total: row.ticker_jobs_total,
+      ticker_jobs_processed: row.ticker_jobs_processed,
+      ticker_jobs_failed: row.ticker_jobs_failed,
+      created_at: row.created_at,
+      started_at: row.started_at,
+      completed_at: row.completed_at,
+      runs: [],
+      errors: [],
+      runs_total: Number(row.runs_total ?? 0),
+      errors_total: Number(row.errors_total ?? 0),
+      details_truncated: true,
+    }));
     const lastRow = page.at(-1);
     return {
       jobs,

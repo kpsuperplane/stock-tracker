@@ -85,11 +85,29 @@ describe("backfill routes", () => {
     expect(legacyList.status).toBe(200);
     expect(
       await legacyList.json<{
-        jobs: Array<{ id: string; status: string }>;
+        jobs: Array<{
+          id: string;
+          status: string;
+          runs: unknown[];
+          errors: unknown[];
+          runs_total: number;
+          errors_total: number;
+          details_truncated: boolean;
+        }>;
         nextCursor: string | null;
       }>(),
     ).toEqual({
-      jobs: [expect.objectContaining({ id, status: "running" })],
+      jobs: [
+        expect.objectContaining({
+          id,
+          status: "running",
+          runs: [],
+          errors: [],
+          runs_total: 7,
+          errors_total: 1,
+          details_truncated: true,
+        }),
+      ],
       nextCursor: null,
     });
   });
