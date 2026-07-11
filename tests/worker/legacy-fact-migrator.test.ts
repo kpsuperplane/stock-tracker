@@ -127,6 +127,41 @@ describe("legacy published-generation migrator", () => {
     ).toEqual({ count: 0 });
   });
 
+  it("records a per-screening audit when source loading fails", async () => {
+    const ticker = await insertTicker("migrator-source-error", "MSERR");
+    const repository = new RunRepository(env.DB);
+    const run = await prepareRun({
+      date: "2026-07-09",
+      ticker,
+      repository,
+      price: {
+        previousDate: "2026-07-08",
+        previousPrice: 100,
+        currentPrice: 110,
+        changeAmount: 10,
+        changePct: 10,
+      },
+    });
+    const service = migrator({
+      beforeSourceRead: () => {
+        throw new Error("source_read_transient");
+      },
+    });
+    const result = await service.runPage({ now });
+    expect(result.errors).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT outcome, reason_code, reason_message, content_hash, provenance_hash FROM portfolio_migration_audit WHERE legacy_screening_id = ?1",
+      )
+        .bind(run.screeningIds[0])
+        .first(),
+    ).toMatchObject({
+      outcome: "error",
+      reason_code: "migration_materialization_failed",
+      reason_message: "source_read_transient",
+    });
+  });
+
   it("selects only the published replacement generation and preserves provenance", async () => {
     const ticker = await insertTicker("migrator-replacement", "MREP");
     const repository = new RunRepository(env.DB);

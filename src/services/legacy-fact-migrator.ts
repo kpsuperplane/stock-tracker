@@ -75,6 +75,8 @@ export interface LegacyFactMigratorOptions {
   enabled?: boolean;
   now?: () => Date;
   beforePage?: () => void | Promise<void>;
+  /** Test/diagnostic hook for exercising per-screening source failures. */
+  beforeSourceRead?: (screeningId: string) => void | Promise<void>;
 }
 
 export interface MigrationPageResult {
@@ -125,6 +127,15 @@ const digest = async (value: string): Promise<string> => {
   return Array.from(new Uint8Array(hash))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+};
+
+const fallbackHash = (value: string): string => {
+  let hash = 2166136261;
+  for (const character of value) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0").repeat(8);
 };
 
 const bucketForDate = async (
@@ -191,6 +202,9 @@ export class LegacyFactMigrator {
   private readonly enabled: boolean;
   private readonly now: () => Date;
   private readonly beforePage: (() => void | Promise<void>) | undefined;
+  private readonly beforeSourceRead:
+    | ((screeningId: string) => void | Promise<void>)
+    | undefined;
 
   constructor(
     private readonly db: D1Database,
@@ -203,6 +217,7 @@ export class LegacyFactMigrator {
     this.enabled = options.enabled === true;
     this.now = options.now ?? (() => new Date());
     this.beforePage = options.beforePage;
+    this.beforeSourceRead = options.beforeSourceRead;
   }
 
   async status() {
@@ -498,18 +513,17 @@ export class LegacyFactMigrator {
       | "errors";
     contentHash: string;
   }> {
-    const sources = await this.loadSources(row.screeningId);
-    const contentHash = await digest(hashPayload(row, sources));
-    const provenanceHash = await digest(
-      JSON.stringify({
-        runId: row.runId,
-        screeningId: row.screeningId,
-        generation: row.generation,
-        tradingDate: row.tradingDate,
-        tickerId: row.tickerId,
-      }),
-    );
-    const auditId = `${LEGACY_MIGRATION_ID}:${row.runId}:${row.screeningId}:${row.generation}:${contentHash}`;
+    let sources: MigrationSourceRow[] = [];
+    const provenancePayload = JSON.stringify({
+      runId: row.runId,
+      screeningId: row.screeningId,
+      generation: row.generation,
+      tradingDate: row.tradingDate,
+      tickerId: row.tickerId,
+    });
+    let contentHash = fallbackHash(hashPayload(row, sources));
+    let provenanceHash = fallbackHash(provenancePayload);
+    let auditId = `${LEGACY_MIGRATION_ID}:${row.runId}:${row.screeningId}:${row.generation}:${contentHash}`;
     const audit = (input: {
       outcome: string;
       reasonCode?: string | null;
@@ -532,6 +546,11 @@ export class LegacyFactMigrator {
         examinedAt: now,
       });
     try {
+      await this.beforeSourceRead?.(row.screeningId);
+      sources = await this.loadSources(row.screeningId);
+      contentHash = await digest(hashPayload(row, sources));
+      provenanceHash = await digest(provenancePayload);
+      auditId = `${LEGACY_MIGRATION_ID}:${row.runId}:${row.screeningId}:${row.generation}:${contentHash}`;
       const auditPrevious = await this.state.latestAudit({
         screeningId: row.screeningId,
         generation: row.generation,
