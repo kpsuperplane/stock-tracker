@@ -7,6 +7,12 @@
   "secrets": {
     "required": ["BASIC_AUTH_USERNAME", "BASIC_AUTH_PASSWORD"]
   },
+  "vars": {
+    "PORTFOLIO_DUAL_WRITE_ENABLED": "false",
+    "PORTFOLIO_MIGRATOR_ENABLED": "false",
+    "PORTFOLIO_NEW_READS_ENABLED": "false",
+    "PORTFOLIO_NEW_WRITES_ENABLED": "false"
+  },
   "assets": {
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
@@ -29,6 +35,14 @@
       {
         "binding": "SCREENING_QUEUE",
         "queue": "stock-tracker-screenings"
+      },
+      {
+        "binding": "NORMALIZED_WORK_QUEUE",
+        "queue": "stock-tracker-normalized-work"
+      },
+      {
+        "binding": "NORMALIZED_WORK_DLQ",
+        "queue": "stock-tracker-normalized-work-dlq"
       }
     ],
     "consumers": [
@@ -38,11 +52,26 @@
         "max_batch_timeout": 5,
         "max_retries": 3,
         "max_concurrency": 5
+      },
+      {
+        "queue": "stock-tracker-normalized-work",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "stock-tracker-normalized-work-dlq",
+        "max_concurrency": 5,
+        "visibility_timeout_ms": 600000,
+        "retry_delay": 30
       }
     ]
   },
   "triggers": {
-    "crons": ["0 22 * * MON-FRI"]
+    "crons": [
+      "0 22 * * MON-FRI",
+      "30 20 * * MON-FRI",
+      "30 21 * * MON-FRI",
+      "*/15 * * * *"
+    ]
   },
   "observability": {
     "enabled": true,

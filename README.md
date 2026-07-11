@@ -127,7 +127,7 @@ duplicate detection, while staging rows expire.
 
 ## Architecture and guardrails
 
-One Cloudflare Worker protects the React static assets and Hono API with HTTP Basic Authentication. D1 retains ticker snapshots and published report generations, a weekday Cron Trigger starts work at 22:00 UTC, Cloudflare Queues fan out per-ticker screening, and Workers AI is called at most once for each qualifying mover with news.
+One Cloudflare Worker protects the React static assets and Hono API with HTTP Basic Authentication. D1 retains ticker snapshots and published report generations, the legacy weekday Cron Trigger starts work at 22:00 UTC, Cloudflare Queues fan out per-ticker screening, and Workers AI is called at most once for each qualifying mover with news. The disabled-by-default portfolio cutover adds 20:30/21:30 UTC planner candidates (the two Toronto 4:30 p.m. DST offsets) and a separate 15-minute dispatcher trigger; later tasks will route those triggers.
 
 - Maximum 100 active tickers.
 - Maximum 30 inclusive calendar days per backfill.
@@ -145,6 +145,8 @@ These steps require an authenticated Cloudflare account and are intentionally no
 npx wrangler login
 npx wrangler d1 create stock-tracker --binding DB --update-config --location enam
 npx wrangler queues create stock-tracker-screenings --message-retention-period-secs 86400
+npx wrangler queues create stock-tracker-normalized-work --message-retention-period-secs 86400
+npx wrangler queues create stock-tracker-normalized-work-dlq --message-retention-period-secs 31536000
 npm run types:worker
 npx wrangler d1 migrations apply DB --remote
 npx wrangler secret put BASIC_AUTH_USERNAME
@@ -166,7 +168,7 @@ Cloudflare remains the production deployer. The deploy script reruns local gates
 
 ## Operations
 
-- The scheduled screen runs at 22:00 UTC Monday through Friday.
+- The legacy scheduled screen runs at 22:00 UTC Monday through Friday. The normalized portfolio planner candidates run at 20:30 and 21:30 UTC Monday through Friday, with a separate 15-minute dispatcher; all portfolio cutover behavior remains disabled by default.
 - The report timeline and Backfill controls are the primary progress and partial-error views.
 - Use Backfill with **Reprocess existing reports** to atomically replace a date.
 - Use a mover's **Retry explanation** action only when price data exists but analysis failed.

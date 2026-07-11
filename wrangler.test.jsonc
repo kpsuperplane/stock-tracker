@@ -4,6 +4,12 @@
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-07-09",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "PORTFOLIO_DUAL_WRITE_ENABLED": "false",
+    "PORTFOLIO_MIGRATOR_ENABLED": "false",
+    "PORTFOLIO_NEW_READS_ENABLED": "false",
+    "PORTFOLIO_NEW_WRITES_ENABLED": "false"
+  },
   "d1_databases": [
     {
       "binding": "DB",
@@ -17,6 +23,14 @@
       {
         "binding": "SCREENING_QUEUE",
         "queue": "stock-tracker-screenings-test"
+      },
+      {
+        "binding": "NORMALIZED_WORK_QUEUE",
+        "queue": "stock-tracker-normalized-work-test"
+      },
+      {
+        "binding": "NORMALIZED_WORK_DLQ",
+        "queue": "stock-tracker-normalized-work-dlq-test"
       }
     ],
     "consumers": [
@@ -26,7 +40,25 @@
         "max_batch_timeout": 5,
         "max_retries": 3,
         "max_concurrency": 5
+      },
+      {
+        "queue": "stock-tracker-normalized-work-test",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "stock-tracker-normalized-work-dlq-test",
+        "max_concurrency": 5,
+        "visibility_timeout_ms": 600000,
+        "retry_delay": 30
       }
+    ]
+  },
+  "triggers": {
+    "crons": [
+      "0 22 * * MON-FRI",
+      "30 20 * * MON-FRI",
+      "30 21 * * MON-FRI",
+      "*/15 * * * *"
     ]
   }
 }

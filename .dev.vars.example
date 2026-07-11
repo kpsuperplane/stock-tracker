@@ -6,3 +6,10 @@ BASIC_AUTH_PASSWORD=local-password
 # The Backfill page also lists legacy backfills when this normalized pipeline
 # flag is off; enable it only when you want automatic reconciliation jobs.
 # BACKFILL_RECONCILIATION_PIPELINE_ENABLED=true
+# Portfolio cutover flags are intentionally disabled unless explicitly
+# enabled in a test/preview environment. Only the exact string "true" enables
+# one of these flags.
+# PORTFOLIO_DUAL_WRITE_ENABLED=true
+# PORTFOLIO_MIGRATOR_ENABLED=true
+# PORTFOLIO_NEW_READS_ENABLED=true
+# PORTFOLIO_NEW_WRITES_ENABLED=true
