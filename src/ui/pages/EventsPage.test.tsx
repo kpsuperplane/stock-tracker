@@ -2,7 +2,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { EventsTimelineDto } from "../../shared/contracts";
 import { I18nProvider } from "../i18n/I18nProvider";
-import { EventImportDialog } from "./EventImportDialog";
+import {
+  EventImportDialog,
+  isCurrentPreviewRequest,
+} from "./EventImportDialog";
 import { EventsPage, resolveMutationBasisRevision } from "./EventsPage";
 
 const timeline: EventsTimelineDto = {
@@ -87,6 +90,14 @@ describe("EventsPage", () => {
 });
 
 describe("EventImportDialog", () => {
+  it("ignores a preview response after a newer file selection", () => {
+    const first = new File(["first"], "first.csv");
+    const second = new File(["second"], "second.csv");
+
+    expect(isCurrentPreviewRequest(1, 2, first, second)).toBe(false);
+    expect(isCurrentPreviewRequest(2, 2, second, second)).toBe(true);
+  });
+
   it("documents the template and review-first import flow", () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">

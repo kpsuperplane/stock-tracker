@@ -15,7 +15,7 @@ import {
   TableRow,
   VStack,
 } from "@astryxdesign/core";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ApiClientError,
   type EventImportsApiClient,
@@ -77,6 +77,14 @@ const rowErrorCopy: Record<string, MessageKey> = {
 
 const localizeRowError = (code: string, t: (key: MessageKey) => string) =>
   t(rowErrorCopy[code] ?? "invalidRow");
+
+/** Prevent a slower preview response from replacing a newer file selection. */
+export const isCurrentPreviewRequest = (
+  requestId: number,
+  currentRequestId: number,
+  requestFile: File,
+  currentFile: File | null,
+): boolean => requestId === currentRequestId && requestFile === currentFile;
 
 const SplitReviewCard = ({
   review,
@@ -164,16 +172,19 @@ export const EventImportDialog = ({
   const [error, setError] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
+  const previewRequestId = useRef(0);
+  const fileRef = useRef<File | null>(null);
 
   const clearPreview = () => {
+    previewRequestId.current += 1;
     setPreview(null);
     setConfirmedReviews(new Set());
   };
 
   const reset = () => {
+    clearPreview();
+    fileRef.current = null;
     setFile(null);
-    setPreview(null);
-    setConfirmedReviews(new Set());
     setError(null);
     setIsPreviewing(false);
     setIsCommitting(false);
@@ -189,24 +200,58 @@ export const EventImportDialog = ({
       setError(t("chooseCsvFile"));
       return;
     }
+    const requestFile = file;
+    clearPreview();
+    const requestId = previewRequestId.current;
     setIsPreviewing(true);
     setError(null);
-    clearPreview();
     try {
-      const result = await apiClient.preview(file);
+      const result = await apiClient.preview(requestFile);
+      if (
+        !isCurrentPreviewRequest(
+          requestId,
+          previewRequestId.current,
+          requestFile,
+          fileRef.current,
+        )
+      ) {
+        return;
+      }
       setPreview(result);
       setConfirmedReviews(new Set());
     } catch (caught) {
-      clearPreview();
+      if (
+        !isCurrentPreviewRequest(
+          requestId,
+          previewRequestId.current,
+          requestFile,
+          fileRef.current,
+        )
+      ) {
+        return;
+      }
       setError(t(errorCopyKey(caught)));
     } finally {
-      setIsPreviewing(false);
+      if (
+        isCurrentPreviewRequest(
+          requestId,
+          previewRequestId.current,
+          requestFile,
+          fileRef.current,
+        )
+      ) {
+        setIsPreviewing(false);
+      }
     }
   };
 
   const handleCommit = async () => {
     if (!preview) {
       setError(t("noPreview"));
+      return;
+    }
+    if (preview.rows.length === 0) {
+      setError(t("noImportRows"));
       return;
     }
     if (preview.rows.some((row) => row.status === "invalid")) {
@@ -269,6 +314,7 @@ export const EventImportDialog = ({
 
   const allReviewsConfirmed =
     preview !== null &&
+    preview.rows.length > 0 &&
     !preview.rows.some((row) => row.status === "invalid") &&
     confirmedReviews.size === preview.reviews.length;
 
@@ -292,13 +338,17 @@ export const EventImportDialog = ({
             label={t("csvFile")}
             value={file}
             onChange={(next) => {
-              setFile(Array.isArray(next) ? (next[0] ?? null) : next);
+              const nextFile = Array.isArray(next) ? (next[0] ?? null) : next;
+              fileRef.current = nextFile;
+              setFile(nextFile);
               clearPreview();
               setError(null);
+              setIsPreviewing(false);
             }}
             accept=".csv,text/csv,application/csv,text/plain"
             mode="dropzone"
             description={t("csvTemplateDescription")}
+            isDisabled={isPreviewing || isCommitting}
             isRequired
           />
           <HStack gap={2} wrap="wrap" align="center">
@@ -324,8 +374,8 @@ export const EventImportDialog = ({
         {preview && (
           <VStack gap={4}>
             <div>
-              {t("importRows")}: {preview.rows.length} · {t("requestedRange")}:{" "}
-              {preview.expiresAt}
+              {t("importRows")}: {preview.rows.length} · {t("previewExpiresAt")}
+              : {preview.expiresAt}
             </div>
             <Table
               density="compact"
