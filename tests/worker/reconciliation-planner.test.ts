@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { DividendRepository } from "../../src/db/dividends";
 import { MarketFactRepository } from "../../src/db/market-facts";
 import { PipelineJobRepository } from "../../src/db/pipeline-jobs";
+import { WorkItemRepository } from "../../src/db/work-items";
 import { ReconciliationPlannerService } from "../../src/services/reconciliation-planner";
 
 const now = "2026-07-10T21:00:00.000Z";
@@ -53,23 +54,50 @@ const createJob = async (input: {
   intervals?: unknown[];
   instruments?: string[];
   priority?: number;
+  withPlanner?: boolean;
 }): Promise<void> => {
-  await new PipelineJobRepository(env.DB)
-    .createStatement({
-      id: input.id,
-      triggerType: input.triggerType ?? "ledger_reconciliation",
-      requestedStartDate: input.startDate ?? "2026-07-01",
-      requestedEndDate: input.endDate ?? latestDate,
-      affectedInstrumentsJson: JSON.stringify(
-        input.instruments ?? ["instrument-1"],
-      ),
-      eligibilityIntervalsJson: JSON.stringify(input.intervals ?? []),
-      priority: input.priority ?? 100,
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  const job = {
+    id: input.id,
+    triggerType: input.triggerType ?? ("ledger_reconciliation" as const),
+    requestedStartDate: input.startDate ?? "2026-07-01",
+    requestedEndDate: input.endDate ?? latestDate,
+    affectedInstrumentsJson: JSON.stringify(
+      input.instruments ?? ["instrument-1"],
+    ),
+    eligibilityIntervalsJson: JSON.stringify(input.intervals ?? []),
+    priority: input.priority ?? 100,
+    status: "pending" as const,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const jobs = new PipelineJobRepository(env.DB);
+  const work = new WorkItemRepository(env.DB);
+  const statements = [jobs.createStatement(job)];
+  if (input.withPlanner !== false) {
+    const plannerId = `planner-${input.id}`;
+    statements.push(
+      work.createPlanningStatement({
+        id: plannerId,
+        pipelineJobId: input.id,
+        workType: "ledger_reconciliation_plan",
+        deterministicKey: WorkItemRepository.planningKey(
+          input.id,
+          "ledger_reconciliation_plan",
+        ),
+        priority: input.priority ?? 100,
+        maxAttempts: 3,
+        createdAt: now,
+        updatedAt: now,
+      }),
+      work.linkToJobStatement({
+        pipelineJobId: input.id,
+        workItemId: plannerId,
+        relationship: "required",
+        createdAt: now,
+      }),
+    );
+  }
+  await env.DB.batch(statements);
 };
 
 const planner = () =>
@@ -159,7 +187,10 @@ describe("incremental reconciliation planner", () => {
     expect(await listGlobal()).toEqual([]);
     expect(
       await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM job_work_items WHERE pipeline_job_id = 'quantity-only'",
+        `SELECT COUNT(*) AS count FROM job_work_items link
+         JOIN work_items work ON work.id = link.work_item_id
+         WHERE link.pipeline_job_id = 'quantity-only'
+           AND work.scope = 'global_fact'`,
       ).first<{ count: number }>(),
     ).toEqual({ count: 0 });
   });
@@ -199,6 +230,11 @@ describe("incremental reconciliation planner", () => {
         "SELECT status FROM pipeline_jobs WHERE id = 'first-buy'",
       ).first<{ status: string }>(),
     ).toEqual({ status: "running" });
+    expect(
+      await env.DB.prepare(
+        "SELECT state, processing_lease_until FROM work_items WHERE id = 'planner-first-buy'",
+      ).first(),
+    ).toEqual({ state: "complete", processing_lease_until: null });
   });
 
   it("shares deterministic child work while attaching every owning job", async () => {
@@ -245,27 +281,20 @@ describe("incremental reconciliation planner", () => {
     const pages: string[] = [];
     const service = planner();
     let cursor: string | null = null;
+    let plannerLeaseUntil: string | undefined;
     do {
       const page = await service.planPage({
         pipelineJobId: "long-history",
         cursor,
+        ...(plannerLeaseUntil ? { plannerLeaseUntil } : {}),
         pageSize: 7,
         latestCompletedTradingDate: latestDate,
         previousCompletedTradingDate: previousDate,
       });
       pages.push(...page.globalWork.map((work) => work.deterministicKey));
       cursor = page.nextCursor;
+      plannerLeaseUntil = page.plannerLeaseUntil ?? undefined;
     } while (cursor !== null);
-
-    const repeated = await service.planPage({
-      pipelineJobId: "long-history",
-      cursor: "0",
-      pageSize: 7,
-      latestCompletedTradingDate: latestDate,
-      previousCompletedTradingDate: previousDate,
-    });
-    expect(repeated.createdCount).toBe(0);
-    expect(repeated.attachedCount).toBe(0);
     expect(new Set(pages).size).toBe(pages.length);
     expect(pages.length).toBeGreaterThan(100);
     expect(await listGlobal()).toHaveLength(pages.length);
@@ -362,6 +391,11 @@ describe("incremental reconciliation planner", () => {
     expect(dividendResult.dividendRecalculations).toEqual([
       { instrumentId: "instrument-1", exDate: "2026-07-02" },
     ]);
+    expect(
+      await env.DB.prepare(
+        "SELECT work_total, work_skipped FROM pipeline_jobs WHERE id = 'dividend-only'",
+      ).first(),
+    ).toEqual({ work_total: 1, work_skipped: 1 });
 
     await createJob({
       id: "forced-backfill",
@@ -382,5 +416,165 @@ describe("incremental reconciliation planner", () => {
       forced.globalWork.every((work) => work.forcedRefreshGeneration === 7),
     ).toBe(true);
     expect(forced.globalWork.every((work) => work.priority === 200)).toBe(true);
+  });
+
+  it("pages dividend recalculations without repeating the full list", async () => {
+    await insertInstrument();
+    await insertTransaction({
+      id: "dividend-page-buy",
+      tradeDate: "2026-07-01",
+    });
+    await env.DB.batch([
+      ...["2026-07-02", "2026-07-03", "2026-07-04"].map((date, index) =>
+        new MarketFactRepository(env.DB).upsertStatement(
+          validFact({
+            id: `dividend-page-fact-${index}`,
+            date,
+            movement: "1",
+          }),
+        ),
+      ),
+      ...["2026-07-02", "2026-07-03", "2026-07-04"].map((date, index) =>
+        new DividendRepository(env.DB).upsertStatement({
+          id: `dividend-page-${index}`,
+          instrumentId: "instrument-1",
+          exDate: date,
+          declarationDate: null,
+          recordDate: null,
+          paymentDate: null,
+          amountPerShareDecimal: "0.25",
+          currency: "USD",
+          provider: "alpha-vantage",
+          providerEventId: `dividend-page-${index}`,
+          providerRevision: "r1",
+          sourceUrl: null,
+          announcedAt: null,
+          retrievedAt: now,
+          status: "active",
+          errorCode: null,
+          errorMessage: null,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      ),
+    ]);
+    await createJob({
+      id: "dividend-pages",
+      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-04" }],
+    });
+
+    const service = planner();
+    const first = await service.planPage({
+      pipelineJobId: "dividend-pages",
+      pageSize: 2,
+      latestCompletedTradingDate: latestDate,
+      previousCompletedTradingDate: previousDate,
+    });
+    expect(first.dividendRecalculations.map((event) => event.exDate)).toEqual([
+      "2026-07-02",
+      "2026-07-03",
+    ]);
+    expect(first.nextCursor).toBe(null);
+    expect(first.nextDividendCursor).toBe("2");
+    expect(first.complete).toBe(false);
+
+    const second = await service.planPage({
+      pipelineJobId: "dividend-pages",
+      dividendCursor: first.nextDividendCursor,
+      plannerLeaseUntil: first.plannerLeaseUntil as string,
+      pageSize: 2,
+      latestCompletedTradingDate: latestDate,
+      previousCompletedTradingDate: previousDate,
+    });
+    expect(second.dividendRecalculations.map((event) => event.exDate)).toEqual([
+      "2026-07-04",
+    ]);
+    expect(second.nextDividendCursor).toBe(null);
+    expect(second.complete).toBe(true);
+  });
+
+  it("uses automatic priority for scheduled historical intervals", async () => {
+    await insertInstrument();
+    await insertTransaction({ id: "scheduled-buy", tradeDate: "2026-07-01" });
+    await insertTransaction({
+      id: "scheduled-sell",
+      tradeDate: "2026-07-05",
+      side: "sell",
+    });
+    await createJob({
+      id: "scheduled-history",
+      triggerType: "scheduled",
+      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-03" }],
+    });
+
+    const result = await planner().planPage({
+      pipelineJobId: "scheduled-history",
+      latestCompletedTradingDate: latestDate,
+      previousCompletedTradingDate: previousDate,
+    });
+    expect(result.globalWork).toHaveLength(2);
+    expect(result.globalWork.every((work) => work.priority === 100)).toBe(true);
+  });
+
+  it("requires the exact owning planner item and a live lease", async () => {
+    await insertInstrument();
+    await insertTransaction({ id: "lease-buy", tradeDate: "2026-07-01" });
+    await createJob({ id: "missing-owner", withPlanner: false });
+    await expect(
+      planner().planPage({ pipelineJobId: "missing-owner" }),
+    ).rejects.toThrow("planner_work_item_missing");
+
+    await createJob({ id: "owner-a" });
+    await createJob({ id: "owner-b" });
+    await expect(
+      planner().planPage({
+        pipelineJobId: "owner-a",
+        jobId: "owner-b",
+      }),
+    ).rejects.toThrow("pipeline_job_id_conflict");
+    await expect(
+      planner().planPage({
+        pipelineJobId: "owner-a",
+        plannerWorkItemId: "planner-owner-b",
+      }),
+    ).rejects.toThrow("planner_work_item_owner_mismatch");
+
+    await createJob({
+      id: "leased-owner",
+      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-03" }],
+    });
+    const service = planner();
+    const first = await service.planPage({
+      pipelineJobId: "leased-owner",
+      pageSize: 1,
+      latestCompletedTradingDate: latestDate,
+      previousCompletedTradingDate: previousDate,
+    });
+    expect(first.complete).toBe(false);
+    await expect(
+      new ReconciliationPlannerService({
+        db: env.DB,
+        now: () => new Date(now),
+        newId: () => "other-work",
+      }).planPage({
+        pipelineJobId: "leased-owner",
+        cursor: first.nextCursor,
+        pageSize: 1,
+      }),
+    ).rejects.toThrow("planner_lease_required");
+    const final = await service.planPage({
+      pipelineJobId: "leased-owner",
+      cursor: first.nextCursor,
+      plannerLeaseUntil: first.plannerLeaseUntil as string,
+      pageSize: 1,
+      latestCompletedTradingDate: latestDate,
+      previousCompletedTradingDate: previousDate,
+    });
+    expect(final.complete).toBe(true);
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM work_items WHERE id = 'planner-leased-owner'",
+      ).first(),
+    ).toEqual({ state: "complete" });
   });
 });

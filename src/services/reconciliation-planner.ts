@@ -44,7 +44,12 @@ export interface ReconciliationPlannerDependencies {
 export interface PlanReconciliationPageInput {
   pipelineJobId?: string;
   jobId?: string;
+  plannerWorkItemId?: string;
+  planningWorkItemId?: string;
+  plannerLeaseUntil?: string;
+  planningLeaseUntil?: string;
   cursor?: string | null;
+  dividendCursor?: string | null;
   pageSize?: number;
   forcedRefreshGeneration?: number | null;
   forceRefresh?: boolean;
@@ -60,8 +65,11 @@ export interface PlannedDividendRecalculation {
 
 export interface ReconciliationPlanPage {
   pipelineJobId: string;
+  plannerWorkItemId: string;
+  plannerLeaseUntil: string | null;
   complete: boolean;
   nextCursor: string | null;
+  nextDividendCursor: string | null;
   createdCount: number;
   reusedCount: number;
   attachedCount: number;
@@ -299,6 +307,7 @@ export class ReconciliationPlannerService {
   private readonly now: () => Date;
   private readonly newId: () => string;
   private readonly marketDependencyRevision: string;
+  private plannerLeaseSequence = 0;
 
   constructor(
     private readonly dependencies: ReconciliationPlannerDependencies,
@@ -312,14 +321,97 @@ export class ReconciliationPlannerService {
       DEFAULT_MARKET_DEPENDENCY_REVISION;
   }
 
+  private async resolveOwningPlanner(
+    pipelineJobId: string,
+    input: PlanReconciliationPageInput,
+  ): Promise<WorkItemRecord> {
+    const explicitIds = [
+      input.plannerWorkItemId,
+      input.planningWorkItemId,
+    ].filter((value): value is string => value !== undefined);
+    if (new Set(explicitIds).size > 1) {
+      throw new Error("planner_work_item_id_conflict");
+    }
+    const planner = explicitIds[0]
+      ? await this.workItems.findById(explicitIds[0])
+      : await this.workItems.findPlanningForJob(pipelineJobId);
+    if (!planner) throw new Error("planner_work_item_missing");
+    if (
+      planner.scope !== "job_planning" ||
+      planner.pipelineJobId !== pipelineJobId ||
+      !planner.deterministicKey.startsWith(`job:${pipelineJobId}:`)
+    ) {
+      throw new Error("planner_work_item_owner_mismatch");
+    }
+    if (
+      !(await this.workItems.isLinkedToJob({
+        pipelineJobId,
+        workItemId: planner.id,
+      }))
+    ) {
+      throw new Error("planner_work_item_unlinked");
+    }
+    return planner;
+  }
+
+  private nextPlannerLease(timestamp: string): string {
+    this.plannerLeaseSequence += 1;
+    return new Date(
+      Date.parse(timestamp) + 5 * 60_000 + this.plannerLeaseSequence,
+    ).toISOString();
+  }
+
   async planPage(
     input: PlanReconciliationPageInput,
   ): Promise<ReconciliationPlanPage> {
+    if (
+      input.pipelineJobId !== undefined &&
+      input.jobId !== undefined &&
+      input.pipelineJobId !== input.jobId
+    ) {
+      throw new Error("pipeline_job_id_conflict");
+    }
     const pipelineJobId = input.pipelineJobId ?? input.jobId;
     if (!pipelineJobId) throw new Error("pipeline_job_id_required");
     const job = await this.jobs.findById(pipelineJobId);
     if (!job) throw new Error("pipeline_job_not_found");
     const timestamp = this.now().toISOString();
+    const planner = await this.resolveOwningPlanner(pipelineJobId, input);
+    if (
+      input.plannerLeaseUntil !== undefined &&
+      input.planningLeaseUntil !== undefined &&
+      input.plannerLeaseUntil !== input.planningLeaseUntil
+    ) {
+      throw new Error("planner_lease_conflict");
+    }
+    const expectedLease =
+      input.plannerLeaseUntil ?? input.planningLeaseUntil ?? undefined;
+    if (planner.state === "complete" || planner.state === "terminal") {
+      throw new Error("planner_work_item_not_active");
+    }
+    if (planner.state === "pending" && expectedLease !== undefined) {
+      throw new Error("planner_lease_unexpected");
+    }
+    if (planner.state === "processing") {
+      if (!expectedLease) throw new Error("planner_lease_required");
+      if (planner.processingLeaseUntil !== expectedLease) {
+        throw new Error("planner_lease_conflict");
+      }
+      if (planner.processingLeaseUntil <= timestamp) {
+        throw new Error("planner_lease_expired");
+      }
+    }
+    const leaseUntil = this.nextPlannerLease(timestamp);
+    const claimed = await this.workItems.claimPlanning({
+      id: planner.id,
+      pipelineJobId,
+      now: timestamp,
+      leaseUntil,
+      ...(expectedLease === undefined
+        ? {}
+        : { expectedLeaseUntil: expectedLease }),
+    });
+    if (!claimed) throw new Error("planner_claim_conflict");
     let planningStatus = job.status;
     if (job.status === "pending") {
       await this.jobs.transition({
@@ -337,6 +429,11 @@ export class ReconciliationPlannerService {
     const offset = parseCursor(input.cursor);
     const built = await this.buildCandidates(job, input);
     const page = built.candidates.slice(offset, offset + pageSize);
+    const dividendOffset = parseCursor(input.dividendCursor ?? input.cursor);
+    const dividendPage = built.dividendRecalculations.slice(
+      dividendOffset,
+      dividendOffset + pageSize,
+    );
     let createdCount = 0;
     let reusedCount = 0;
     let attachedCount = 0;
@@ -391,8 +488,24 @@ export class ReconciliationPlannerService {
       globalWork.push(promotedWork);
     }
     const end = offset + page.length;
-    const complete = end >= built.candidates.length;
-    const nextCursor = complete ? null : String(end);
+    const dividendEnd = dividendOffset + dividendPage.length;
+    const globalComplete = end >= built.candidates.length;
+    const dividendsComplete =
+      dividendEnd >= built.dividendRecalculations.length;
+    const complete = globalComplete && dividendsComplete;
+    const nextCursor = globalComplete ? null : String(end);
+    const nextDividendCursor = dividendsComplete ? null : String(dividendEnd);
+    let returnedLease: string | null = leaseUntil;
+    if (complete) {
+      const completed = await this.workItems.completePlanning({
+        id: planner.id,
+        pipelineJobId,
+        now: timestamp,
+        expectedLeaseUntil: leaseUntil,
+      });
+      if (!completed) throw new Error("planner_completion_conflict");
+      returnedLease = null;
+    }
     if (complete && planningStatus === "planning") {
       await this.jobs.transition({
         id: pipelineJobId,
@@ -401,17 +514,20 @@ export class ReconciliationPlannerService {
         now: timestamp,
       });
     }
-    await this.updateProgress(pipelineJobId, timestamp);
+    await this.updateProgress(pipelineJobId, timestamp, built.skippedCount);
     return {
       pipelineJobId,
+      plannerWorkItemId: planner.id,
+      plannerLeaseUntil: returnedLease,
       complete,
       nextCursor,
+      nextDividendCursor,
       createdCount,
       reusedCount,
       attachedCount,
       skippedCount: built.skippedCount,
       globalWork,
-      dividendRecalculations: built.dividendRecalculations,
+      dividendRecalculations: dividendPage,
       priority: built.priority,
     };
   }
@@ -692,8 +808,10 @@ export class ReconciliationPlannerService {
   ): number {
     if (currentDay) return CURRENT_DAY_PRIORITY;
     if (trigger === "backfill") return BACKFILL_PRIORITY;
-    if (trigger === "ledger_reconciliation") return AUTOMATIC_PRIORITY;
-    return CURRENT_DAY_PRIORITY;
+    if (trigger === "ledger_reconciliation" || trigger === "scheduled") {
+      return AUTOMATIC_PRIORITY;
+    }
+    return AUTOMATIC_PRIORITY;
   }
 
   private async loadTransactions(
@@ -831,7 +949,11 @@ export class ReconciliationPlannerService {
     return result;
   }
 
-  private async updateProgress(id: string, now: string): Promise<void> {
+  private async updateProgress(
+    id: string,
+    now: string,
+    skippedCount: number,
+  ): Promise<void> {
     const row = await this.dependencies.db
       .prepare(
         `SELECT
@@ -860,9 +982,10 @@ export class ReconciliationPlannerService {
       id,
       now,
       progress: {
-        workTotal: row?.workTotal ?? 0,
+        workTotal:
+          (row?.workTotal ?? 0) + Math.max(row?.workSkipped ?? 0, skippedCount),
         workReused: row?.workReused ?? 0,
-        workSkipped: row?.workSkipped ?? 0,
+        workSkipped: Math.max(row?.workSkipped ?? 0, skippedCount),
         workFetched: row?.workFetched ?? 0,
         workAnalyzed: row?.workAnalyzed ?? 0,
         workProcessed: row?.workProcessed ?? 0,

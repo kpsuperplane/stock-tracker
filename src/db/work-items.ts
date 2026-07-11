@@ -226,6 +226,94 @@ export class WorkItemRepository {
     return row ? mapWorkItem(row) : null;
   }
 
+  async findPlanningForJob(
+    pipelineJobId: string,
+  ): Promise<WorkItemRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT * FROM work_items
+         WHERE scope = 'job_planning' AND pipeline_job_id = ?1
+         ORDER BY id LIMIT 1`,
+      )
+      .bind(pipelineJobId)
+      .first<WorkItemRow>();
+    return row ? mapWorkItem(row) : null;
+  }
+
+  async isLinkedToJob(input: {
+    pipelineJobId: string;
+    workItemId: string;
+  }): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT 1 AS linked FROM job_work_items
+         WHERE pipeline_job_id = ?1 AND work_item_id = ?2 LIMIT 1`,
+      )
+      .bind(input.pipelineJobId, input.workItemId)
+      .first<{ linked: number }>();
+    return row?.linked === 1;
+  }
+
+  async claimPlanning(input: {
+    id: string;
+    pipelineJobId: string;
+    now: string;
+    leaseUntil: string;
+    expectedLeaseUntil?: string;
+  }): Promise<boolean> {
+    const result = input.expectedLeaseUntil
+      ? await this.db
+          .prepare(
+            `UPDATE work_items
+             SET processing_lease_until = ?1, updated_at = ?2
+             WHERE id = ?3 AND pipeline_job_id = ?4
+               AND scope = 'job_planning' AND state = 'processing'
+               AND processing_lease_until IS ?5
+               AND processing_lease_until > ?2`,
+          )
+          .bind(
+            input.leaseUntil,
+            input.now,
+            input.id,
+            input.pipelineJobId,
+            input.expectedLeaseUntil,
+          )
+          .run()
+      : await this.db
+          .prepare(
+            `UPDATE work_items
+             SET state = 'processing', processing_lease_until = ?1,
+                 attempt_count = attempt_count + 1, updated_at = ?2
+             WHERE id = ?3 AND pipeline_job_id = ?4
+               AND scope = 'job_planning' AND state = 'pending'
+               AND attempt_count < max_attempts
+               AND (available_at IS NULL OR available_at <= ?2)`,
+          )
+          .bind(input.leaseUntil, input.now, input.id, input.pipelineJobId)
+          .run();
+    return result.meta.changes === 1;
+  }
+
+  async completePlanning(input: {
+    id: string;
+    pipelineJobId: string;
+    now: string;
+    expectedLeaseUntil: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'complete', processing_lease_until = NULL,
+             completed_at = ?1, updated_at = ?1
+         WHERE id = ?2 AND pipeline_job_id = ?3
+           AND scope = 'job_planning' AND state = 'processing'
+           AND processing_lease_until IS ?4`,
+      )
+      .bind(input.now, input.id, input.pipelineJobId, input.expectedLeaseUntil)
+      .run();
+    return result.meta.changes === 1;
+  }
+
   promotePriorityStatement(input: {
     id: string;
     priority: number;
@@ -371,7 +459,7 @@ export class WorkItemRepository {
         `UPDATE work_items
          SET state = 'dispatching', dispatch_lease_until = ?1,
              attempt_count = attempt_count + 1, updated_at = ?2
-         WHERE id = ?3 AND state = 'pending'
+         WHERE id = ?3 AND scope = 'global_fact' AND state = 'pending'
            AND attempt_count < max_attempts
            AND (available_at IS NULL OR available_at <= ?2)`,
       )
