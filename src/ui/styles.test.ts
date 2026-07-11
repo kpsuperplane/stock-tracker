@@ -9,6 +9,8 @@ describe("legacy stylesheet boundary", () => {
     expect(styles).toContain(".legacy-app a");
     expect(styles).toContain(".legacy-app input");
     expect(styles).toContain(".legacy-app h1");
+    expect(styles).toContain("min-height: 100dvh");
+    expect(styles).toContain("background: var(--background)");
     expect(styles).not.toMatch(/\nbutton,\ninput,\nselect\s*\{/);
     expect(styles).not.toMatch(/\n:focus-visible\s*\{/);
   });

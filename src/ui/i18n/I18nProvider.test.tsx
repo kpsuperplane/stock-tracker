@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   I18nProvider,
   localeFromBrowserLanguage,
+  persistLocale,
   readPersistedLocale,
   type StorageLike,
   useI18n,
@@ -33,6 +34,20 @@ describe("I18nProvider", () => {
     expect(readPersistedLocale(storage, "en-US")).toBe("cn");
     expect(readPersistedLocale(undefined, "zh-CN")).toBe("cn");
     expect(readPersistedLocale(undefined, "en-US")).toBe("en");
+  });
+
+  it("falls back cleanly when browser storage is blocked or full", () => {
+    const blockedStorage: StorageLike = {
+      getItem: () => {
+        throw new Error("storage blocked");
+      },
+      setItem: () => {
+        throw new Error("quota exceeded");
+      },
+    };
+
+    expect(readPersistedLocale(blockedStorage, "zh-CN")).toBe("cn");
+    expect(() => persistLocale(blockedStorage, "en")).not.toThrow();
   });
 
   it("renders localized copy from the selected initial locale", () => {

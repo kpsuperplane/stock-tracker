@@ -9,6 +9,7 @@ describe("App feature-flag boundary", () => {
     expect(markup).toContain('id="main-content"');
     expect(markup).toContain('id="history"');
     expect(markup).toContain('id="watchlist"');
+    expect(markup).toContain('class="legacy-app"');
     expect(markup).not.toContain('data-testid="product-app-shell"');
   });
 });

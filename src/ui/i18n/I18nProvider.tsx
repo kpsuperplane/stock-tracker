@@ -15,14 +15,34 @@ export const readPersistedLocale = (
   storage: StorageLike | null | undefined,
   browserLanguage?: string,
 ): Locale => {
-  const persisted = storage?.getItem(LOCALE_STORAGE_KEY);
+  let persisted: string | null = null;
+  try {
+    persisted = storage?.getItem(LOCALE_STORAGE_KEY) ?? null;
+  } catch {
+    // Private browsing and disabled storage can throw on reads.
+  }
   if (persisted === "en" || persisted === "cn") return persisted;
   return localeFromBrowserLanguage(browserLanguage);
 };
 
 const browserStorage = (): StorageLike | undefined => {
-  if (typeof window === "undefined" || !window.localStorage) return undefined;
-  return window.localStorage;
+  if (typeof window === "undefined") return undefined;
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+};
+
+export const persistLocale = (
+  storage: StorageLike | null | undefined,
+  locale: Locale,
+) => {
+  try {
+    storage?.setItem(LOCALE_STORAGE_KEY, locale);
+  } catch {
+    // Quota and blocked-storage failures should not break language switching.
+  }
 };
 
 const browserLanguage = () =>
@@ -56,7 +76,7 @@ export const I18nProvider = ({
   );
 
   useEffect(() => {
-    storageRef?.setItem(LOCALE_STORAGE_KEY, locale);
+    persistLocale(storageRef, locale);
   }, [locale, storageRef]);
 
   const value = useMemo<I18nContextValue>(
