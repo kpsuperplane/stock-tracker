@@ -63,6 +63,16 @@ type SplitReviewState = {
   pending: PendingMutation;
 };
 
+/**
+ * A split confirmation can advance the position-basis revision before the
+ * original mutation is retried. Keep that response revision explicit instead
+ * of relying on a state update racing the follow-up request.
+ */
+export const resolveMutationBasisRevision = (
+  currentRevision: number,
+  confirmedRevision?: number,
+): number => confirmedRevision ?? currentRevision;
+
 export interface EventsPageProps {
   apiClient?: EventsApiClient;
   importApiClient?: EventImportsApiClient;
@@ -472,23 +482,26 @@ export const EventsPage = ({
     }
   };
 
-  const execute = async (pending: PendingMutation) => {
+  const execute = async (
+    pending: PendingMutation,
+    basisRevision = positionBasisRevision,
+  ) => {
     setIsMutating(true);
     setMutationError(null);
     try {
       const result =
         pending.kind === "create"
-          ? await apiClient.create(pending.input, positionBasisRevision)
+          ? await apiClient.create(pending.input, basisRevision)
           : pending.kind === "update"
             ? await apiClient.update(
                 pending.id,
                 pending.input,
-                positionBasisRevision,
+                basisRevision,
                 pending.eventRevision,
               )
             : await apiClient.remove(
                 pending.id,
-                positionBasisRevision,
+                basisRevision,
                 pending.eventRevision,
               );
       await mutationSucceeded(result);
@@ -546,7 +559,13 @@ export const EventsPage = ({
           : pending.kind === "update"
             ? { ...pending, input: { ...pending.input, confirmation } }
             : pending;
-      await execute(withConfirmation);
+      await execute(
+        withConfirmation,
+        resolveMutationBasisRevision(
+          positionBasisRevision,
+          result.positionBasisRevision,
+        ),
+      );
     } catch (caught) {
       mutationFailure(caught, review.pending);
     } finally {
@@ -578,7 +597,7 @@ export const EventsPage = ({
   };
 
   return (
-    <VStack gap={4} as="main" data-testid="events-page">
+    <VStack gap={4} data-testid="events-page">
       <HStack gap={3} justify="between" align="start" wrap="wrap">
         <VStack gap={1}>
           <Heading level={1}>{t("eventsHeading")}</Heading>
