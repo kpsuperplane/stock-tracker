@@ -12,7 +12,7 @@ import {
 } from "@astryxdesign/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { easternMarketDate, previousCalendarDate } from "../../shared/dates";
-import { api, type BackfillJob } from "../api";
+import { ApiClientError, api, type BackfillJob } from "../api";
 import {
   groupJobs,
   isReadModelJob,
@@ -61,6 +61,11 @@ export const validateBackfillRange = (
   if (inclusiveDays(start, end) > 30) return "backfillRangeTooLong";
   return null;
 };
+
+export const isJobReadModelDisabledError = (error: unknown): boolean =>
+  error instanceof ApiClientError &&
+  error.status === 404 &&
+  error.code === "read_model_disabled";
 
 export interface BackfillPageApiClient {
   startBackfill: typeof api.startBackfill;
@@ -362,10 +367,17 @@ const ProductBackfillPage = ({
         if (!active) return;
         mergeJobs(loadedJobs);
         setJobsCursor(nextCursor);
+        setError(null);
         setPollError(null);
       })
-      .catch(() => {
-        if (active) setError(t("backfillLoadError"));
+      .catch((caught: unknown) => {
+        if (!active) return;
+        if (isJobReadModelDisabledError(caught)) {
+          setJobsCursor(null);
+          setError(null);
+          return;
+        }
+        setError(t("backfillLoadError"));
       })
       .finally(() => {
         if (active) setLoadingJobs(false);
@@ -382,8 +394,14 @@ const ProductBackfillPage = ({
       const result = await apiClient.jobs(25, jobsCursor);
       mergeJobs(result.jobs);
       setJobsCursor(result.nextCursor);
+      setError(null);
       setPollError(null);
-    } catch {
+    } catch (caught: unknown) {
+      if (isJobReadModelDisabledError(caught)) {
+        setJobsCursor(null);
+        setError(null);
+        return;
+      }
       setError(t("backfillLoadError"));
     } finally {
       setLoadingMoreJobs(false);
@@ -444,11 +462,15 @@ const ProductBackfillPage = ({
   }, [activeJobIds, refreshJob, t]);
 
   useEffect(() => {
+    let newlyTerminal = false;
     for (const job of jobs) {
       if (!terminal.has(job.status) || invalidatedJobsRef.current.has(job.id)) {
         continue;
       }
       invalidatedJobsRef.current.add(job.id);
+      newlyTerminal = true;
+    }
+    if (newlyTerminal) {
       api.portfolio.clearCache?.();
       api.calendar.clearCache?.();
     }

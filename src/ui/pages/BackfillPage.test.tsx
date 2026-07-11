@@ -1,9 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { ApiClientError } from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import {
   BackfillPage,
   inclusiveDays,
+  isJobReadModelDisabledError,
   validateBackfillRange,
 } from "./BackfillPage";
 
@@ -29,6 +31,28 @@ describe("backfill range validation", () => {
 });
 
 describe("BackfillPage", () => {
+  it("treats a disabled job read model as an available empty state", () => {
+    const error = new ApiClientError(
+      "This read model is not enabled.",
+      404,
+      "read_model_disabled",
+      {},
+      new Headers(),
+    );
+    expect(isJobReadModelDisabledError(error)).toBe(true);
+    expect(
+      isJobReadModelDisabledError(
+        new ApiClientError(
+          "Not found",
+          404,
+          "job_not_found",
+          {},
+          new Headers(),
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it("renders ASTRYX controls, background continuation, and grouped jobs", () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">

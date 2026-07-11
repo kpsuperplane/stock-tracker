@@ -36,17 +36,27 @@ export interface JobReadModelInput {
 
 export interface JobReadModelListInput {
   limit?: number;
-  cursor?: string | null;
+  cursor?: JobReadModelListCursor | string | null;
+}
+
+export interface JobReadModelListCursor {
+  createdAt?: string;
+  id: string;
 }
 
 export interface JobReadModelListResult {
   jobs: JobReadModelDto[];
-  nextCursor: string | null;
+  nextCursor: JobReadModelListCursor | null;
 }
 
 const MAX_WORK_DETAIL = 100;
 const DEFAULT_LIST_LIMIT = 25;
 const MAX_LIST_LIMIT = 50;
+
+interface JobListRow {
+  id: string;
+  created_at: string;
+}
 
 export class JobReadModelService {
   constructor(private readonly db: D1Database) {}
@@ -58,15 +68,39 @@ export class JobReadModelService {
       Math.max(input.limit ?? DEFAULT_LIST_LIMIT, 1),
       MAX_LIST_LIMIT,
     );
-    const rows = await this.db
-      .prepare(
-        `SELECT id FROM pipeline_jobs
-         WHERE (?1 IS NULL OR id < ?1)
-         ORDER BY id DESC
-         LIMIT ?2`,
-      )
-      .bind(input.cursor ?? null, limit + 1)
-      .all<{ id: string }>();
+    const cursor =
+      typeof input.cursor === "string"
+        ? { id: input.cursor, createdAt: null }
+        : (input.cursor ?? null);
+    const rows = cursor?.createdAt
+      ? await this.db
+          .prepare(
+            `SELECT id, created_at FROM pipeline_jobs
+             WHERE created_at < ?1
+                OR (created_at = ?1 AND id < ?2)
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?3`,
+          )
+          .bind(cursor.createdAt, cursor.id, limit + 1)
+          .all<JobListRow>()
+      : cursor
+        ? await this.db
+            .prepare(
+              `SELECT id, created_at FROM pipeline_jobs
+               WHERE id < ?1
+               ORDER BY id DESC
+               LIMIT ?2`,
+            )
+            .bind(cursor.id, limit + 1)
+            .all<JobListRow>()
+        : await this.db
+            .prepare(
+              `SELECT id, created_at FROM pipeline_jobs
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?1`,
+            )
+            .bind(limit + 1)
+            .all<JobListRow>();
     const page = rows.results.slice(0, limit);
     const jobs = (
       await Promise.all(
@@ -74,9 +108,13 @@ export class JobReadModelService {
       )
     ).filter((job): job is JobReadModelDto => job !== null);
     const hasMore = rows.results.length > limit;
+    const lastRow = page.at(-1);
     return {
       jobs,
-      nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
+      nextCursor:
+        hasMore && lastRow
+          ? { id: lastRow.id, createdAt: lastRow.created_at }
+          : null,
     };
   }
 
