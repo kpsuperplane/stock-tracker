@@ -1,2 +1,5 @@
 BASIC_AUTH_USERNAME=local-owner
 BASIC_AUTH_PASSWORD=local-password
+# Keep the derived read models disabled by default. Set this to true when
+# previewing the feature-flagged Portfolio/Calendar pages.
+# READ_MODELS_ENABLED=true

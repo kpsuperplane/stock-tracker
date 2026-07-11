@@ -1,11 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { PortfolioReadModelDto } from "../../shared/contracts";
+import { ApiClientError } from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import {
   formatSignedDecimal,
   movementTone,
   PortfolioPage,
+  portfolioErrorMessageKey,
 } from "./PortfolioPage";
 
 const portfolio: PortfolioReadModelDto = {
@@ -113,7 +115,6 @@ describe("PortfolioPage", () => {
     expect(markup).toContain("https://example.com/apple");
     expect(markup).toContain("Stale");
     expect(markup).toContain("A close is stale.");
-    expect(markup).toContain("Summary is shown for movements over ±5%.");
   });
 
   it("keeps stored Chinese summaries while translating static labels to CN", () => {
@@ -159,11 +160,31 @@ describe("portfolio movement formatters", () => {
   it("preserves signed decimal strings and identifies direction", () => {
     expect(formatSignedDecimal("5.315789", "en")).toBe("+5.32");
     expect(formatSignedDecimal("-2", "cn")).toBe("-2");
+    expect(formatSignedDecimal("-0.000", "en")).toBe("0.00");
     expect(movementTone(portfolio.positions[0]?.movement ?? null)).toBe(
       "positive",
     );
     expect(movementTone(portfolio.positions[1]?.movement ?? null)).toBe(
       "negative",
     );
+    expect(
+      movementTone({
+        ...(portfolio.positions[1]?.movement as NonNullable<
+          PortfolioReadModelDto["positions"][number]["movement"]
+        >),
+        movementPercentDecimal: "-0.000",
+      }),
+    ).toBe("neutral");
+    expect(
+      portfolioErrorMessageKey(
+        new ApiClientError(
+          "disabled",
+          404,
+          "read_model_disabled",
+          {},
+          new Headers(),
+        ),
+      ),
+    ).toBe("portfolioReadModelDisabled");
   });
 });

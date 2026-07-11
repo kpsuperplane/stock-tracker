@@ -19,6 +19,7 @@ import type {
   PortfolioReadModelDto,
 } from "../../shared/contracts";
 import {
+  ApiClientError,
   type PortfolioApiClient,
   type PortfolioReadOptions,
   portfolioApi,
@@ -81,6 +82,13 @@ export const formatSignedDecimal = (
   maximumFractionDigits = 2,
 ): string => {
   if (value === null) return "—";
+  if (/^[+-]?0(?:\.0*)?$/.test(value.trim())) {
+    const zero =
+      maximumFractionDigits > 0
+        ? `0.${"0".repeat(maximumFractionDigits)}`
+        : "0";
+    return safeDecimal(zero, locale, maximumFractionDigits);
+  }
   const formatted = safeDecimal(value, locale, maximumFractionDigits);
   if (formatted === "—" || formatted.startsWith("-")) return formatted;
   return `+${formatted}`;
@@ -90,14 +98,18 @@ export const movementTone = (
   movement: PortfolioMovementDto | null,
 ): "positive" | "negative" | "neutral" => {
   if (!movement?.movementPercentDecimal) return "neutral";
-  try {
-    if (movement.movementPercentDecimal.startsWith("-")) return "negative";
-    if (movement.movementPercentDecimal === "0") return "neutral";
-    return "positive";
-  } catch {
-    return "neutral";
-  }
+  const value = movement.movementPercentDecimal.trim();
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(value)) return "neutral";
+  if (/^[+-]?0(?:\.0*)?$/.test(value)) return "neutral";
+  return value.startsWith("-") ? "negative" : "positive";
 };
+
+export const portfolioErrorMessageKey = (
+  error: unknown,
+): "portfolioReadModelDisabled" | "portfolioLoadError" =>
+  error instanceof ApiClientError && error.code === "read_model_disabled"
+    ? "portfolioReadModelDisabled"
+    : "portfolioLoadError";
 
 const movementColor = {
   positive: "var(--color-success)",
@@ -262,6 +274,7 @@ export const PortfolioPage = ({
   const [loading, setLoading] = useState(initialPortfolio === undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [readModelDisabled, setReadModelDisabled] = useState(false);
 
   useEffect(() => {
     portfolioRef.current = portfolio;
@@ -273,6 +286,7 @@ export const PortfolioPage = ({
     setLoading(!hadCachedPortfolio);
     setRefreshing(hadCachedPortfolio);
     setError(null);
+    setReadModelDisabled(false);
     const options: PortfolioReadOptions = {
       locale,
       ...(today ? { today } : {}),
@@ -284,8 +298,12 @@ export const PortfolioPage = ({
         portfolioRef.current = result.portfolio;
         setPortfolio(result.portfolio);
       }
-    } catch {
-      if (requestId === requestIdRef.current) setError(t("portfolioLoadError"));
+    } catch (caught) {
+      if (requestId === requestIdRef.current) {
+        const messageKey = portfolioErrorMessageKey(caught);
+        setReadModelDisabled(messageKey === "portfolioReadModelDisabled");
+        setError(t(messageKey));
+      }
     } finally {
       if (requestId === requestIdRef.current) {
         setLoading(false);
@@ -328,6 +346,11 @@ export const PortfolioPage = ({
         <Banner
           status="error"
           title={error}
+          {...(readModelDisabled
+            ? {
+                description: t("portfolioReadModelDisabledDescription"),
+              }
+            : {})}
           endContent={
             <Button variant="ghost" label={t("retry")} onClick={retry} />
           }
