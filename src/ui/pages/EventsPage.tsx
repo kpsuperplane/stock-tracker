@@ -55,7 +55,12 @@ type PendingMutation =
       eventRevision: number;
       input: EditableTransactionInput;
     }
-  | { kind: "delete"; id: string; eventRevision: number };
+  | {
+      kind: "delete";
+      id: string;
+      eventRevision: number;
+      confirmation?: TransactionMutationInput["confirmation"];
+    };
 
 type SplitReviewState = {
   instrumentId: string;
@@ -503,6 +508,7 @@ export const EventsPage = ({
                 pending.id,
                 basisRevision,
                 pending.eventRevision,
+                pending.confirmation,
               );
       await mutationSucceeded(result);
     } catch (caught) {
@@ -558,7 +564,7 @@ export const EventsPage = ({
           ? { ...pending, input: { ...pending.input, confirmation } }
           : pending.kind === "update"
             ? { ...pending, input: { ...pending.input, confirmation } }
-            : pending;
+            : { ...pending, confirmation };
       await execute(
         withConfirmation,
         resolveMutationBasisRevision(

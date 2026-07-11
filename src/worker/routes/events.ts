@@ -50,6 +50,12 @@ const updateSchema = z
   })
   .strict();
 
+const deleteSchema = z
+  .object({
+    confirmation: confirmationSchema.optional(),
+  })
+  .strict();
+
 const confirmSchema = z
   .object({
     instrumentId: z.string().min(1).max(128),
@@ -550,6 +556,11 @@ const deleteTransaction = async (context: EventContext) => {
   const eventId = context.req.param("id");
   if (!eventId)
     return error(context, 422, "invalid_request", "The request is invalid.");
+  // DELETE requests from older clients have no body. New clients may include
+  // the server-fetched split snapshot confirmation when a review was required.
+  const body = context.req.raw.body
+    ? deleteSchema.parse(await context.req.json())
+    : {};
   const result = await new LedgerService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
@@ -560,6 +571,7 @@ const deleteTransaction = async (context: EventContext) => {
       eventId,
       expectedEventRevision: eventRevision,
     },
+    ...(body.confirmation ? { confirmation: body.confirmation } : {}),
   });
   return mutationResponse(context, result, 200, { deleted: true });
 };

@@ -951,7 +951,13 @@ describe("portfolio event routes", () => {
     expect(invalidated.status).toBe(409);
     const invalidatedPayload = await invalidated.json<{
       error: { code: string };
-      review: { range: { providerRevision: string } };
+      review: {
+        range: {
+          requestedStartDate: string;
+          requestedEndDate: string;
+          providerRevision: string;
+        };
+      };
     }>();
     expect(invalidatedPayload.error.code).toBe("split_review_required");
     expect(invalidatedPayload.review.range.providerRevision).toBe(
@@ -969,10 +975,35 @@ describe("portfolio event routes", () => {
       "ledger_conflict",
     );
 
+    const reviewedDeleteBasis = invalidated.headers.get(
+      "X-Position-Basis-Revision",
+    );
+    expect(reviewedDeleteBasis).toBe("4");
+    const reviewedDelete = await exports.default.fetch(
+      new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
+        method: "DELETE",
+        headers: mutationHeaders(
+          `"position-basis-${reviewedDeleteBasis}", "event-1"`,
+        ),
+        body: JSON.stringify({
+          confirmation: {
+            requestedStartDate:
+              invalidatedPayload.review.range.requestedStartDate,
+            requestedEndDate: invalidatedPayload.review.range.requestedEndDate,
+            providerRevision: invalidatedPayload.review.range.providerRevision,
+          },
+        }),
+      }),
+    );
+    expect(reviewedDelete.status).toBe(200);
+    expect((await reviewedDelete.json<{ deleted: boolean }>()).deleted).toBe(
+      true,
+    );
+
     const future = await exports.default.fetch(
       new Request("http://local/api/events", {
         method: "POST",
-        headers: mutationHeaders('"position-basis-4"'),
+        headers: mutationHeaders('"position-basis-5"'),
         body: JSON.stringify(createBody({ tradeDate: "2099-01-01" })),
       }),
     );

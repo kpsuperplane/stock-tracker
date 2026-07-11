@@ -25,6 +25,7 @@ import {
   type ImportPreviewResponse,
   type ImportSplitReview,
 } from "../api";
+import type { MessageKey } from "../i18n/catalog";
 import { useI18n } from "../i18n/I18nProvider";
 
 export interface EventImportDialogProps {
@@ -48,6 +49,7 @@ const errorCopyKey = (
     case "duplicate_import":
       return "duplicateImport";
     case "import_expired":
+    case "import_not_found":
       return "importExpired";
     case "ledger_conflict":
       return "importConflict";
@@ -60,6 +62,21 @@ const errorCopyKey = (
 
 const statusVariant = (status: "valid" | "invalid") =>
   status === "valid" ? "success" : "error";
+
+const rowErrorCopy: Record<string, MessageKey> = {
+  column_count: "rowErrorColumnCount",
+  invalid_symbol: "rowErrorInvalidSymbol",
+  invalid_trade_date: "rowErrorInvalidTradeDate",
+  invalid_side: "rowErrorInvalidSide",
+  invalid_quantity: "rowErrorInvalidQuantity",
+  invalid_price: "rowErrorInvalidPrice",
+  unknown_symbol: "rowErrorUnknownSymbol",
+  negative_holdings: "rowErrorNegativeHoldings",
+  invalid_staged_row: "rowErrorInvalidStaged",
+};
+
+const localizeRowError = (code: string, t: (key: MessageKey) => string) =>
+  t(rowErrorCopy[code] ?? "invalidRow");
 
 const SplitReviewCard = ({
   review,
@@ -86,10 +103,18 @@ const SplitReviewCard = ({
           onClick={onConfirm}
         />
       }
+      defaultIsExpanded={!isConfirmed}
     >
       <VStack gap={2}>
         <div>
           {t("retrievedAt")}: {range.observedAt}
+        </div>
+        <div>
+          {t("coverageStart")}: {range.coverageStartDate ?? "—"} ·{" "}
+          {t("coverageEnd")}: {range.coverageEndDate ?? "—"}
+        </div>
+        <div>
+          {t("snapshotBasis")}: {range.basis}
         </div>
         {!range.isComplete && <div>{t("splitReviewIncomplete")}</div>}
         {review.snapshot.events.length === 0 ? (
@@ -140,6 +165,11 @@ export const EventImportDialog = ({
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
 
+  const clearPreview = () => {
+    setPreview(null);
+    setConfirmedReviews(new Set());
+  };
+
   const reset = () => {
     setFile(null);
     setPreview(null);
@@ -161,11 +191,13 @@ export const EventImportDialog = ({
     }
     setIsPreviewing(true);
     setError(null);
+    clearPreview();
     try {
       const result = await apiClient.preview(file);
       setPreview(result);
       setConfirmedReviews(new Set());
     } catch (caught) {
+      clearPreview();
       setError(t(errorCopyKey(caught)));
     } finally {
       setIsPreviewing(false);
@@ -221,6 +253,14 @@ export const EventImportDialog = ({
         setError(t("importReviewDescription"));
         return;
       }
+      if (
+        caught instanceof ApiClientError &&
+        (caught.code === "import_expired" ||
+          caught.code === "import_not_found" ||
+          caught.code === "ledger_conflict")
+      ) {
+        clearPreview();
+      }
       setError(t(errorCopyKey(caught)));
     } finally {
       setIsCommitting(false);
@@ -251,9 +291,11 @@ export const EventImportDialog = ({
           <FileInput
             label={t("csvFile")}
             value={file}
-            onChange={(next) =>
-              setFile(Array.isArray(next) ? (next[0] ?? null) : next)
-            }
+            onChange={(next) => {
+              setFile(Array.isArray(next) ? (next[0] ?? null) : next);
+              clearPreview();
+              setError(null);
+            }}
             accept=".csv,text/csv,application/csv,text/plain"
             mode="dropzone"
             description={t("csvTemplateDescription")}
@@ -318,7 +360,13 @@ export const EventImportDialog = ({
                         label={t(row.status)}
                       />
                     </TableCell>
-                    <TableCell>{row.errors.join(", ") || "—"}</TableCell>
+                    <TableCell>
+                      {row.errors.length > 0
+                        ? row.errors
+                            .map((code) => localizeRowError(code, t))
+                            .join(", ")
+                        : "—"}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

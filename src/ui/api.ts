@@ -214,6 +214,7 @@ export interface EventsApiClient {
     id: string,
     positionBasisRevision: number,
     eventRevision: number,
+    confirmation?: SplitConfirmationDto,
   ) => Promise<EventMutationResponse>;
   confirmSplit: (
     instrumentId: string,
@@ -276,10 +277,11 @@ export const eventsApi: EventsApiClient = {
       headers: mutationHeaders(positionBasisRevision, eventRevision),
       body: JSON.stringify(input),
     }),
-  remove: (id, positionBasisRevision, eventRevision) =>
+  remove: (id, positionBasisRevision, eventRevision, confirmation) =>
     request<EventMutationResponse>(`/api/events/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: mutationHeaders(positionBasisRevision, eventRevision),
+      body: JSON.stringify(confirmation ? { confirmation } : {}),
     }),
   confirmSplit: (instrumentId, confirmation, positionBasisRevision) =>
     request<EventMutationResponse>("/api/corporate-actions/confirm", {

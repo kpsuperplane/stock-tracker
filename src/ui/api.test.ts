@@ -102,4 +102,34 @@ describe("product event API clients", () => {
       details: { positionBasisRevision: 4 },
     });
   });
+
+  it("sends an explicit split confirmation with reviewed deletes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          transaction: null,
+          deleted: true,
+          positionBasisRevision: 5,
+          pipelineJobId: "job-5",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await eventsApi.remove("tx-1", 4, 1, {
+      requestedStartDate: "2024-01-02",
+      requestedEndDate: "2026-07-10",
+      providerRevision: "snapshot-r2",
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      confirmation: {
+        requestedStartDate: "2024-01-02",
+        requestedEndDate: "2026-07-10",
+        providerRevision: "snapshot-r2",
+      },
+    });
+  });
 });
