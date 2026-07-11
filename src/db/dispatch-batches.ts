@@ -653,4 +653,21 @@ export class DispatchBatchRepository {
       .run();
     return result.meta.changes === 1;
   }
+
+  async moveQueuedToDispatching(input: {
+    id: string;
+    now: string;
+    leaseUntil: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+         SET state = 'dispatching', dispatch_lease_until = ?1,
+             updated_at = ?2
+         WHERE id = ?3 AND state = 'queued'`,
+      )
+      .bind(input.leaseUntil, input.now, input.id)
+      .run();
+    return result.meta.changes === 1;
+  }
 }

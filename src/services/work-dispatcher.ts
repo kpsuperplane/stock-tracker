@@ -310,6 +310,14 @@ export class WorkDispatcherService {
           (current.dispatchMaxAttempts ?? 3)
       ) {
         await this.terminalizeDispatchBatch(current, timestamp);
+      } else if (current?.state === "queued") {
+        await this.batches.moveQueuedToDispatching({
+          id: current.id,
+          now: timestamp,
+          leaseUntil: new Date(
+            Date.parse(timestamp) + this.dispatchLeaseMs,
+          ).toISOString(),
+        });
       }
       return false;
     }

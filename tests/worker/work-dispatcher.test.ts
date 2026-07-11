@@ -214,6 +214,37 @@ describe("normalized work dispatcher and queue consumer", () => {
     ).toEqual({ batch_state: "queued", work_state: "queued" });
   });
 
+  it("releases a failed recovery send back to dispatch recovery", async () => {
+    await insertInstrument();
+    await insertWork({ id: "recovery-send-failure", date: "2026-01-01" });
+    const first = dispatcher();
+    await first.service.dispatch();
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE dispatch_batches
+         SET state = 'processing', dispatch_lease_until = NULL,
+             processing_lease_until = '2026-07-10T20:00:00.000Z'
+         WHERE id = 'batch-1'`,
+      ),
+      env.DB.prepare(
+        `UPDATE work_items SET state = 'processing', dispatch_lease_until = NULL,
+         processing_lease_until = '2026-07-10T20:00:00.000Z'
+         WHERE id = 'recovery-send-failure'`,
+      ),
+    ]);
+    const recovered = dispatcher();
+    recovered.queue.send = vi.fn(async () => {
+      throw new Error("queue_unavailable");
+    });
+    const failed = await recovered.service.dispatch();
+    expect(failed.sendFailures).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM dispatch_batches WHERE id = 'batch-1'",
+      ).first(),
+    ).toEqual({ state: "dispatching" });
+  });
+
   it("claims, completes, and idempotently acknowledges duplicate delivery", async () => {
     await insertInstrument();
     await insertWork({ id: "consumer-work", date: "2026-01-01" });
