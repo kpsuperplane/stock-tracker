@@ -301,4 +301,22 @@ describe("product event API clients", () => {
       expect.objectContaining({ headers: expect.any(Headers) }),
     );
   });
+
+  it("lists pipeline jobs with an opaque cursor", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ jobs: [], nextCursor: "next-page" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.jobs(25, "cursor-2");
+
+    expect(result).toEqual({ jobs: [], nextCursor: "next-page" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/jobs?limit=25&cursor=cursor-2",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+  });
 });

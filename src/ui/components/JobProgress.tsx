@@ -107,6 +107,8 @@ type StatusCopyKey =
   | "completeWithErrors"
   | "failed"
   | "paused"
+  | "skipped"
+  | "terminal"
   | "planning"
   | "noMarketData"
   | "unknownStatus";
@@ -121,6 +123,8 @@ const statusCopyKey = (status: string): StatusCopyKey => {
     case "complete":
     case "failed":
     case "paused":
+    case "skipped":
+    case "terminal":
       return status;
     case "complete_with_errors":
       return "completeWithErrors";
@@ -139,6 +143,8 @@ const statusVariant = (
       return "success";
     case "complete_with_errors":
     case "paused":
+    case "skipped":
+    case "no_market_data":
       return "warning";
     case "failed":
     case "terminal":
@@ -155,6 +161,7 @@ export const terminalJobStatuses = new Set([
   "paused",
   "terminal",
   "no_market_data",
+  "skipped",
 ]);
 
 export interface JobProgressProps {
@@ -184,6 +191,7 @@ export const JobProgress = ({
   const datesProcessed = "dates_processed" in job ? job.dates_processed : null;
   const runs = "runs" in job ? job.runs : [];
   const statusKey = statusCopyKey(job.status);
+  const hasMoreWork = isReadModelJob(job) && job.nextCursor !== null;
   return (
     <section
       data-testid={`job-progress-${job.id}`}
@@ -302,6 +310,7 @@ export const JobProgress = ({
             </Table>
           </Banner>
         )}
+        {hasMoreWork && <Banner status="info" title={t("moreWorkItems")} />}
       </VStack>
     </section>
   );

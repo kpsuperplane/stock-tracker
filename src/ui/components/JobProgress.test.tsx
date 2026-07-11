@@ -79,7 +79,7 @@ describe("JobProgress", () => {
         <JobProgress
           job={backfillJob}
           onRetry={() => undefined}
-          retryingId={null}
+          retryingId="work-1"
         />
       </I18nProvider>,
     );
@@ -92,7 +92,7 @@ describe("JobProgress", () => {
     expect(markup).toContain("Analyzed: 2");
     expect(markup).toContain("Processed: 11");
     expect(markup).toContain("Provider returned a very long error");
-    expect(markup).toContain("Retry work item");
+    expect(markup).toContain("Retrying…");
     expect(markup).toContain('role="progressbar"');
   });
 
@@ -106,6 +106,15 @@ describe("JobProgress", () => {
     expect(markup).toContain("复用: 4");
     expect(markup).toContain("已获取: 2");
     expect(markup).not.toContain("Automatic reconciliation");
+  });
+
+  it("signals when the work detail page has more items", () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <JobProgress job={{ ...automaticJob, nextCursor: "next-work" }} />
+      </I18nProvider>,
+    );
+    expect(markup).toContain("This job has more work items than shown.");
   });
 
   it("normalizes job sources and retryable errors", () => {
@@ -123,6 +132,8 @@ describe("JobProgress", () => {
     });
     expect(jobErrors(automaticJob)).toEqual([]);
     expect(terminalJobStatuses.has("complete_with_errors")).toBe(true);
+    expect(terminalJobStatuses.has("skipped")).toBe(true);
+    expect(terminalJobStatuses.has("terminal")).toBe(true);
     expect(terminalJobStatuses.has("running")).toBe(false);
   });
 });

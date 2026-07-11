@@ -65,6 +65,7 @@ export const validateBackfillRange = (
 export interface BackfillPageApiClient {
   startBackfill: typeof api.startBackfill;
   backfill: typeof api.backfill;
+  jobs: typeof api.jobs;
   job: typeof api.job;
   retryBackfill: typeof api.retryBackfill;
   retry: typeof api.retry;
@@ -73,6 +74,7 @@ export interface BackfillPageApiClient {
 const defaultBackfillApiClient: BackfillPageApiClient = {
   startBackfill: api.startBackfill,
   backfill: api.backfill,
+  jobs: api.jobs,
   job: api.job,
   retryBackfill: api.retryBackfill,
   retry: api.retry,
@@ -328,7 +330,11 @@ const ProductBackfillPage = ({
   const [reprocessExisting, setReprocessExisting] = useState(false);
   const [jobs, setJobs] = useState<JobSource[]>(initialJobs);
   const jobsRef = useRef(jobs);
+  const [jobsCursor, setJobsCursor] = useState<string | null>(null);
+  const [loadingJobs, setLoadingJobs] = useState(true);
+  const [loadingMoreJobs, setLoadingMoreJobs] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
   const invalidatedJobsRef = useRef(new Set<string>());
@@ -336,6 +342,53 @@ const ProductBackfillPage = ({
   useEffect(() => {
     jobsRef.current = jobs;
   }, [jobs]);
+
+  const mergeJobs = useCallback((loadedJobs: JobSource[]) => {
+    setJobs((currentJobs) => {
+      const merged = new Map(currentJobs.map((job) => [job.id, job]));
+      for (const job of loadedJobs) {
+        if (!merged.has(job.id)) merged.set(job.id, job);
+      }
+      return [...merged.values()];
+    });
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    setLoadingJobs(true);
+    void apiClient
+      .jobs(25)
+      .then(({ jobs: loadedJobs, nextCursor }) => {
+        if (!active) return;
+        mergeJobs(loadedJobs);
+        setJobsCursor(nextCursor);
+        setPollError(null);
+      })
+      .catch(() => {
+        if (active) setError(t("backfillLoadError"));
+      })
+      .finally(() => {
+        if (active) setLoadingJobs(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [apiClient, mergeJobs, t]);
+
+  const loadMoreJobs = useCallback(async () => {
+    if (!jobsCursor || loadingMoreJobs) return;
+    setLoadingMoreJobs(true);
+    try {
+      const result = await apiClient.jobs(25, jobsCursor);
+      mergeJobs(result.jobs);
+      setJobsCursor(result.nextCursor);
+      setPollError(null);
+    } catch {
+      setError(t("backfillLoadError"));
+    } finally {
+      setLoadingMoreJobs(false);
+    }
+  }, [apiClient, jobsCursor, loadingMoreJobs, mergeJobs, t]);
 
   const refreshJob = useCallback(
     async (job: JobSource): Promise<JobSource> => {
@@ -379,7 +432,8 @@ const ProductBackfillPage = ({
           currentJobs.map((job) => replacements.get(job.id) ?? job),
         );
       }
-      if (failed) setError(t("backfillLoadError"));
+      if (failed) setPollError(t("backfillLoadError"));
+      else setPollError(null);
     };
     void poll();
     const interval = window.setInterval(() => void poll(), 5_000);
@@ -488,7 +542,11 @@ const ProductBackfillPage = ({
               key={job.id}
               job={job}
               onRetry={(jobError) => void retry(job, jobError)}
-              retryingId={retrying?.startsWith(`${job.id}:`) ? retrying : null}
+              retryingId={
+                retrying?.startsWith(`${job.id}:`)
+                  ? retrying.slice(job.id.length + 1)
+                  : null
+              }
             />
           ))}
         </VStack>
@@ -504,7 +562,7 @@ const ProductBackfillPage = ({
 
       <form onSubmit={(event) => void submit(event)}>
         <VStack gap={3}>
-          <FormLayout direction="horizontal">
+          <FormLayout direction="horizontal" className="backfill-date-layout">
             <DateInput
               label={t("backfillStartDate")}
               {...(startDate ? { value: isoDate(startDate) } : {})}
@@ -548,7 +606,9 @@ const ProductBackfillPage = ({
         </VStack>
       </form>
 
-      {error && <Banner status="error" title={error} />}
+      {(error ?? pollError) && (
+        <Banner status="error" title={error ?? pollError ?? ""} />
+      )}
       {hasActiveJobs && (
         <Banner
           status="info"
@@ -556,11 +616,31 @@ const ProductBackfillPage = ({
           description={t("backgroundContinuationDescription")}
         />
       )}
-      {jobs.length === 0 && (
+      {loadingJobs && jobs.length === 0 && (
+        <Banner status="info" title={t("loadingBackfillJobs")} />
+      )}
+      {!loadingJobs && jobs.length === 0 && (
         <Banner status="info" title={t("backfillNoJobs")} />
       )}
       {renderGroup("manual", groups.manual)}
       {renderGroup("automatic", groups.automatic)}
+      {jobsCursor && (
+        <HStack gap={2} align="center" wrap="wrap">
+          <span>{t("backfillMoreJobs")}</span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            label={
+              loadingMoreJobs
+                ? t("loadingMoreBackfillJobs")
+                : t("loadMoreBackfillJobs")
+            }
+            isLoading={loadingMoreJobs}
+            onClick={() => void loadMoreJobs()}
+          />
+        </HStack>
+      )}
     </VStack>
   );
 };

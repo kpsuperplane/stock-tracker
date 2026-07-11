@@ -93,6 +93,9 @@ const decodeCursor = <T extends Record<string, unknown>>(
   }
 };
 
+const encodeCursor = (value: Record<string, unknown>): string =>
+  btoa(JSON.stringify(value));
+
 const basisRevision = async (db: D1Database): Promise<number> =>
   (
     await db
@@ -297,6 +300,27 @@ calendarRoutes.get("/", async (context) => {
   });
   context.header("Content-Language", locale);
   return context.json({ calendar });
+});
+
+jobRoutes.get("/", async (context) => {
+  requireEnabled(context.env, "job");
+  const query = context.req.query();
+  const limit = parseLimit(query.limit, 25, 50);
+  const cursor = decodeCursor(
+    query.cursor,
+    "cursor",
+    z.object({ id: z.string().min(1).max(128) }).strict(),
+  );
+  const result = await new JobReadModelService(context.env.DB).list({
+    limit,
+    cursor: cursor?.id ?? null,
+  });
+  return context.json({
+    jobs: result.jobs,
+    nextCursor: result.nextCursor
+      ? encodeCursor({ id: result.nextCursor })
+      : null,
+  });
 });
 
 jobRoutes.get("/:id", async (context) => {

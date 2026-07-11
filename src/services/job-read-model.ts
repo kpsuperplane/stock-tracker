@@ -34,10 +34,51 @@ export interface JobReadModelInput {
   cursor?: string | null;
 }
 
+export interface JobReadModelListInput {
+  limit?: number;
+  cursor?: string | null;
+}
+
+export interface JobReadModelListResult {
+  jobs: JobReadModelDto[];
+  nextCursor: string | null;
+}
+
 const MAX_WORK_DETAIL = 100;
+const DEFAULT_LIST_LIMIT = 25;
+const MAX_LIST_LIMIT = 50;
 
 export class JobReadModelService {
   constructor(private readonly db: D1Database) {}
+
+  async list(
+    input: JobReadModelListInput = {},
+  ): Promise<JobReadModelListResult> {
+    const limit = Math.min(
+      Math.max(input.limit ?? DEFAULT_LIST_LIMIT, 1),
+      MAX_LIST_LIMIT,
+    );
+    const rows = await this.db
+      .prepare(
+        `SELECT id FROM pipeline_jobs
+         WHERE (?1 IS NULL OR id < ?1)
+         ORDER BY id DESC
+         LIMIT ?2`,
+      )
+      .bind(input.cursor ?? null, limit + 1)
+      .all<{ id: string }>();
+    const page = rows.results.slice(0, limit);
+    const jobs = (
+      await Promise.all(
+        page.map(({ id }) => this.find(id, { limit: DEFAULT_LIST_LIMIT })),
+      )
+    ).filter((job): job is JobReadModelDto => job !== null);
+    const hasMore = rows.results.length > limit;
+    return {
+      jobs,
+      nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
+    };
+  }
 
   async find(
     id: string,

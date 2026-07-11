@@ -42,6 +42,20 @@ body {
   margin: 0;
 }
 
+/* The two-date backfill form stays compact on larger screens but should not
+ * force Astryx's equal-width grid past the viewport on a phone. */
+.backfill-date-layout {
+  min-width: 0;
+}
+
+@media (max-width: 520px) {
+  .backfill-date-layout {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .legacy-app {
   min-height: 100dvh;
   color: var(--text);
