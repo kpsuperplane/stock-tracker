@@ -4,4 +4,15 @@ export interface Env extends Cloudflare.Env {
   SCREENING_QUEUE: Queue<ScreeningJobMessage>;
   EXA_API_KEY?: string;
   MARKETAUX_API_TOKEN?: string;
+  READ_MODELS_ENABLED?: string;
+  READ_MODEL_ENABLED?: string;
+  PORTFOLIO_READ_MODELS_ENABLED?: string;
+  PORTFOLIO_READ_MODEL_ENABLED?: string;
+  CALENDAR_READ_MODELS_ENABLED?: string;
+  CALENDAR_READ_MODEL_ENABLED?: string;
+  JOB_READ_MODELS_ENABLED?: string;
+  JOB_READ_MODEL_ENABLED?: string;
+  ENABLE_PORTFOLIO_READ_MODEL?: string;
+  ENABLE_CALENDAR_READ_MODEL?: string;
+  ENABLE_JOB_READ_MODEL?: string;
 }

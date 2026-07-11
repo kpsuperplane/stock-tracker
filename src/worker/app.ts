@@ -7,6 +7,11 @@ import { ApiError } from "./errors";
 import { backfillRoutes } from "./routes/backfills";
 import { eventImportRoutes } from "./routes/event-imports";
 import { corporateActionRoutes, eventsRoutes } from "./routes/events";
+import {
+  calendarRoutes,
+  jobRoutes,
+  portfolioRoutes,
+} from "./routes/read-models";
 import { reportRoutes } from "./routes/reports";
 import { retryRoutes } from "./routes/retries";
 import { tickerRoutes } from "./routes/tickers";
@@ -64,6 +69,9 @@ export const createApp = () => {
   app.route("/api/events", eventsRoutes);
   app.route("/api/event-imports", eventImportRoutes);
   app.route("/api/reports", reportRoutes);
+  app.route("/api/portfolio", portfolioRoutes);
+  app.route("/api/calendar", calendarRoutes);
+  app.route("/api/jobs", jobRoutes);
   app.route("/api/screenings", retryRoutes);
   app.route("/api/tickers", tickerRoutes);
 

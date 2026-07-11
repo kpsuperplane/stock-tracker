@@ -1,0 +1,549 @@
+import { DecimalValue } from "../domain/decimal";
+import { deriveHoldings } from "../domain/holdings";
+import type {
+  PortfolioConflictDto,
+  PortfolioMovementDto,
+  PortfolioPositionDto,
+  PortfolioReadModelDto,
+  ReadModelLocale,
+  ReadModelSourceDto,
+} from "../shared/contracts";
+
+interface TransactionRow {
+  instrument_id: string;
+  trade_date: string;
+  quantity_decimal: string;
+  price_decimal: string;
+  side: "buy" | "sell";
+  id: string;
+}
+
+interface InstrumentRow {
+  instrument_id: string;
+  symbol: string;
+  company_name: string;
+  exchange: string;
+  currency: "USD" | "CAD";
+}
+
+interface SplitRow {
+  instrument_id: string;
+  effective_date: string;
+  split_numerator: string;
+  split_denominator: string;
+  id: string;
+}
+
+interface FactRow {
+  id: string;
+  instrument_id: string;
+  trading_date: string;
+  previous_trading_date: string | null;
+  previous_raw_close_decimal: string | null;
+  current_raw_close_decimal: string;
+  split_adjusted_previous_close_decimal: string | null;
+  movement_amount_decimal: string | null;
+  movement_percent_decimal: string | null;
+  raw_close_difference_decimal: string | null;
+  movement_basis: "split_adjusted_price_return" | "legacy_migration";
+  status: "valid" | "stale" | "error";
+  error_code: string | null;
+  error_message: string | null;
+}
+
+interface AnalysisRow {
+  daily_market_fact_id: string;
+  summary_zh_cn: string | null;
+  status: "pending" | "complete" | "stale" | "error";
+  error_code: string | null;
+  error_message: string | null;
+}
+
+interface SourceRow {
+  movement_analysis_id: string;
+  title: string;
+  publisher: string | null;
+  published_at: string | null;
+  source_url: string;
+  cited: number;
+}
+
+interface CoverageRow {
+  instrument_id: string;
+  provider: string;
+  status: string;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+interface ActionRow {
+  instrument_id: string;
+  effective_date: string;
+  status: string;
+  conflict_code: string | null;
+  conflict_message: string | null;
+}
+
+export interface PortfolioReadModelInput {
+  today: string;
+  locale: ReadModelLocale;
+  limit?: number;
+  cursor?: { symbol: string; instrumentId: string } | null;
+}
+
+const safeDecimal = (value: string | null): string | null => {
+  if (value === null) return null;
+  try {
+    return DecimalValue.parse(value).toString();
+  } catch {
+    return null;
+  }
+};
+
+const multiplyDecimal = (
+  left: string | null,
+  right: string | null,
+): string | null => {
+  const normalizedLeft = safeDecimal(left);
+  const normalizedRight = safeDecimal(right);
+  if (normalizedLeft === null || normalizedRight === null) return null;
+  try {
+    return DecimalValue.parse(normalizedLeft)
+      .multiply(normalizedRight)
+      .toString();
+  } catch {
+    return null;
+  }
+};
+
+const qualifies = (value: string | null): boolean | null => {
+  const normalized = safeDecimal(value);
+  if (normalized === null) return null;
+  try {
+    const value = DecimalValue.parse(normalized);
+    return (
+      (value.isNegative() ? value.multiply("-1") : value).compare("5") >= 0
+    );
+  } catch {
+    return null;
+  }
+};
+
+const safeSourceUrl = (value: string | null): string | null => {
+  if (!value) return null;
+  try {
+    const trimmed = value.trim();
+    const parsed = new URL(trimmed);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.hostname.length > 0 &&
+      !parsed.username &&
+      !parsed.password
+      ? trimmed
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const analysisStatus = (
+  fact: FactRow | undefined,
+  analysis: AnalysisRow | undefined,
+): PortfolioPositionDto["analysisStatus"] => {
+  if (!fact) return null;
+  if (!analysis) return "unavailable";
+  return analysis.status;
+};
+
+const factFreshness = (
+  fact: FactRow | undefined,
+): PortfolioPositionDto["freshness"] => {
+  if (!fact) return "unavailable";
+  return fact.status === "valid" ? "fresh" : fact.status;
+};
+
+const conflictForAction = (row: ActionRow): PortfolioConflictDto => ({
+  code: row.conflict_code ?? `split_${row.status}`,
+  message: row.conflict_message ?? `Corporate action is ${row.status}.`,
+  instrumentId: row.instrument_id,
+  effectiveDate: row.effective_date,
+});
+
+const conflictForCoverage = (row: CoverageRow): PortfolioConflictDto => ({
+  code: row.error_code ?? `split_coverage_${row.status}`,
+  message: row.error_message ?? `Split coverage is ${row.status}.`,
+  instrumentId: row.instrument_id,
+});
+
+export class PortfolioReadModelService {
+  constructor(private readonly db: D1Database) {}
+
+  async read(input: PortfolioReadModelInput): Promise<PortfolioReadModelDto> {
+    const [transactionResult, instrumentResult, splitResult, factResult] =
+      await Promise.all([
+        this.db
+          .prepare(
+            `SELECT id, instrument_id, trade_date, side,
+                    quantity_decimal, price_decimal
+             FROM transactions ORDER BY instrument_id, trade_date, id`,
+          )
+          .all<TransactionRow>(),
+        this.db
+          .prepare(
+            `SELECT DISTINCT i.id AS instrument_id, i.symbol, i.company_name,
+                    i.exchange, i.currency
+             FROM instruments i JOIN transactions t ON t.instrument_id = i.id
+             ORDER BY i.symbol, i.id`,
+          )
+          .all<InstrumentRow>(),
+        this.db
+          .prepare(
+            `SELECT id, instrument_id, effective_date,
+                    split_numerator, split_denominator
+             FROM corporate_actions WHERE status = 'active'
+             ORDER BY instrument_id, effective_date, id`,
+          )
+          .all<SplitRow>(),
+        this.db
+          .prepare(
+            `SELECT id, instrument_id, trading_date, previous_trading_date,
+                    previous_raw_close_decimal, current_raw_close_decimal,
+                    split_adjusted_previous_close_decimal,
+                    movement_amount_decimal, movement_percent_decimal,
+                    raw_close_difference_decimal, movement_basis, status,
+                    error_code, error_message
+             FROM daily_market_facts WHERE trading_date <= ?1
+             ORDER BY instrument_id, trading_date DESC`,
+          )
+          .bind(input.today)
+          .all<FactRow>(),
+      ]);
+
+    const transactionsByInstrument = new Map<string, TransactionRow[]>();
+    for (const row of transactionResult.results) {
+      const rows = transactionsByInstrument.get(row.instrument_id) ?? [];
+      rows.push(row);
+      transactionsByInstrument.set(row.instrument_id, rows);
+    }
+    const splitsByInstrument = new Map<string, SplitRow[]>();
+    for (const row of splitResult.results) {
+      const rows = splitsByInstrument.get(row.instrument_id) ?? [];
+      rows.push(row);
+      splitsByInstrument.set(row.instrument_id, rows);
+    }
+
+    const latestFacts = new Map<string, FactRow>();
+    for (const row of factResult.results) {
+      if (!latestFacts.has(row.instrument_id))
+        latestFacts.set(row.instrument_id, row);
+    }
+    const factIds = [...latestFacts.values()].map((fact) => fact.id);
+    const analyses = new Map<string, AnalysisRow>();
+    const sources = new Map<string, ReadModelSourceDto[]>();
+    if (factIds.length > 0) {
+      const placeholders = factIds
+        .map((_id, index) => `?${index + 1}`)
+        .join(", ");
+      const analysisResult = await this.db
+        .prepare(
+          `SELECT daily_market_fact_id, summary_zh_cn, status,
+                  error_code, error_message
+           FROM movement_analyses
+           WHERE daily_market_fact_id IN (${placeholders})`,
+        )
+        .bind(...factIds)
+        .all<AnalysisRow>();
+      for (const row of analysisResult.results)
+        analyses.set(row.daily_market_fact_id, row);
+      const analysisIds = analysisResult.results.map(
+        (row) => row.daily_market_fact_id,
+      );
+      if (analysisIds.length > 0) {
+        const sourcePlaceholders = analysisIds
+          .map((_id, index) => `?${index + 1}`)
+          .join(", ");
+        const sourceResult = await this.db
+          .prepare(
+            `SELECT a.daily_market_fact_id AS movement_analysis_id,
+                    s.title, s.publisher, s.published_at, s.source_url, s.cited
+             FROM movement_analyses a JOIN news_sources s
+               ON s.movement_analysis_id = a.id
+             WHERE a.daily_market_fact_id IN (${sourcePlaceholders})
+             ORDER BY a.daily_market_fact_id, s.source_order`,
+          )
+          .bind(...analysisIds)
+          .all<SourceRow>();
+        for (const row of sourceResult.results) {
+          const sourceUrl = safeSourceUrl(row.source_url);
+          if (!sourceUrl) continue;
+          const list = sources.get(row.movement_analysis_id) ?? [];
+          list.push({
+            title: row.title,
+            publisher: row.publisher,
+            publishedAt: row.published_at,
+            sourceUrl,
+            cited: Boolean(row.cited),
+          });
+          sources.set(row.movement_analysis_id, list);
+        }
+      }
+    }
+
+    const instrumentIds = instrumentResult.results.map(
+      (row) => row.instrument_id,
+    );
+    const [coverageResult, actionResult] = await Promise.all([
+      instrumentIds.length === 0
+        ? Promise.resolve({ results: [] as CoverageRow[] })
+        : this.db
+            .prepare(
+              `SELECT instrument_id, provider, status, error_code, error_message
+               FROM corporate_action_coverage
+               WHERE instrument_id IN (${instrumentIds.map((_id, index) => `?${index + 1}`).join(", ")})
+                 AND status <> 'confirmed'`,
+            )
+            .bind(...instrumentIds)
+            .all<CoverageRow>(),
+      instrumentIds.length === 0
+        ? Promise.resolve({ results: [] as ActionRow[] })
+        : this.db
+            .prepare(
+              `SELECT instrument_id, effective_date, status,
+                      conflict_code, conflict_message
+               FROM corporate_actions
+               WHERE instrument_id IN (${instrumentIds.map((_id, index) => `?${index + 1}`).join(", ")})
+                 AND status IN ('candidate', 'quarantined')`,
+            )
+            .bind(...instrumentIds)
+            .all<ActionRow>(),
+    ]);
+    const conflictsByInstrument = new Map<string, PortfolioConflictDto[]>();
+    for (const row of coverageResult.results) {
+      const list = conflictsByInstrument.get(row.instrument_id) ?? [];
+      list.push(conflictForCoverage(row));
+      conflictsByInstrument.set(row.instrument_id, list);
+    }
+    for (const row of actionResult.results) {
+      const list = conflictsByInstrument.get(row.instrument_id) ?? [];
+      list.push(conflictForAction(row));
+      conflictsByInstrument.set(row.instrument_id, list);
+    }
+
+    const positions: PortfolioPositionDto[] = [];
+    const orphanConflicts: PortfolioConflictDto[] = [];
+    for (const instrument of instrumentResult.results) {
+      const transactions =
+        transactionsByInstrument.get(instrument.instrument_id) ?? [];
+      const splits = splitsByInstrument.get(instrument.instrument_id) ?? [];
+      const conflicts = [
+        ...(conflictsByInstrument.get(instrument.instrument_id) ?? []),
+      ];
+      let quantityDecimal: string;
+      try {
+        quantityDecimal = deriveHoldings({
+          today: input.today,
+          transactions: transactions.map((row) => ({
+            id: row.id,
+            tradeDate: row.trade_date,
+            side: row.side,
+            quantityDecimal: row.quantity_decimal,
+          })),
+          activeSplits: splits.map((row) => ({
+            id: row.id,
+            effectiveDate: row.effective_date,
+            numerator: row.split_numerator,
+            denominator: row.split_denominator,
+          })),
+        }).currentQuantity();
+      } catch (error) {
+        quantityDecimal = "0";
+        const conflict = {
+          code: "holding_derivation_error",
+          message: String(error).slice(0, 200),
+          instrumentId: instrument.instrument_id,
+        } satisfies PortfolioConflictDto;
+        conflicts.push(conflict);
+        orphanConflicts.push(conflict);
+      }
+      if (safeDecimal(quantityDecimal) === "0") continue;
+      const fact = latestFacts.get(instrument.instrument_id);
+      const analysis = fact ? analyses.get(fact.id) : undefined;
+      const movementPercent = fact
+        ? safeDecimal(fact.movement_percent_decimal)
+        : null;
+      const qualified =
+        fact?.status === "valid" ? qualifies(movementPercent) : null;
+      const movement: PortfolioMovementDto | null = fact
+        ? {
+            tradingDate: fact.trading_date,
+            previousTradingDate: fact.previous_trading_date,
+            previousRawCloseDecimal: safeDecimal(
+              fact.previous_raw_close_decimal,
+            ),
+            currentRawCloseDecimal: safeDecimal(fact.current_raw_close_decimal),
+            movementAmountDecimal: safeDecimal(fact.movement_amount_decimal),
+            movementPercentDecimal: movementPercent,
+            rawCloseDifferenceDecimal: safeDecimal(
+              fact.raw_close_difference_decimal,
+            ),
+            basis: fact.movement_basis,
+            qualified,
+          }
+        : null;
+      if (fact && fact.status !== "valid") {
+        conflicts.push({
+          code: fact.error_code ?? `market_fact_${fact.status}`,
+          message:
+            fact.error_message ?? `The daily market fact is ${fact.status}.`,
+          instrumentId: instrument.instrument_id,
+          effectiveDate: fact.trading_date,
+        });
+      }
+      if (fact && fact.status === "valid" && movementPercent === null) {
+        conflicts.push({
+          code: "invalid_movement_decimal",
+          message: "The stored movement percentage is not a valid decimal.",
+          instrumentId: instrument.instrument_id,
+          effectiveDate: fact.trading_date,
+        });
+      }
+      if (fact?.movement_basis === "legacy_migration") {
+        conflicts.push({
+          code: "legacy_movement_basis",
+          message:
+            "This movement was migrated before split-adjusted facts were available.",
+          instrumentId: instrument.instrument_id,
+          effectiveDate: fact.trading_date,
+        });
+      }
+      if (fact && qualified === true && analysis?.status !== "complete") {
+        conflicts.push({
+          code:
+            analysis?.error_code ??
+            (analysis
+              ? `movement_analysis_${analysis.status}`
+              : "movement_analysis_unavailable"),
+          message:
+            analysis?.error_message ??
+            (analysis
+              ? `The movement analysis is ${analysis.status}.`
+              : "No movement analysis is available."),
+          instrumentId: instrument.instrument_id,
+          effectiveDate: fact.trading_date,
+        });
+      }
+      const summary =
+        fact?.status === "valid" &&
+        qualified === true &&
+        analysis?.status === "complete"
+          ? analysis.summary_zh_cn
+          : null;
+      const valuation =
+        fact?.status === "valid"
+          ? multiplyDecimal(quantityDecimal, fact.current_raw_close_decimal)
+          : null;
+      const freshness =
+        factFreshness(fact) === "fresh" && qualified === true
+          ? analysis?.status === "complete"
+            ? "fresh"
+            : (analysis?.status ?? "unavailable")
+          : factFreshness(fact);
+      const position: PortfolioPositionDto = {
+        instrumentId: instrument.instrument_id,
+        symbol: instrument.symbol,
+        companyName: instrument.company_name,
+        exchange: instrument.exchange,
+        currency: instrument.currency,
+        quantityDecimal,
+        valuationDecimal: valuation,
+        latestTradingDate: fact?.trading_date ?? null,
+        currentRawCloseDecimal:
+          fact?.status === "valid"
+            ? safeDecimal(fact.current_raw_close_decimal)
+            : null,
+        movement,
+        summaryZhCn: summary,
+        analysisStatus: analysisStatus(fact, analysis),
+        sources:
+          fact?.status === "valid" &&
+          qualified === true &&
+          analysis?.status === "complete"
+            ? (sources.get(fact?.id ?? "") ?? [])
+            : [],
+        freshness,
+        conflicts,
+      };
+      positions.push(position);
+    }
+    positions.sort(
+      (left, right) =>
+        left.symbol.localeCompare(right.symbol) ||
+        left.instrumentId.localeCompare(right.instrumentId),
+    );
+    const cursor = input.cursor;
+    const startIndex = cursor
+      ? positions.findIndex(
+          (position) =>
+            position.symbol > cursor.symbol ||
+            (position.symbol === cursor.symbol &&
+              position.instrumentId > cursor.instrumentId),
+        )
+      : 0;
+    const offset = startIndex < 0 ? positions.length : startIndex;
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 100);
+    const selected = positions.slice(offset, offset + limit);
+    const last = selected.at(-1);
+    const nextCursor =
+      last && offset + selected.length < positions.length
+        ? btoa(
+            JSON.stringify({
+              symbol: last.symbol,
+              instrumentId: last.instrumentId,
+            }),
+          )
+        : null;
+    const totals: Record<"USD" | "CAD", string> = { USD: "0", CAD: "0" };
+    for (const position of positions) {
+      if (position.valuationDecimal !== null) {
+        totals[position.currency] = DecimalValue.parse(
+          totals[position.currency],
+        )
+          .add(position.valuationDecimal)
+          .toString();
+      }
+    }
+    const allConflicts = [
+      ...orphanConflicts,
+      ...positions.flatMap((position) => position.conflicts),
+    ];
+    const actualTradingDates = [
+      ...new Set(factResult.results.map((row) => row.trading_date)),
+    ].sort();
+    const freshness = positions.some(
+      (position) => position.freshness === "error",
+    )
+      ? "error"
+      : positions.some((position) => position.freshness === "stale")
+        ? "stale"
+        : positions.some((position) => position.freshness === "pending")
+          ? "pending"
+          : positions.some((position) => position.freshness === "unavailable")
+            ? "unavailable"
+            : "fresh";
+    return {
+      asOfDate: input.today,
+      actualTradingDates,
+      latestTradingDate:
+        positions
+          .map((position) => position.latestTradingDate)
+          .filter((date): date is string => date !== null)
+          .sort()
+          .at(-1) ?? null,
+      locale: input.locale,
+      positions: selected,
+      totals,
+      conflicts: allConflicts,
+      freshness,
+      nextCursor,
+    };
+  }
+}
