@@ -1,4 +1,4 @@
-import { Banner, Button, Heading, VStack } from "@astryxdesign/core";
+import { Banner, Button, Heading, HStack, VStack } from "@astryxdesign/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CalendarReadModelDto } from "../../shared/contracts";
 import {
@@ -35,6 +35,70 @@ const calendarErrorMessageKey = (
 
 export { calendarErrorMessageKey };
 
+export const calendarConflictBannerStatus = (
+  conflicts: CalendarReadModelDto["conflicts"],
+): "warning" | "error" =>
+  conflicts.some(({ code }) =>
+    /(^|_)(error|invalid|unavailable)(_|$)/i.test(code),
+  )
+    ? "error"
+    : "warning";
+
+const mergeUnique = <T,>(
+  first: T[],
+  second: T[],
+  key: (value: T) => string,
+): T[] => {
+  const merged = new Map<string, T>();
+  for (const value of [...first, ...second]) merged.set(key(value), value);
+  return [...merged.values()];
+};
+
+export const mergeCalendarPages = (
+  current: CalendarReadModelDto,
+  next: CalendarReadModelDto,
+): CalendarReadModelDto => ({
+  ...next,
+  actualTradingDates: [
+    ...new Set([...current.actualTradingDates, ...next.actualTradingDates]),
+  ].sort(),
+  movers: mergeUnique(current.movers, next.movers, (value) => value.id),
+  dividends: mergeUnique(
+    current.dividends,
+    next.dividends,
+    (value) => value.id,
+  ),
+  events: mergeUnique(
+    current.events,
+    next.events,
+    (value) => `${value.kind}:${value.id}`,
+  ),
+  pending: mergeUnique(
+    current.pending,
+    next.pending,
+    (value) =>
+      `${value.kind}:${value.instrumentId ?? "all"}:${value.date ?? "range"}:${value.status}:${value.message}`,
+  ),
+  pendingFacts: mergeUnique(
+    current.pendingFacts,
+    next.pendingFacts,
+    (value) =>
+      `${value.kind}:${value.instrumentId ?? "all"}:${value.date ?? "range"}:${value.status}:${value.message}`,
+  ),
+  splitReview: mergeUnique(
+    current.splitReview,
+    next.splitReview,
+    (value) =>
+      `${value.kind}:${value.instrumentId ?? "all"}:${value.date ?? "range"}:${value.status}:${value.message}`,
+  ),
+  conflicts: mergeUnique(
+    current.conflicts,
+    next.conflicts,
+    (value) =>
+      `${value.code}:${value.instrumentId ?? "all"}:${value.effectiveDate ?? "range"}:${value.message}`,
+  ),
+});
+
 export const CalendarPage = ({
   apiClient = calendarApi,
   initialCalendar,
@@ -55,6 +119,7 @@ export const CalendarPage = ({
   const requestIdRef = useRef(0);
   const [loading, setLoading] = useState(initialCalendar === undefined);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [readModelDisabled, setReadModelDisabled] = useState(false);
   const [selection, setSelection] = useState<CalendarSelection | null>(null);
@@ -63,41 +128,58 @@ export const CalendarPage = ({
     calendarRef.current = calendar;
   }, [calendar]);
 
-  const load = useCallback(async () => {
-    const requestId = ++requestIdRef.current;
-    const hadCachedCalendar = calendarRef.current !== null;
-    setLoading(!hadCachedCalendar);
-    setRefreshing(hadCachedCalendar);
-    setError(null);
-    setReadModelDisabled(false);
-    const range = rangeForView(anchorDate, view);
-    const options: CalendarReadOptions = {
-      locale,
-      view,
-      startDate: range.startDate,
-      endDate: range.endDate,
-      asOfDate: todayDate,
-    };
-    try {
-      const result = await apiClient.read(options);
-      if (requestId !== requestIdRef.current) return;
-      if (result.calendar) {
-        calendarRef.current = result.calendar;
-        setCalendar(result.calendar);
+  const load = useCallback(
+    async (cursor?: string) => {
+      const requestId = ++requestIdRef.current;
+      const isLoadingMore = cursor !== undefined;
+      const hadCachedCalendar = calendarRef.current !== null;
+      setLoading(isLoadingMore ? false : !hadCachedCalendar);
+      setRefreshing(isLoadingMore ? false : hadCachedCalendar);
+      setLoadingMore(isLoadingMore);
+      setError(null);
+      setReadModelDisabled(false);
+      const range = rangeForView(anchorDate, view);
+      const options: CalendarReadOptions = {
+        locale,
+        view,
+        startDate: range.startDate,
+        endDate: range.endDate,
+        asOfDate: todayDate,
+        ...(cursor ? { cursor } : {}),
+      };
+      try {
+        const result = await apiClient.read(options);
+        if (requestId !== requestIdRef.current) return;
+        if (result.calendar) {
+          const nextCalendar =
+            isLoadingMore && calendarRef.current
+              ? mergeCalendarPages(calendarRef.current, result.calendar)
+              : result.calendar;
+          calendarRef.current = nextCalendar;
+          setCalendar(nextCalendar);
+        }
+      } catch (caught) {
+        if (requestId === requestIdRef.current) {
+          const messageKey = calendarErrorMessageKey(caught);
+          setReadModelDisabled(messageKey === "calendarReadModelDisabled");
+          setError(t(messageKey));
+        }
+      } finally {
+        if (requestId === requestIdRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+          setLoadingMore(false);
+        }
       }
-    } catch (caught) {
-      if (requestId === requestIdRef.current) {
-        const messageKey = calendarErrorMessageKey(caught);
-        setReadModelDisabled(messageKey === "calendarReadModelDisabled");
-        setError(t(messageKey));
-      }
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    }
-  }, [apiClient, anchorDate, locale, t, todayDate, view]);
+    },
+    [apiClient, anchorDate, locale, t, todayDate, view],
+  );
+
+  const loadMore = useCallback(() => {
+    const cursor = calendarRef.current?.nextCursor;
+    if (!cursor || loadingMore) return;
+    void load(cursor);
+  }, [load, loadingMore]);
 
   useEffect(() => {
     void load();
@@ -153,7 +235,7 @@ export const CalendarPage = ({
           )}
           {calendar.conflicts.length > 0 && (
             <Banner
-              status="warning"
+              status={calendarConflictBannerStatus(calendar.conflicts)}
               title={t("calendarConflict")}
               defaultIsExpanded
             >
@@ -198,6 +280,19 @@ export const CalendarPage = ({
             onNavigate={setAnchorDate}
             onSelect={setSelection}
           />
+          {calendar.nextCursor && (
+            <HStack gap={2} align="center" wrap="wrap">
+              <Button
+                variant="secondary"
+                label={
+                  loadingMore ? t("calendarLoadingMore") : t("calendarLoadMore")
+                }
+                isLoading={loadingMore}
+                onClick={loadMore}
+              />
+              <span>{t("calendarMoreAvailable")}</span>
+            </HStack>
+          )}
         </VStack>
       )}
 

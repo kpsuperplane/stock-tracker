@@ -27,6 +27,9 @@ export const messageCatalog = {
     calendarView: "Calendar view",
     calendarLoading: "Loading calendar…",
     calendarRefreshing: "Refreshing calendar…",
+    calendarLoadMore: "Load more calendar events",
+    calendarLoadingMore: "Loading more events…",
+    calendarMoreAvailable: "This range has more events.",
     calendarLoadError: "Calendar could not be loaded.",
     calendarReadModelDisabled: "Calendar data is not enabled yet.",
     calendarReadModelDisabledDescription:
@@ -243,6 +246,9 @@ export const messageCatalog = {
     calendarView: "日历视图",
     calendarLoading: "正在加载日历…",
     calendarRefreshing: "正在刷新日历…",
+    calendarLoadMore: "加载更多日历事件",
+    calendarLoadingMore: "正在加载更多事件…",
+    calendarMoreAvailable: "此范围还有更多事件。",
     calendarLoadError: "无法加载日历。",
     calendarReadModelDisabled: "日历数据尚未启用。",
     calendarReadModelDisabledDescription:

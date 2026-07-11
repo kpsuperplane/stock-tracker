@@ -8,7 +8,12 @@ import type {
 import { ApiClientError } from "../api";
 import { MoverDialog } from "../calendar/MoverDialog";
 import { I18nProvider } from "../i18n/I18nProvider";
-import { CalendarPage, calendarErrorMessageKey } from "./CalendarPage";
+import {
+  CalendarPage,
+  calendarConflictBannerStatus,
+  calendarErrorMessageKey,
+  mergeCalendarPages,
+} from "./CalendarPage";
 
 const mover: CalendarMoverDto = {
   id: "mover-1",
@@ -124,6 +129,7 @@ describe("CalendarPage", () => {
     expect(markup).toContain("苹果公司发布了新的产品更新。");
     expect(markup).toContain("https://example.com/apple");
     expect(markup).not.toContain("Mover");
+    expect(markup).toContain('aria-label="关闭"');
   });
 
   it("shows native dividend totals and source details in the dialog", () => {
@@ -209,6 +215,85 @@ describe("CalendarPage", () => {
       </I18nProvider>,
     );
     expect(empty).toContain("No movers or dividends in this range.");
+  });
+
+  it("surfaces paginated calendar ranges and merges subsequent pages", () => {
+    const paginated = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <CalendarPage
+          initialCalendar={{ ...calendar, nextCursor: "cursor-2" }}
+          today="2026-07-11"
+        />
+      </I18nProvider>,
+    );
+    expect(paginated).toContain("Load more calendar events");
+    expect(paginated).toContain("This range has more events.");
+
+    const merged = mergeCalendarPages(
+      { ...calendar, events: [{ ...mover, kind: "mover" }] },
+      {
+        ...calendar,
+        actualTradingDates: ["2026-07-11"],
+        events: [{ ...dividend, kind: "dividend" }],
+        movers: [],
+        dividends: [dividend],
+        nextCursor: null,
+      },
+    );
+    expect(merged.events).toHaveLength(2);
+    expect(merged.actualTradingDates).toEqual(["2026-07-10", "2026-07-11"]);
+    expect(merged.nextCursor).toBeNull();
+  });
+
+  it("uses error severity for failed facts and conflict codes", () => {
+    const moverError = {
+      ...mover,
+      freshness: "error" as const,
+      analysisStatus: "error" as const,
+    };
+    const dividendError = { ...dividend, status: "error" as const };
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <div>
+          <MoverDialog
+            selection={{ kind: "mover", event: moverError }}
+            onOpenChange={() => undefined}
+            onSelect={() => undefined}
+          />
+          <MoverDialog
+            selection={{ kind: "dividend", event: dividendError }}
+            onOpenChange={() => undefined}
+            onSelect={() => undefined}
+          />
+        </div>
+      </I18nProvider>,
+    );
+    expect(
+      markup.match(/data-variant="error"/g)?.length,
+    ).toBeGreaterThanOrEqual(3);
+    expect(markup).toContain('aria-label="Close"');
+    expect(markup).toContain(">Error<");
+    const cnDividendMarkup = renderToStaticMarkup(
+      <I18nProvider initialLocale="cn">
+        <MoverDialog
+          selection={{ kind: "dividend", event: dividendError }}
+          onOpenChange={() => undefined}
+          onSelect={() => undefined}
+        />
+      </I18nProvider>,
+    );
+    expect(cnDividendMarkup).toContain(">错误<");
+    expect(cnDividendMarkup).not.toContain(">error<");
+    expect(
+      calendarConflictBannerStatus([
+        { code: "legacy_movement_basis", message: "legacy" },
+      ]),
+    ).toBe("warning");
+    expect(
+      calendarConflictBannerStatus([
+        { code: "market_fact_error", message: "failed" },
+      ]),
+    ).toBe("error");
   });
 
   it("maps read-model failures to explicit copy", () => {

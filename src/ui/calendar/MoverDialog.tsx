@@ -1,10 +1,12 @@
 import {
   Badge,
+  Button,
   Dialog,
   DialogHeader,
   HStack,
   VStack,
 } from "@astryxdesign/core";
+import { Icon } from "@astryxdesign/core/Icon";
 import type {
   CalendarDividendDto,
   CalendarMoverDto,
@@ -32,6 +34,52 @@ const DetailRow = ({ label, value }: { label: string; value: string }) => (
     <strong>{value}</strong>
   </HStack>
 );
+
+export const freshnessBadgeVariant = (
+  freshness: CalendarMoverDto["freshness"],
+): "neutral" | "success" | "warning" | "error" => {
+  switch (freshness) {
+    case "fresh":
+      return "success";
+    case "stale":
+    case "pending":
+      return "warning";
+    case "error":
+      return "error";
+    default:
+      return "neutral";
+  }
+};
+
+export const analysisBadgeVariant = (
+  status: NonNullable<CalendarMoverDto["analysisStatus"]>,
+): "neutral" | "success" | "warning" | "error" => {
+  switch (status) {
+    case "complete":
+      return "success";
+    case "stale":
+    case "pending":
+      return "warning";
+    case "error":
+      return "error";
+    default:
+      return "neutral";
+  }
+};
+
+export const dividendStatusBadgeVariant = (
+  status: CalendarDividendDto["status"],
+): "neutral" | "success" | "warning" | "error" => {
+  switch (status) {
+    case "active":
+      return "success";
+    case "stale":
+    case "superseded":
+      return "warning";
+    case "error":
+      return "error";
+  }
+};
 
 const SourceLink = ({
   sourceUrl,
@@ -128,12 +176,12 @@ const MoverDetails = ({ event }: { event: CalendarMoverDto }) => {
       <HStack gap={1} wrap="wrap">
         <Badge variant="success" label={t("qualified")} />
         <Badge
-          variant={event.freshness === "fresh" ? "success" : "warning"}
+          variant={freshnessBadgeVariant(event.freshness)}
           label={t(event.freshness)}
         />
         {event.analysisStatus && event.analysisStatus !== "complete" && (
           <Badge
-            variant={event.analysisStatus === "error" ? "error" : "warning"}
+            variant={analysisBadgeVariant(event.analysisStatus)}
             label={t(event.analysisStatus)}
           />
         )}
@@ -180,8 +228,8 @@ const DividendDetails = ({ event }: { event: CalendarDividendDto }) => {
           label={event.eligible ? t("eligibleShares") : t("notEligible")}
         />
         <Badge
-          variant={event.status === "active" ? "success" : "warning"}
-          label={event.status}
+          variant={dividendStatusBadgeVariant(event.status)}
+          label={t(event.status)}
         />
         <Badge variant="neutral" label={t("bestEffort")} />
       </HStack>
@@ -232,6 +280,16 @@ export const MoverDialog = ({
       : selection?.kind === "dividend"
         ? `${selection.event.symbol} · ${t("dividend")}`
         : t("dateDetails");
+  const closeButton = (
+    <Button
+      variant="ghost"
+      label={t("close")}
+      tooltip={t("close")}
+      icon={<Icon icon="close" color="inherit" />}
+      isIconOnly
+      onClick={() => onOpenChange(false)}
+    />
+  );
   return (
     <Dialog
       isOpen={selection !== null}
@@ -241,7 +299,7 @@ export const MoverDialog = ({
       maxHeight="min(80vh, 720px)"
       padding={4}
     >
-      <DialogHeader title={title} onOpenChange={onOpenChange} />
+      <DialogHeader title={title} endContent={closeButton} />
       {selection?.kind === "mover" && <MoverDetails event={selection.event} />}
       {selection?.kind === "dividend" && (
         <DividendDetails event={selection.event} />
