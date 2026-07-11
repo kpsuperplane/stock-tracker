@@ -8,10 +8,16 @@ import { MarketauxNewsProvider } from "../providers/marketaux";
 import { YahooMarketDataProvider } from "../providers/yahoo";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
 import { ScreeningService } from "../services/screening";
-import type { ScreeningJobMessage } from "../shared/contracts";
+import {
+  isPipelineDispatchMessage,
+  isScreeningJobMessage,
+  type QueueMessage,
+  type ScreeningJobMessage,
+} from "../shared/contracts";
 import type { Env } from "./env";
 import { safeErrorMessage } from "./errors";
 import { logEvent } from "./log";
+import { handlePipelineQueue } from "./pipeline-queue";
 
 const retryable = (error: unknown) =>
   error instanceof TypeError ||
@@ -19,7 +25,7 @@ const retryable = (error: unknown) =>
     String(error),
   );
 
-export const handleQueue = async (
+export const handleLegacyQueue = async (
   batch: MessageBatch<ScreeningJobMessage>,
   env: Env,
 ) => {
@@ -108,4 +114,70 @@ export const handleQueue = async (
       }
     }),
   );
+};
+
+/**
+ * Route both queue contracts through one Worker entrypoint.  The exact-shape
+ * discriminants keep a malformed/new payload from reaching the legacy
+ * screening service, while preserving the old behavior for legacy messages.
+ */
+export const handleQueue = async (
+  batch: MessageBatch<QueueMessage>,
+  env: Env,
+) => {
+  const legacy = batch.messages.filter((message) =>
+    isScreeningJobMessage(message.body),
+  );
+  const normalized = batch.messages.filter((message) =>
+    isPipelineDispatchMessage(message.body),
+  );
+  const unknown = batch.messages.filter(
+    (message) =>
+      !isScreeningJobMessage(message.body) &&
+      !isPipelineDispatchMessage(message.body),
+  );
+  unknown.forEach((message) => {
+    message.ack();
+  });
+  const normalizedEnabled = readPortfolioFeatureFlags(env).newWrites;
+  if (!normalizedEnabled) {
+    // Queue delivery is not the source of truth.  A flag-off deployment
+    // acknowledges an already-delivered normalized envelope and leaves its
+    // dispatch batch/work rows in D1 for the gated dispatcher to recover.
+    normalized.forEach((message) => {
+      message.ack();
+    });
+  }
+  await Promise.all([
+    legacy.length > 0
+      ? handleLegacyQueue(
+          { ...batch, messages: legacy } as MessageBatch<ScreeningJobMessage>,
+          env,
+        )
+      : Promise.resolve(),
+    normalized.length > 0 && normalizedEnabled
+      ? handlePipelineQueue(
+          { ...batch, messages: normalized } as MessageBatch<
+            import("../shared/contracts").PipelineDispatchMessage
+          >,
+          {
+            db: env.DB,
+            dlq: env.NORMALIZED_WORK_DLQ,
+            // Provider/LLM execution is intentionally injected at the final
+            // cutover. Never silently mark normalized work complete when that
+            // processor is absent; retain the D1 terminal/DLQ audit instead.
+            processor: {
+              process: async ({ work }) =>
+                work.map((item) => ({
+                  workItemId: item.id,
+                  kind: "terminal" as const,
+                  errorCode: "pipeline_processor_unconfigured",
+                  errorMessage:
+                    "Normalized provider processor is not configured for this deployment.",
+                })),
+            },
+          },
+        )
+      : Promise.resolve(),
+  ]);
 };

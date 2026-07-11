@@ -7,21 +7,62 @@ import {
 } from "../services/backfill-pipeline";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
+import {
+  NORMALIZED_DISPATCH_CRON,
+  NORMALIZED_PLANNER_CRONS,
+  ScheduledReconciliationService,
+} from "../services/scheduled-reconciliation";
+import { WorkDispatcherService } from "../services/work-dispatcher";
 import type { Env } from "./env";
 import { logEvent } from "./log";
 
 export const LEGACY_SCREENING_CRON = "0 22 * * MON-FRI";
 
+const isNormalizedPlannerCron = (cron: string): boolean =>
+  (NORMALIZED_PLANNER_CRONS as readonly string[]).includes(cron);
+
 export const handleScheduled = async (
   controller: ScheduledController,
   env: Env,
 ) => {
-  // Task 1 only provisions the future planner/dispatcher triggers. They must
-  // remain no-ops until Task 4 wires a normalized scheduler. The legacy
-  // trigger remains unchanged until that cutover is explicitly implemented.
+  const portfolioFlags = readPortfolioFeatureFlags(env);
+  const scheduledTime = new Date(controller.scheduledTime);
+  if (isNormalizedPlannerCron(controller.cron)) {
+    if (!portfolioFlags.newWrites) return;
+    const result = await new ScheduledReconciliationService({
+      db: env.DB,
+      now: () => scheduledTime,
+    }).plan(scheduledTime);
+    logEvent("portfolio_planner_scheduled", {
+      cron: controller.cron,
+      scheduledTime: scheduledTime.toISOString(),
+      result: JSON.stringify(result),
+    });
+    return;
+  }
+  if (controller.cron === NORMALIZED_DISPATCH_CRON) {
+    if (!portfolioFlags.newWrites) return;
+    const plannerContinuation = await new ScheduledReconciliationService({
+      db: env.DB,
+      now: () => scheduledTime,
+    }).continueScheduledPlanning(scheduledTime);
+    const result = await new WorkDispatcherService({
+      db: env.DB,
+      queue: env.NORMALIZED_WORK_QUEUE,
+      dlq: env.NORMALIZED_WORK_DLQ,
+      now: () => scheduledTime,
+    }).dispatch();
+    logEvent("portfolio_dispatch_scheduled", {
+      scheduledTime: scheduledTime.toISOString(),
+      plannerContinuation: JSON.stringify(plannerContinuation),
+      result: JSON.stringify(result),
+    });
+    return;
+  }
+  // Keep the legacy scheduler authoritative while the normalized write flag
+  // is disabled (and available as the rollback path after enabling it).
   if (controller.cron !== LEGACY_SCREENING_CRON) return;
   const now = new Date(controller.scheduledTime).toISOString();
-  const portfolioFlags = readPortfolioFeatureFlags(env);
   const dualWrite = new LegacyDualWriteService(env.DB, {
     enabled: portfolioFlags.dualWrite,
   });

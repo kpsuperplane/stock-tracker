@@ -11,6 +11,7 @@ import {
 } from "../../src/services/work-dispatcher";
 import type { PipelineDispatchMessage } from "../../src/shared/contracts";
 import { PipelineQueueConsumer } from "../../src/worker/pipeline-queue";
+import { handleQueue } from "../../src/worker/queue";
 
 const now = "2026-07-10T21:00:00.000Z";
 
@@ -182,6 +183,32 @@ describe("normalized work dispatcher and queue consumer", () => {
         "SELECT state FROM dispatch_batches WHERE id = 'batch-1'",
       ).first(),
     ).toEqual({ state: "queued" });
+  });
+
+  it("resends a queued D1 batch after a flag-off consumer acknowledgement", async () => {
+    await insertInstrument();
+    await insertWork({ id: "queued-flag-off", date: "2026-01-01" });
+    const first = dispatcher();
+    await first.service.dispatch();
+    const messageBody = first.sent[0];
+    if (!messageBody) throw new Error("dispatch_message_missing");
+    const flagOffMessage = {
+      body: messageBody,
+      ack: vi.fn(),
+      retry: vi.fn(),
+    };
+    await handleQueue({ messages: [flagOffMessage] } as never, env);
+    expect(flagOffMessage.ack).toHaveBeenCalledOnce();
+    const recoveredQueue = fakeQueue();
+    const recovered = new WorkDispatcherService({
+      db: env.DB,
+      queue: recoveredQueue.queue,
+      now: () => new Date("2026-07-10T21:15:00.000Z"),
+      newId: () => "batch-recovery",
+    });
+    const result = await recovered.dispatch();
+    expect(result.recoveredQueuedBatches).toBe(1);
+    expect(recoveredQueue.sent).toEqual([messageBody]);
   });
 
   it("recovers an expired processing lease and redelivers the queued batch", async () => {
@@ -644,6 +671,48 @@ describe("normalized work dispatcher and queue consumer", () => {
       { work_item_id: "mixed-complete", outcome: "processed" },
       { work_item_id: "mixed-terminal", outcome: "failed" },
     ]);
+  });
+
+  it("terminalizes a delayed bar after the six-hour horizon while retaining D1 state", async () => {
+    await insertInstrument();
+    await insertWork({ id: "delayed-bar", date: "2026-01-01" });
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const delayed = message(sent[0] as PipelineDispatchMessage);
+    const consumer = new PipelineQueueConsumer({
+      db: env.DB,
+      now: () => new Date("2026-07-11T03:00:01.000Z"),
+      processor: {
+        process: async ({ work }) => [
+          {
+            workItemId: work[0]?.id ?? "",
+            kind: "retry" as const,
+            errorCode: "market_bar_pending",
+          },
+        ],
+      },
+    });
+    await env.DB.prepare(
+      `UPDATE dispatch_batches
+       SET state = 'processing', dispatch_lease_until = NULL,
+           processing_lease_until = '2026-07-10T21:10:00.000Z'
+       WHERE id = 'batch-1'`,
+    ).run();
+    await consumer.handle({ messages: [delayed] } as never);
+    expect(delayed.ack).toHaveBeenCalledOnce();
+    expect(
+      await env.DB.prepare(
+        `SELECT work.state, work.terminal_error_code, batch.state AS batch_state
+         FROM work_items work
+         JOIN dispatch_batch_items item ON item.work_item_id = work.id
+         JOIN dispatch_batches batch ON batch.id = item.dispatch_batch_id
+         WHERE work.id = 'delayed-bar'`,
+      ).first(),
+    ).toEqual({
+      state: "terminal",
+      terminal_error_code: "delayed_bar_horizon_exhausted",
+      batch_state: "terminal",
+    });
   });
 
   it("reconciles links before acknowledging a duplicate complete batch", async () => {

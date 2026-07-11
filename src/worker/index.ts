@@ -1,4 +1,4 @@
-import type { ScreeningJobMessage } from "../shared/contracts";
+import type { QueueMessage } from "../shared/contracts";
 import { createApp } from "./app";
 import type { Env } from "./env";
 import { handleQueue } from "./queue";
@@ -14,4 +14,4 @@ export default {
   async queue(batch, env): Promise<void> {
     await handleQueue(batch, env);
   },
-} satisfies ExportedHandler<Env, ScreeningJobMessage>;
+} satisfies ExportedHandler<Env, QueueMessage>;

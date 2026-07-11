@@ -3,7 +3,11 @@ import {
   DispatchBatchRepository,
 } from "../db/dispatch-batches";
 import { type WorkItemRecord, WorkItemRepository } from "../db/work-items";
-import type { PipelineDispatchMessage } from "../shared/contracts";
+import { isWithinDelayedBarHorizon } from "../services/scheduled-reconciliation";
+import {
+  isPipelineDispatchMessage,
+  type PipelineDispatchMessage,
+} from "../shared/contracts";
 
 const DEFAULT_PROCESSING_LEASE_MS = 10 * 60_000;
 const DEFAULT_RETRY_DELAY_SECONDS = 30;
@@ -17,6 +21,12 @@ export interface PipelineWorkOutcome {
   errorCode?: string;
   errorMessage?: string;
 }
+
+const delayedBarError = (code: string | undefined): boolean =>
+  code !== undefined &&
+  /(?:delayed[_-]?bar|bar[_-]?(?:not[_-]?final|pending)|market[_-]?bar[_-]?pending)/i.test(
+    code,
+  );
 
 export interface PipelineWorkProcessor {
   process?(input: {
@@ -49,17 +59,7 @@ const retryable = (error: unknown): boolean =>
     String(error),
   );
 
-const validMessage = (body: unknown): body is PipelineDispatchMessage => {
-  if (typeof body !== "object" || body === null) return false;
-  const keys = Object.keys(body);
-  return (
-    keys.length === 1 &&
-    keys[0] === "dispatchBatchId" &&
-    typeof (body as { dispatchBatchId?: unknown }).dispatchBatchId ===
-      "string" &&
-    (body as { dispatchBatchId: string }).dispatchBatchId.length > 0
-  );
-};
+const validMessage = isPipelineDispatchMessage;
 
 const missingOutcomes = (
   work: readonly WorkItemRecord[],
@@ -316,7 +316,32 @@ export class PipelineQueueConsumer {
     for (const item of input.work) {
       const outcome = outcomeById.get(item.id);
       if (!outcome || outcome.kind === "retry") {
-        hasRetry = true;
+        if (
+          outcome &&
+          delayedBarError(outcome.errorCode) &&
+          !isWithinDelayedBarHorizon(
+            // The batch timestamp is the first dispatch attempt and is shared
+            // by every item in a provider range.  Using the item creation time
+            // would let a planner retry indefinitely by recreating children.
+            new Date(input.batch.createdAt),
+            new Date(input.timestamp),
+          )
+        ) {
+          const changed = await this.workItems.transition({
+            id: item.id,
+            from: "processing",
+            to: "terminal",
+            now: input.timestamp,
+            expectedProcessingLeaseUntil: input.leaseUntil,
+            errorCode: "delayed_bar_horizon_exhausted",
+            errorMessage:
+              "The market bar was not finalized within the six-hour retry horizon.",
+          });
+          if (!changed) lostLease = true;
+          else hasTerminal = true;
+        } else {
+          hasRetry = true;
+        }
         continue;
       }
       if (outcome.kind === "terminal") {

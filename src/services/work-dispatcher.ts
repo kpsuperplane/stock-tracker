@@ -4,11 +4,14 @@ import {
 } from "../db/dispatch-batches";
 import { type WorkItemRecord, WorkItemRepository } from "../db/work-items";
 import type { PipelineDispatchMessage } from "../shared/contracts";
+import { easternMarketDate } from "../shared/dates";
 
 const MARKET_FACT_WORK_TYPE = "market_fact";
 const DEFAULT_DAILY_CEILING = 2_500;
 const DEFAULT_MAX_BATCH_DAYS = 90;
 const DEFAULT_DISPATCH_LEASE_MS = 5 * 60_000;
+const DEFAULT_QUEUED_RECOVERY_DELAY_MS = 10 * 60_000;
+const DEFAULT_QUEUED_RECOVERY_LIMIT = 100;
 
 export interface WorkDispatcherDependencies {
   db: D1Database;
@@ -21,6 +24,8 @@ export interface WorkDispatcherDependencies {
   dispatchLeaseMs?: number;
   dispatchMaxAttempts?: number;
   dlqLeaseMs?: number;
+  queuedRecoveryDelayMs?: number;
+  queuedRecoveryLimit?: number;
 }
 
 export interface DispatchWorkInput {
@@ -34,6 +39,7 @@ export interface DispatchResult {
   sendFailures: number;
   recoveredDispatchBatches: number;
   recoveredProcessingBatches: number;
+  recoveredQueuedBatches: number;
   ceilingRemaining: number;
 }
 
@@ -115,6 +121,8 @@ export class WorkDispatcherService {
   private readonly dispatchLeaseMs: number;
   private readonly dispatchMaxAttempts: number;
   private readonly dlqLeaseMs: number;
+  private readonly queuedRecoveryDelayMs: number;
+  private readonly queuedRecoveryLimit: number;
 
   constructor(private readonly dependencies: WorkDispatcherDependencies) {
     this.batches = new DispatchBatchRepository(dependencies.db);
@@ -141,6 +149,21 @@ export class WorkDispatcherService {
       1_000,
       Math.floor(dependencies.dlqLeaseMs ?? DEFAULT_DISPATCH_LEASE_MS),
     );
+    this.queuedRecoveryDelayMs = Math.max(
+      1_000,
+      Math.floor(
+        dependencies.queuedRecoveryDelayMs ?? DEFAULT_QUEUED_RECOVERY_DELAY_MS,
+      ),
+    );
+    this.queuedRecoveryLimit = Math.max(
+      1,
+      Math.min(
+        DEFAULT_QUEUED_RECOVERY_LIMIT,
+        Math.floor(
+          dependencies.queuedRecoveryLimit ?? DEFAULT_QUEUED_RECOVERY_LIMIT,
+        ),
+      ),
+    );
   }
 
   async dispatch(input: DispatchWorkInput = {}): Promise<DispatchResult> {
@@ -165,9 +188,14 @@ export class WorkDispatcherService {
       if (sent) sentBatches += 1;
       else sendFailures += 1;
     }
+    for (const batchId of recovered.queuedBatchIds) {
+      const sent = await this.sendQueued(batchId);
+      if (sent) sentBatches += 1;
+      else sendFailures += 1;
+    }
 
-    const dayStart = `${timestamp.slice(0, 10)}T00:00:00.000Z`;
-    const dispatchedToday = await this.countDispatchedWork(dayStart);
+    const reservationDay = easternMarketDate(timestamp);
+    const dispatchedToday = await this.countDispatchedWork(reservationDay);
     const ceilingRemaining = Math.max(0, this.dailyCeiling - dispatchedToday);
     const requested = input.maxWorkItems ?? ceilingRemaining;
     const allowance = Math.max(0, Math.min(ceilingRemaining, requested));
@@ -179,6 +207,7 @@ export class WorkDispatcherService {
         sendFailures,
         recoveredDispatchBatches: recovered.dispatchBatchIds.length,
         recoveredProcessingBatches: recovered.processingBatchIds.length,
+        recoveredQueuedBatches: recovered.queuedBatchIds.length,
         ceilingRemaining,
       };
     }
@@ -223,7 +252,7 @@ export class WorkDispatcherService {
       };
       const reserved = await this.batches.reserveDailyCapacity({
         dispatchBatchId: batch.id,
-        reservationDay: timestamp.slice(0, 10),
+        reservationDay,
         workCount: selected.length,
         dailyCeiling: this.dailyCeiling,
         createdAt: timestamp,
@@ -252,6 +281,7 @@ export class WorkDispatcherService {
       sendFailures,
       recoveredDispatchBatches: recovered.dispatchBatchIds.length,
       recoveredProcessingBatches: recovered.processingBatchIds.length,
+      recoveredQueuedBatches: recovered.queuedBatchIds.length,
       ceilingRemaining: Math.max(0, ceilingRemaining - dispatchedWorkItems),
     };
   }
@@ -460,8 +490,8 @@ export class WorkDispatcherService {
     }
   }
 
-  private async countDispatchedWork(dayStart: string): Promise<number> {
-    return this.batches.countReservedWork(dayStart.slice(0, 10));
+  private async countDispatchedWork(reservationDay: string): Promise<number> {
+    return this.batches.countReservedWork(reservationDay);
   }
 
   private async recoverPendingDlq(timestamp: string): Promise<void> {
@@ -635,6 +665,7 @@ export class WorkDispatcherService {
   private async recover(timestamp: string): Promise<{
     dispatchBatchIds: string[];
     processingBatchIds: string[];
+    queuedBatchIds: string[];
   }> {
     await this.workItems.recoverOrphanedDispatches(timestamp);
     const expiredDispatches = await this.dependencies.db
@@ -698,7 +729,29 @@ export class WorkDispatcherService {
         processingBatchIds.push(row.id);
       }
     }
-    return { dispatchBatchIds, processingBatchIds };
+    const queued = await this.dependencies.db
+      .prepare(
+        `SELECT id FROM dispatch_batches
+         WHERE state = 'queued'
+           AND updated_at <= ?1
+         ORDER BY created_at, id
+         LIMIT ?2`,
+      )
+      .bind(
+        new Date(
+          Date.parse(timestamp) - this.queuedRecoveryDelayMs,
+        ).toISOString(),
+        this.queuedRecoveryLimit,
+      )
+      .all<{ id: string }>();
+    const recoveredProcessing = new Set(processingBatchIds);
+    return {
+      dispatchBatchIds,
+      processingBatchIds,
+      queuedBatchIds: queued.results
+        .map((row) => row.id)
+        .filter((id) => !recoveredProcessing.has(id)),
+    };
   }
 }
 

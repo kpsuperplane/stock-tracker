@@ -136,6 +136,10 @@ One Cloudflare Worker protects the React static assets and Hono API with HTTP Ba
 - No automatic paid fallback or plan upgrade.
 - Missing full-market data never publishes an empty holiday report.
 - Reprocessing retains the old published generation until the replacement completes.
+- The normalized Queue handler is feature-flagged and currently wires the
+  Plan 2 D1 outbox/lease consumer only; provider and LLM execution remains an
+  explicit processor injection at cutover. With the default flag off, no
+  normalized envelope is consumed and D1 work remains the source of truth.
 
 ## Production bootstrap
 
@@ -177,7 +181,17 @@ Cloudflare remains the production deployer. The deploy script reruns local gates
 - Use Backfill with **Reprocess existing reports** to atomically replace a date.
 - Use a mover's **Retry explanation** action only when price data exists but analysis failed.
 - Stale queued/processing leases are reconciled from D1 before dispatch.
+- Queued batches are resent from D1 on each 15-minute pass, including after a
+  flag-off Queue acknowledgement; Queue delivery is therefore advisory and
+  never the only copy of unfinished work.
 - Provider timeouts, HTTP 429 responses, and 5xx responses retry at most three attempts with backoff. Terminal errors remain visible per ticker and never suppress successful movers.
+- The normalized planner is guarded at 16:30 America/Toronto (both 20:30 and
+  21:30 UTC candidates are configured); the first candidate that maps to a
+  Toronto weekday owns the deterministic date key and a duplicate is a no-op.
+  Delayed daily bars remain retryable for a six-hour horizon. Dispatcher leases
+  are five minutes, consumer processing leases are ten minutes, and queued
+  envelopes are eligible for resend after ten minutes; the recurring
+  15-minute dispatcher recovers each state from D1.
 - Rotate the two Basic Auth Worker secrets to revoke cached browser access.
 
 Useful production diagnostics:

@@ -106,6 +106,22 @@ describe("Queue consumer", () => {
     ).toEqual({ explanation_zh_cn: "企业客户增长可能推动股价上涨。" });
   });
 
+  it("acknowledges a normalized envelope while new writes are disabled", async () => {
+    const message = {
+      body: { dispatchBatchId: "flag-off-batch" },
+      ack: vi.fn(),
+      retry: vi.fn(),
+    };
+    await handleQueue(
+      { messages: [message] } as unknown as MessageBatch<
+        import("../../src/shared/contracts").PipelineDispatchMessage
+      >,
+      env,
+    );
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+  });
+
   it("retries a transient provider failure with backoff", async () => {
     const run = await createRun("AAPL", "retry-aapl", "2026-07-08");
     const [screeningId] = run.screeningIds;

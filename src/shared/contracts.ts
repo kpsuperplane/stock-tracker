@@ -9,6 +9,41 @@ export interface PipelineDispatchMessage {
   dispatchBatchId: string;
 }
 
+export type QueueMessage = ScreeningJobMessage | PipelineDispatchMessage;
+
+/**
+ * Queue routing discriminants.  The two message contracts are intentionally
+ * exact and mutually exclusive: a normalized message can never be mistaken
+ * for a legacy screening payload (or vice versa) during the transition.
+ */
+export const isPipelineDispatchMessage = (
+  body: unknown,
+): body is PipelineDispatchMessage => {
+  if (typeof body !== "object" || body === null) return false;
+  const candidate = body as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 1 &&
+    typeof candidate.dispatchBatchId === "string" &&
+    candidate.dispatchBatchId.length > 0
+  );
+};
+
+export const isScreeningJobMessage = (
+  body: unknown,
+): body is ScreeningJobMessage => {
+  if (typeof body !== "object" || body === null) return false;
+  const candidate = body as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 3 &&
+    typeof candidate.screeningId === "string" &&
+    candidate.screeningId.length > 0 &&
+    typeof candidate.reportRunId === "string" &&
+    candidate.reportRunId.length > 0 &&
+    typeof candidate.tickerId === "string" &&
+    candidate.tickerId.length > 0
+  );
+};
+
 export type RunStatus =
   | "pending"
   | "running"
