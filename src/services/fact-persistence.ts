@@ -311,8 +311,6 @@ export class DividendFactsService {
         const declarationKey = dividendDeclarationKey(event.providerEventId);
         return activeProviderRows.find(
           (row) =>
-            row.exDate >= input.startDate &&
-            row.exDate <= input.endDate &&
             row.providerEventId !== event.providerEventId &&
             ((declarationKey !== null &&
               dividendDeclarationKey(row.providerEventId) === declarationKey) ||
