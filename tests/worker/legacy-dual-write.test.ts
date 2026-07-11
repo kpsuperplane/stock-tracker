@@ -283,6 +283,35 @@ describe("legacy compatibility dual-write", () => {
     ).toEqual({ count: 0 });
   });
 
+  it("repairs a published screening whose marker was never created", async () => {
+    const ticker = await insertTicker("legacy-marker-missing", "NOMARK");
+    const repository = new RunRepository(env.DB);
+    const run = await prepareRun({
+      date: "2026-07-09",
+      tickers: [ticker],
+      repository,
+      prices: [
+        {
+          previousDate: "2026-07-08",
+          previousPrice: 100,
+          currentPrice: 110,
+          changeAmount: 10,
+          changePct: 10,
+        },
+      ],
+    });
+    await repository.finalizeRun(run.runId, now);
+    const dualWrite = enabledService();
+    expect(await dualWrite.retryPending(now)).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM legacy_dual_write_repairs WHERE legacy_screening_id = ?1",
+      )
+        .bind(run.screeningIds[0])
+        .first(),
+    ).toEqual({ state: "resolved" });
+  });
+
   it("keeps duplicate finalization idempotent", async () => {
     const ticker = await insertTicker("legacy-duplicate", "DUP");
     const repository = new RunRepository(env.DB, enabledService());
@@ -343,6 +372,14 @@ describe("legacy compatibility dual-write", () => {
          WHERE screening_id = ?2`,
     )
       .bind("2026-07-10T23:00:00.000Z", run.screeningIds[0])
+      .run();
+    await env.DB.prepare(
+      `UPDATE legacy_dual_write_repairs
+          SET state = 'failed', failure_code = 'test_retry',
+              failure_message = 'retry source metadata', resolved_at = NULL
+        WHERE legacy_screening_id = ?1`,
+    )
+      .bind(run.screeningIds[0])
       .run();
     await dualWrite.onPublishedRun(run.runId, now);
     expect(

@@ -65,8 +65,8 @@ interface ExistingAnalysisRow {
 }
 
 interface RepairRetryRow extends LegacyScreeningRow {
-  repairState: "pending" | "failed";
-  attemptCount: number;
+  repairState: "pending" | "failed" | null;
+  attemptCount: number | null;
 }
 
 export interface LegacyDualWriteOptions {
@@ -217,15 +217,18 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
                 a.model AS analysisModel, a.status AS analysisStatus,
                 repair.state AS repairState,
                 repair.attempt_count AS attemptCount
-           FROM legacy_dual_write_repairs repair
-           JOIN report_runs r ON r.id = repair.legacy_run_id
-           JOIN screenings s ON s.id = repair.legacy_screening_id
+           FROM report_runs r
+           JOIN screenings s ON s.report_run_id = r.id
+           LEFT JOIN legacy_dual_write_repairs repair
+             ON repair.legacy_screening_id = s.id
            LEFT JOIN analyses a ON a.screening_id = s.id
-          WHERE repair.state IN ('pending', 'failed')
-            AND repair.attempt_count < ?1
-            AND r.published = 1
-            AND r.generation = repair.legacy_generation
-          ORDER BY repair.last_attempted_at, repair.id
+          WHERE r.published = 1
+            AND (repair.id IS NULL OR (
+              repair.state IN ('pending', 'failed')
+              AND repair.attempt_count < ?1
+              AND r.generation = repair.legacy_generation
+            ))
+          ORDER BY repair.last_attempted_at, repair.id, s.id
           LIMIT ?2`,
       )
       .bind(maxAttempts, limit)
@@ -240,16 +243,19 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         sourcesByRun.set(runId, list);
       }
     }
+    let attempted = 0;
     for (const screening of rows.results) {
-      await this.writeScreening(
+      const claimed = await this.writeScreening(
         screening,
         (sourcesByRun.get(screening.runId) ?? []).filter(
           (source) => source.screeningId === screening.screeningId,
         ),
         now,
+        maxAttempts,
       );
+      if (claimed) attempted += 1;
     }
-    return rows.results.length;
+    return attempted;
   }
 
   private async loadPublishedScreenings(
@@ -336,35 +342,82 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
   private async startAttempt(
     screening: LegacyScreeningRow,
     now: string,
-  ): Promise<void> {
-    await this.db
+    maxAttempts?: number,
+  ): Promise<{ claimed: boolean; needsBucketRepair: boolean }> {
+    let existing = await this.db
       .prepare(
-        `INSERT INTO legacy_dual_write_repairs
-           (id, legacy_run_id, legacy_screening_id, legacy_generation,
-            trading_date, ticker_id, state, attempt_count,
-            first_attempted_at, last_attempted_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 1, ?7, ?7, ?7, ?7)
-         ON CONFLICT(legacy_screening_id) DO UPDATE SET
-           legacy_run_id = excluded.legacy_run_id,
-           legacy_generation = excluded.legacy_generation,
-           trading_date = excluded.trading_date,
-           ticker_id = excluded.ticker_id,
-           instrument_id = NULL,
-           state = 'pending', failure_code = NULL, failure_message = NULL,
-           attempt_count = legacy_dual_write_repairs.attempt_count + 1,
-           last_attempted_at = excluded.last_attempted_at,
-           resolved_at = NULL, updated_at = excluded.updated_at`,
+        `SELECT state, attempt_count AS attemptCount
+           FROM legacy_dual_write_repairs
+          WHERE legacy_screening_id = ?1`,
+      )
+      .bind(screening.screeningId)
+      .first<{ state: string; attemptCount: number }>();
+    if (!existing) {
+      const inserted = await this.db
+        .prepare(
+          `INSERT OR IGNORE INTO legacy_dual_write_repairs
+             (id, legacy_run_id, legacy_screening_id, legacy_generation,
+              trading_date, ticker_id, state, attempt_count,
+              first_attempted_at, last_attempted_at, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 1, ?7, ?7, ?7, ?7)`,
+        )
+        .bind(
+          `${LEGACY_REPAIR_PREFIX}${screening.screeningId}`,
+          screening.runId,
+          screening.screeningId,
+          screening.generation,
+          screening.tradingDate,
+          screening.tickerId,
+          now,
+        )
+        .run();
+      if (inserted.meta.changes === 1) {
+        return { claimed: true, needsBucketRepair: false };
+      }
+      existing = await this.db
+        .prepare(
+          `SELECT state, attempt_count AS attemptCount
+             FROM legacy_dual_write_repairs
+            WHERE legacy_screening_id = ?1`,
+        )
+        .bind(screening.screeningId)
+        .first<{ state: string; attemptCount: number }>();
+    }
+    if (!existing) return { claimed: false, needsBucketRepair: false };
+    const retryableState =
+      existing.state === "pending" || existing.state === "failed";
+    const canClaim =
+      retryableState &&
+      (maxAttempts === undefined || existing.attemptCount < maxAttempts);
+    if (!canClaim) return { claimed: false, needsBucketRepair: false };
+    const result = await this.db
+      .prepare(
+        `UPDATE legacy_dual_write_repairs
+            SET legacy_run_id = ?1, legacy_generation = ?2,
+                trading_date = ?3, ticker_id = ?4, instrument_id = NULL,
+                state = 'pending', failure_code = NULL, failure_message = NULL,
+                attempt_count = attempt_count + 1,
+                last_attempted_at = ?5, resolved_at = NULL, updated_at = ?5
+          WHERE legacy_screening_id = ?6
+            AND (?7 IS NULL OR state IN ('pending', 'failed'))
+            AND (?7 IS NULL OR attempt_count < ?7)`,
       )
       .bind(
-        `${LEGACY_REPAIR_PREFIX}${screening.screeningId}`,
         screening.runId,
-        screening.screeningId,
         screening.generation,
         screening.tradingDate,
         screening.tickerId,
         now,
+        screening.screeningId,
+        maxAttempts ?? null,
       )
       .run();
+    return {
+      claimed: result.meta.changes === 1,
+      needsBucketRepair:
+        result.meta.changes === 1 &&
+        (existing.state === "pending" || existing.state === "failed"),
+    };
   }
 
   private async markResolved(
@@ -415,9 +468,12 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
     screening: LegacyScreeningRow,
     legacySources: readonly LegacySourceRow[],
     now: string,
-  ): Promise<void> {
-    await this.startAttempt(screening, now);
+    maxAttempts?: number,
+  ): Promise<boolean> {
     try {
+      const attempt = await this.startAttempt(screening, now, maxAttempts);
+      if (!attempt.claimed) return false;
+      const needsBucketRepair = attempt.needsBucketRepair;
       await this.beforeAttempt?.(screening);
       const currentWinner = await this.db
         .prepare(
@@ -435,7 +491,7 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
             "Published generation was superseded before compatibility write.",
           now,
         });
-        return;
+        return true;
       }
       const instrumentId = await this.ensureInstrument(screening, now);
       const current = legacyNumberToDecimal(screening.currentPrice, true);
@@ -448,7 +504,7 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
           instrumentId,
           now,
         });
-        return;
+        return true;
       }
 
       const previous = legacyNumberToDecimal(screening.previousPrice, true);
@@ -570,12 +626,12 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         tradingDate: screening.tradingDate,
         generation: screening.generation,
       };
-      if (factChanged || analysisChanged) {
+      if (factChanged || analysisChanged || needsBucketRepair) {
         const statements: D1PreparedStatement[] = [];
         if (factChanged) {
           statements.push(this.facts.upsertStatement(fact, publicationGuard));
         }
-        if (analysisChanged) {
+        if (analysisChanged || needsBucketRepair) {
           statements.push(
             this.analyses.upsertStatement(
               analysisWithFingerprint,
@@ -589,11 +645,18 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
                 sources: validSources,
               },
               publicationGuard,
+              factId,
             ),
           );
         }
-        const results = await this.db.batch(statements);
-        const changed = results.some((result) => result.meta.changes > 0);
+        statements.push(
+          this.buckets.bumpStatement(
+            await bucketForDate(this.db, screening.tradingDate),
+            now,
+            publicationGuard,
+          ),
+        );
+        await this.db.batch(statements);
         const winnerAfterWrite = await this.db
           .prepare(
             `SELECT generation FROM report_runs
@@ -601,7 +664,7 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
           )
           .bind(screening.runId, screening.tradingDate)
           .first<{ generation: number }>();
-        if (!changed && winnerAfterWrite?.generation !== screening.generation) {
+        if (winnerAfterWrite?.generation !== screening.generation) {
           await this.markFailure({
             screening,
             state: "skipped",
@@ -611,18 +674,29 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
             instrumentId,
             now,
           });
-          return;
+          return true;
         }
-        if (changed) {
-          await this.buckets
-            .bumpStatement(
-              await bucketForDate(this.db, screening.tradingDate),
-              now,
+        const resolvedFact = await this.db
+          .prepare(
+            `SELECT id FROM daily_market_facts
+               WHERE instrument_id = ?1 AND trading_date = ?2`,
+          )
+          .bind(instrumentId, screening.tradingDate)
+          .first<{ id: string }>();
+        if (!resolvedFact) throw new Error("legacy_fact_unresolved");
+        if (analysisChanged) {
+          const resolvedAnalysis = await this.db
+            .prepare(
+              `SELECT id FROM movement_analyses
+                 WHERE daily_market_fact_id = ?1`,
             )
-            .run();
+            .bind(resolvedFact.id)
+            .first<{ id: string }>();
+          if (!resolvedAnalysis) throw new Error("legacy_analysis_unresolved");
         }
       }
       await this.markResolved(screening.screeningId, instrumentId, now);
+      return true;
     } catch (error) {
       await this.markFailure({
         screening,
@@ -631,6 +705,7 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         message: boundedMessage(error),
         now,
       });
+      return true;
     }
   }
 

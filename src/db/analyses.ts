@@ -76,21 +76,25 @@ export class MovementAnalysisRepository {
       sources: readonly NewsSourceRecord[];
     },
     publicationGuard?: { tradingDate: string; generation: number },
+    dailyMarketFactId?: string,
   ): D1PreparedStatement[] {
     return [
       this.db
         .prepare(
           `DELETE FROM news_sources
-            WHERE movement_analysis_id = ?1
-              AND (?2 IS NULL OR EXISTS (
+            WHERE movement_analysis_id = COALESCE(
+              (SELECT id FROM movement_analyses
+                WHERE daily_market_fact_id = ?2), ?1)
+              AND (?3 IS NULL OR EXISTS (
                 SELECT 1 FROM report_runs winner
-                 WHERE winner.trading_date = ?2
+                 WHERE winner.trading_date = ?3
                    AND winner.published = 1
-                   AND winner.generation = ?3
+                   AND winner.generation = ?4
               ))`,
         )
         .bind(
           input.movementAnalysisId,
+          dailyMarketFactId ?? null,
           publicationGuard?.tradingDate ?? null,
           publicationGuard?.generation ?? null,
         ),
@@ -100,12 +104,16 @@ export class MovementAnalysisRepository {
             `INSERT INTO news_sources
              (id, movement_analysis_id, source_order, title, publisher,
               published_at, source_url, cited, created_at)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
-              WHERE ?10 IS NULL OR EXISTS (
+             SELECT ?1,
+                    COALESCE(
+                      (SELECT id FROM movement_analyses
+                        WHERE daily_market_fact_id = ?10), ?2),
+                    ?3, ?4, ?5, ?6, ?7, ?8, ?9
+              WHERE ?11 IS NULL OR EXISTS (
                 SELECT 1 FROM report_runs winner
-                 WHERE winner.trading_date = ?10
+                 WHERE winner.trading_date = ?11
                    AND winner.published = 1
-                   AND winner.generation = ?11
+                   AND winner.generation = ?12
               )`,
           )
           .bind(
@@ -118,6 +126,7 @@ export class MovementAnalysisRepository {
             source.sourceUrl,
             source.cited ? 1 : 0,
             source.createdAt,
+            dailyMarketFactId ?? null,
             publicationGuard?.tradingDate ?? null,
             publicationGuard?.generation ?? null,
           ),

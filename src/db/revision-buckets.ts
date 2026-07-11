@@ -1,7 +1,39 @@
 export class FactRevisionBucketRepository {
   constructor(private readonly db: D1Database) {}
 
-  bumpStatement(bucketKey: string, updatedAt: string): D1PreparedStatement {
+  bumpStatement(
+    bucketKey: string,
+    updatedAt: string,
+    publicationGuard?: { tradingDate: string; generation: number },
+  ): D1PreparedStatement {
+    if (publicationGuard) {
+      return this.db
+        .prepare(
+          `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
+           SELECT ?1, 1, ?2
+            WHERE EXISTS (
+              SELECT 1 FROM report_runs winner
+               WHERE winner.trading_date = ?3
+                 AND winner.published = 1
+                 AND winner.generation = ?4
+            )
+           ON CONFLICT(bucket_key) DO UPDATE SET
+            revision = fact_revision_buckets.revision + 1,
+            updated_at = excluded.updated_at
+            WHERE EXISTS (
+              SELECT 1 FROM report_runs winner
+               WHERE winner.trading_date = ?3
+                 AND winner.published = 1
+                 AND winner.generation = ?4
+            )`,
+        )
+        .bind(
+          bucketKey,
+          updatedAt,
+          publicationGuard.tradingDate,
+          publicationGuard.generation,
+        );
+    }
     return this.db
       .prepare(
         `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
