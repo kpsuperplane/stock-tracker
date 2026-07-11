@@ -299,6 +299,7 @@ export class LedgerService {
         instrumentId: resolved.instrumentId,
         changedStartDate: resolved.changedStartDate,
         timestamp,
+        previousCoverage: coverage,
         status: "conflict",
         candidateStatus: "quarantined",
         conflict: "negative_history",
@@ -317,6 +318,7 @@ export class LedgerService {
           instrumentId: resolved.instrumentId,
           changedStartDate: resolved.changedStartDate,
           timestamp,
+          previousCoverage: coverage,
           status: "review_required",
           candidateStatus: "candidate",
           conflict: null,
@@ -371,6 +373,20 @@ export class LedgerService {
         null,
       ),
       ...this.promotionStatements(resolved.instrumentId, snapshot, timestamp),
+      ...(coverage
+        ? [
+            this.revisions.bumpRangeStatement(
+              coverage.requestedStartDate,
+              coverage.requestedEndDate,
+              timestamp,
+            ),
+            this.revisions.bumpLatestForRangeStatement(
+              coverage.requestedStartDate,
+              coverage.requestedEndDate,
+              timestamp,
+            ),
+          ]
+        : []),
       this.actions.upsertCoverageStatement(
         this.coverageFromSnapshot({
           instrumentId: resolved.instrumentId,
@@ -468,6 +484,7 @@ export class LedgerService {
           instrumentId: input.instrumentId,
           snapshot,
           timestamp,
+          previousCoverage: coverage,
         });
         if (persisted) return persisted;
       }
@@ -528,6 +545,20 @@ export class LedgerService {
         null,
       ),
       ...this.promotionStatements(input.instrumentId, snapshot, timestamp),
+      ...(coverage
+        ? [
+            this.revisions.bumpRangeStatement(
+              coverage.requestedStartDate,
+              coverage.requestedEndDate,
+              timestamp,
+            ),
+            this.revisions.bumpLatestForRangeStatement(
+              coverage.requestedStartDate,
+              coverage.requestedEndDate,
+              timestamp,
+            ),
+          ]
+        : []),
       this.actions.upsertCoverageStatement(
         this.coverageFromSnapshot({
           instrumentId: input.instrumentId,
@@ -1137,6 +1168,7 @@ export class LedgerService {
     instrumentId: string;
     changedStartDate: string;
     timestamp: string;
+    previousCoverage: CoverageRecord | null;
     status: "review_required" | "conflict";
     candidateStatus: "candidate" | "quarantined";
     conflict: string | null;
@@ -1160,6 +1192,20 @@ export class LedgerService {
         input.candidateStatus,
         input.conflict,
       ),
+      ...(input.previousCoverage
+        ? [
+            this.revisions.bumpRangeStatement(
+              input.previousCoverage.requestedStartDate,
+              input.previousCoverage.requestedEndDate,
+              input.timestamp,
+            ),
+            this.revisions.bumpLatestForRangeStatement(
+              input.previousCoverage.requestedStartDate,
+              input.previousCoverage.requestedEndDate,
+              input.timestamp,
+            ),
+          ]
+        : []),
       ...(input.candidateStatus === "quarantined"
         ? input.snapshot.events.map((event) =>
             this.dependencies.db
@@ -1226,6 +1272,7 @@ export class LedgerService {
     instrumentId: string;
     snapshot: SplitEventRange;
     timestamp: string;
+    previousCoverage: CoverageRecord | null;
   }): Promise<LedgerMutationResult | null> {
     const jobId = this.newId();
     const workId = this.newId();
@@ -1244,6 +1291,20 @@ export class LedgerService {
         "candidate",
         null,
       ),
+      ...(input.previousCoverage
+        ? [
+            this.revisions.bumpRangeStatement(
+              input.previousCoverage.requestedStartDate,
+              input.previousCoverage.requestedEndDate,
+              input.timestamp,
+            ),
+            this.revisions.bumpLatestForRangeStatement(
+              input.previousCoverage.requestedStartDate,
+              input.previousCoverage.requestedEndDate,
+              input.timestamp,
+            ),
+          ]
+        : []),
       this.actions.upsertCoverageStatement(
         this.coverageFromSnapshot({
           instrumentId: input.instrumentId,

@@ -295,6 +295,9 @@ describe("LedgerService", () => {
       },
     });
     expect(first.kind).toBe("committed");
+    const oldRangeBefore = await env.DB.prepare(
+      "SELECT revision FROM fact_revision_buckets WHERE bucket_key = '2025-06'",
+    ).first<{ revision: number }>();
 
     const result = await service(provider).apply({
       expectedPositionBasisRevision: 1,
@@ -311,6 +314,12 @@ describe("LedgerService", () => {
       kind: "review_required",
       snapshot: { range: { requestedStartDate: "2024-01-01" } },
     });
+    const oldRangeAfter = await env.DB.prepare(
+      "SELECT revision FROM fact_revision_buckets WHERE bucket_key = '2025-06'",
+    ).first<{ revision: number }>();
+    expect(oldRangeAfter?.revision).toBeGreaterThan(
+      oldRangeBefore?.revision ?? 0,
+    );
   });
 
   it("invalidates a prior confirmation when the provider snapshot revision changes", async () => {

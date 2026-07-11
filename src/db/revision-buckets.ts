@@ -89,8 +89,11 @@ export class FactRevisionBucketRepository {
       .prepare(
         `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
          SELECT 'latest', 1, ?3
-         WHERE (SELECT MAX(trading_date) FROM daily_market_facts)
-           BETWEEN ?1 AND ?2
+         WHERE COALESCE(
+             (SELECT MAX(trading_date) FROM daily_market_facts
+              WHERE trading_date <= date('now')),
+             (SELECT MAX(trading_date) FROM daily_market_facts)
+           ) BETWEEN ?1 AND ?2
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
            updated_at = excluded.updated_at`,
@@ -113,8 +116,11 @@ export class FactRevisionBucketRepository {
          SELECT 'latest', 1, ?2
          WHERE EXISTS (
            SELECT 1 FROM ranges
-           WHERE (SELECT MAX(trading_date) FROM daily_market_facts)
-                 BETWEEN start_date AND end_date
+           WHERE COALESCE(
+               (SELECT MAX(trading_date) FROM daily_market_facts
+                WHERE trading_date <= date('now')),
+               (SELECT MAX(trading_date) FROM daily_market_facts)
+             ) BETWEEN start_date AND end_date
          )
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
@@ -149,7 +155,11 @@ export class FactRevisionBucketRepository {
          WHERE EXISTS (
            SELECT 1 FROM work_items
            WHERE id = ?1 AND scope = 'global_fact'
-             AND effective_date = (SELECT MAX(trading_date) FROM daily_market_facts)
+             AND effective_date = COALESCE(
+               (SELECT MAX(trading_date) FROM daily_market_facts
+                WHERE trading_date <= date('now')),
+               (SELECT MAX(trading_date) FROM daily_market_facts)
+             )
          )
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
@@ -191,7 +201,11 @@ export class FactRevisionBucketRepository {
            JOIN dispatch_batch_items item ON item.work_item_id = work.id
            WHERE item.dispatch_batch_id = ?1
              AND work.scope = 'global_fact'
-             AND work.effective_date = (SELECT MAX(trading_date) FROM daily_market_facts)
+             AND work.effective_date = COALESCE(
+               (SELECT MAX(trading_date) FROM daily_market_facts
+                WHERE trading_date <= date('now')),
+               (SELECT MAX(trading_date) FROM daily_market_facts)
+             )
          )
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
@@ -225,7 +239,11 @@ export class FactRevisionBucketRepository {
          WHERE EXISTS (
            SELECT 1 FROM work_items
            WHERE scope = 'global_fact' AND updated_at = ?1
-             AND effective_date = (SELECT MAX(trading_date) FROM daily_market_facts)
+             AND effective_date = COALESCE(
+               (SELECT MAX(trading_date) FROM daily_market_facts
+                WHERE trading_date <= date('now')),
+               (SELECT MAX(trading_date) FROM daily_market_facts)
+             )
          )
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,

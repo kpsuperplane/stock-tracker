@@ -142,26 +142,6 @@ const safeSourceUrl = (value: string | null): string | null => {
   }
 };
 
-const rangePlaceholders = (ids: readonly string[]): string =>
-  ids.map((_id, index) => `?${index + 1}`).join(", ");
-
-const idChunks = (ids: readonly string[], size = 99): string[][] => {
-  const chunks: string[][] = [];
-  for (let index = 0; index < ids.length; index += size)
-    chunks.push(ids.slice(index, index + size));
-  return chunks;
-};
-
-const collectIdChunks = async <T>(
-  ids: readonly string[],
-  read: (chunk: string[]) => Promise<readonly T[]>,
-  size = 99,
-): Promise<T[]> => {
-  const rows: T[] = [];
-  for (const chunk of idChunks(ids, size)) rows.push(...(await read(chunk)));
-  return rows;
-};
-
 const pendingMessage = (status: string): string =>
   status === "processing"
     ? "Market data is currently processing."
@@ -326,62 +306,70 @@ export class CalendarReadModelService {
     >();
     const sources = new Map<string, ReadModelSourceDto[]>();
     if (factIds.length > 0) {
-      const analysisRows = await collectIdChunks(
-        factIds,
-        async (chunk) =>
-          (
-            await this.db
-              .prepare(
-                `SELECT id, daily_market_fact_id, summary_zh_cn, status,
-                      error_code, error_message
-               FROM movement_analyses WHERE daily_market_fact_id IN (${rangePlaceholders(chunk)})`,
-              )
-              .bind(...chunk)
-              .all<AnalysisRow>()
-          ).results,
-      );
+      const analysisRows = (
+        await this.db
+          .prepare(
+            `SELECT id, daily_market_fact_id, summary_zh_cn, status,
+                    error_code, error_message
+             FROM movement_analyses
+             WHERE daily_market_fact_id IN (SELECT value FROM json_each(?1))`,
+          )
+          .bind(JSON.stringify(factIds))
+          .all<AnalysisRow>()
+      ).results;
       for (const row of analysisRows)
         analyses.set(row.daily_market_fact_id, row);
       const instrumentIdsWithFacts = [
         ...new Set(factResult.results.map((row) => row.instrument_id)),
       ];
-      const completeRows = await collectIdChunks(
-        instrumentIdsWithFacts,
-        async (chunk) => {
-          const startPlaceholder = `?${chunk.length + 1}`;
-          const endPlaceholder = `?${chunk.length + 2}`;
-          return (
-            await this.db
-              .prepare(
-                `SELECT f.instrument_id, f.trading_date, a.id, a.daily_market_fact_id,
-                        a.summary_zh_cn, a.status, a.error_code, a.error_message
-                 FROM movement_analyses a
-                 JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-                 WHERE a.status = 'complete'
-                   AND f.instrument_id IN (${rangePlaceholders(chunk)})
-                   AND f.movement_basis <> 'legacy_migration'
-                   AND f.trading_date <= ${endPlaceholder}
-                   AND (
-                     f.trading_date >= ${startPlaceholder}
-                     OR f.trading_date = (
-                       SELECT MAX(previous_fact.trading_date)
-                       FROM daily_market_facts previous_fact
-                       JOIN movement_analyses previous_analysis
-                         ON previous_analysis.daily_market_fact_id = previous_fact.id
-                       WHERE previous_fact.instrument_id = f.instrument_id
-                         AND previous_fact.movement_basis <> 'legacy_migration'
-                         AND previous_fact.trading_date < ${startPlaceholder}
-                         AND previous_analysis.status = 'complete'
+      const completeRows = (
+        await this.db
+          .prepare(
+            `SELECT f.instrument_id, f.trading_date, a.id, a.daily_market_fact_id,
+                    a.summary_zh_cn, a.status, a.error_code, a.error_message
+             FROM movement_analyses a
+             JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
+             WHERE a.status = 'complete'
+               AND f.instrument_id IN (SELECT value FROM json_each(?1))
+               AND f.movement_basis <> 'legacy_migration'
+               AND f.trading_date <= ?3
+               AND (
+                 f.trading_date >= ?2
+                 OR f.trading_date = (
+                   SELECT MAX(previous_fact.trading_date)
+                   FROM daily_market_facts previous_fact
+                   JOIN movement_analyses previous_analysis
+                     ON previous_analysis.daily_market_fact_id = previous_fact.id
+                   WHERE previous_fact.instrument_id = f.instrument_id
+                     AND previous_fact.movement_basis <> 'legacy_migration'
+                     AND previous_fact.trading_date < ?2
+                     AND previous_analysis.status = 'complete'
+                     AND previous_analysis.summary_zh_cn IS NOT NULL
+                 )
+                 OR f.trading_date = (
+                   SELECT MAX(previous_fact.trading_date)
+                   FROM daily_market_facts previous_fact
+                   JOIN movement_analyses previous_analysis
+                     ON previous_analysis.daily_market_fact_id = previous_fact.id
+                   WHERE previous_fact.instrument_id = f.instrument_id
+                     AND previous_fact.movement_basis <> 'legacy_migration'
+                     AND previous_fact.trading_date < ?2
+                     AND previous_analysis.status = 'complete'
+                     AND EXISTS (
+                       SELECT 1 FROM news_sources previous_source
+                       WHERE previous_source.movement_analysis_id = previous_analysis.id
                      )
-                   )
-                 ORDER BY f.instrument_id, f.trading_date`,
-              )
-              .bind(...chunk, input.startDate, input.endDate)
-              .all<CompleteAnalysisRow>()
-          ).results;
-        },
-        98,
-      );
+                 )
+               )
+             ORDER BY f.instrument_id, f.trading_date`,
+          )
+          .bind(
+            JSON.stringify(instrumentIdsWithFacts),
+            input.startDate,
+            input.endDate,
+          )
+          .all<CompleteAnalysisRow>()
+      ).results;
       for (const row of completeRows) {
         const rows = completeAnalysesByInstrument.get(row.instrument_id) ?? [];
         rows.push(row);
@@ -394,22 +382,18 @@ export class CalendarReadModelService {
         ]),
       ];
       if (analysisIds.length > 0) {
-        const sourceRows = await collectIdChunks(
-          analysisIds,
-          async (chunk) =>
-            (
-              await this.db
-                .prepare(
-                  `SELECT movement_analysis_id, title, publisher, published_at,
-                        source_url, cited
-                 FROM news_sources
-                 WHERE movement_analysis_id IN (${rangePlaceholders(chunk)})
-                 ORDER BY movement_analysis_id, source_order`,
-                )
-                .bind(...chunk)
-                .all<SourceRow>()
-            ).results,
-        );
+        const sourceRows = (
+          await this.db
+            .prepare(
+              `SELECT movement_analysis_id, title, publisher, published_at,
+                      source_url, cited
+               FROM news_sources
+               WHERE movement_analysis_id IN (SELECT value FROM json_each(?1))
+               ORDER BY movement_analysis_id, source_order`,
+            )
+            .bind(JSON.stringify(analysisIds))
+            .all<SourceRow>()
+        ).results;
         for (const row of sourceRows) {
           const sourceUrl = safeSourceUrl(row.source_url);
           if (!sourceUrl) continue;
@@ -474,28 +458,35 @@ export class CalendarReadModelService {
         fact.trading_date,
       );
       const currentAnalysis = analyses.get(fact.id);
-      const fallbackAnalysis = completeAnalysesByInstrument
-        .get(fact.instrument_id)
-        ?.filter((candidate) => candidate.trading_date <= fact.trading_date)
+      const fallbackCandidates =
+        completeAnalysesByInstrument
+          .get(fact.instrument_id)
+          ?.filter(
+            (candidate) => candidate.trading_date <= fact.trading_date,
+          ) ?? [];
+      const fallbackSummaryAnalysis = fallbackCandidates
+        .filter((candidate) => candidate.summary_zh_cn !== null)
+        .at(-1);
+      const fallbackSourceAnalysis = fallbackCandidates
+        .filter((candidate) => (sources.get(candidate.id)?.length ?? 0) > 0)
         .at(-1);
       const currentSources = currentAnalysis
         ? (sources.get(currentAnalysis.id) ?? [])
         : [];
-      const fallbackSources = fallbackAnalysis
-        ? (sources.get(fallbackAnalysis.id) ?? [])
-        : [];
       const summaryAnalysis =
         currentAnalysis?.summary_zh_cn !== null && currentAnalysis
           ? currentAnalysis
-          : (fallbackAnalysis ?? currentAnalysis);
+          : (fallbackSummaryAnalysis ?? currentAnalysis);
       const sourceAnalysis =
         currentAnalysis?.status === "complete"
           ? currentAnalysis
           : currentSources.length > 0
             ? currentAnalysis
-            : fallbackSources.length > 0
-              ? fallbackAnalysis
-              : (fallbackAnalysis ?? currentAnalysis);
+            : (fallbackSourceAnalysis ??
+              currentAnalysis ??
+              fallbackSummaryAnalysis);
+      const fallbackEvidence =
+        fallbackSummaryAnalysis ?? fallbackSourceAnalysis;
       const movement = {
         tradingDate: fact.trading_date,
         previousTradingDate: fact.previous_trading_date,
@@ -535,7 +526,7 @@ export class CalendarReadModelService {
               ? "fresh"
               : currentAnalysis
                 ? currentAnalysis.status
-                : fallbackAnalysis
+                : fallbackEvidence
                   ? "stale"
                   : "unavailable",
         conflicts: [

@@ -61,6 +61,7 @@ interface AnalysisRow {
 
 interface CompleteAnalysisRow extends AnalysisRow {
   instrument_id: string;
+  trading_date: string;
 }
 
 interface SourceRow {
@@ -295,7 +296,10 @@ export class PortfolioReadModelService {
       ),
     ];
     const analyses = new Map<string, AnalysisRow>();
-    const lastCompleteAnalyses = new Map<string, AnalysisRow>();
+    const completeAnalysesByInstrument = new Map<
+      string,
+      CompleteAnalysisRow[]
+    >();
     const sources = new Map<string, ReadModelSourceDto[]>();
     if (factIds.length > 0) {
       const analysisRows = await collectIdChunks(
@@ -316,39 +320,54 @@ export class PortfolioReadModelService {
       for (const row of analysisRows)
         analyses.set(row.daily_market_fact_id, row);
       const instrumentIdsWithFacts = [...usableFacts.keys()];
-      const completeRows = await collectIdChunks(
-        instrumentIdsWithFacts,
-        async (chunk) => {
-          const datePlaceholder = `?${chunk.length + 1}`;
-          return (
-            await this.db
-              .prepare(
-                `SELECT f.instrument_id, a.daily_market_fact_id,
-                        a.summary_zh_cn, a.status, a.error_code, a.error_message
-                 FROM movement_analyses a
-                 JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-                 WHERE a.status = 'complete'
-                   AND f.instrument_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})
-                   AND f.movement_basis <> 'legacy_migration'
-                   AND f.trading_date <= ${datePlaceholder}
-                   AND f.trading_date = (
-                     SELECT MAX(previous_fact.trading_date)
-                     FROM daily_market_facts previous_fact
-                     JOIN movement_analyses previous_analysis
-                       ON previous_analysis.daily_market_fact_id = previous_fact.id
-                     WHERE previous_fact.instrument_id = f.instrument_id
-                       AND previous_fact.movement_basis <> 'legacy_migration'
-                       AND previous_fact.trading_date <= ${datePlaceholder}
-                       AND previous_analysis.status = 'complete'
-                   )`,
-              )
-              .bind(...chunk, input.today)
-              .all<CompleteAnalysisRow>()
-          ).results;
-        },
-      );
-      for (const row of completeRows)
-        lastCompleteAnalyses.set(row.instrument_id, row);
+      const completeRows = (
+        await this.db
+          .prepare(
+            `SELECT f.instrument_id, f.trading_date, a.daily_market_fact_id,
+                    a.summary_zh_cn, a.status, a.error_code, a.error_message
+             FROM movement_analyses a
+             JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
+             WHERE a.status = 'complete'
+               AND f.instrument_id IN (SELECT value FROM json_each(?1))
+               AND f.movement_basis <> 'legacy_migration'
+               AND f.trading_date <= ?2
+               AND (
+                 f.trading_date = (
+                   SELECT MAX(previous_fact.trading_date)
+                   FROM daily_market_facts previous_fact
+                   JOIN movement_analyses previous_analysis
+                     ON previous_analysis.daily_market_fact_id = previous_fact.id
+                   WHERE previous_fact.instrument_id = f.instrument_id
+                     AND previous_fact.movement_basis <> 'legacy_migration'
+                     AND previous_fact.trading_date <= ?2
+                     AND previous_analysis.status = 'complete'
+                     AND previous_analysis.summary_zh_cn IS NOT NULL
+                 )
+                 OR f.trading_date = (
+                   SELECT MAX(previous_fact.trading_date)
+                   FROM daily_market_facts previous_fact
+                   JOIN movement_analyses previous_analysis
+                     ON previous_analysis.daily_market_fact_id = previous_fact.id
+                   WHERE previous_fact.instrument_id = f.instrument_id
+                     AND previous_fact.movement_basis <> 'legacy_migration'
+                     AND previous_fact.trading_date <= ?2
+                     AND previous_analysis.status = 'complete'
+                     AND EXISTS (
+                       SELECT 1 FROM news_sources previous_source
+                       WHERE previous_source.movement_analysis_id = previous_analysis.id
+                     )
+                 )
+               )
+             ORDER BY f.instrument_id, f.trading_date`,
+          )
+          .bind(JSON.stringify(instrumentIdsWithFacts), input.today)
+          .all<CompleteAnalysisRow>()
+      ).results;
+      for (const row of completeRows) {
+        const rows = completeAnalysesByInstrument.get(row.instrument_id) ?? [];
+        rows.push(row);
+        completeAnalysesByInstrument.set(row.instrument_id, rows);
+      }
       const analysisIds = [
         ...new Set([
           ...analysisRows.map((row) => row.daily_market_fact_id),
@@ -477,27 +496,34 @@ export class PortfolioReadModelService {
       const currentAnalysis = latestFact
         ? analyses.get(latestFact.id)
         : undefined;
-      const fallbackAnalysis = lastCompleteAnalyses.get(
-        instrument.instrument_id,
-      );
+      const fallbackCandidates =
+        completeAnalysesByInstrument.get(instrument.instrument_id) ?? [];
+      const fallbackSummaryAnalysis = fallbackCandidates
+        .filter((candidate) => candidate.summary_zh_cn !== null)
+        .at(-1);
+      const fallbackSourceAnalysis = fallbackCandidates
+        .filter(
+          (candidate) =>
+            (sources.get(candidate.daily_market_fact_id)?.length ?? 0) > 0,
+        )
+        .at(-1);
       const currentSources = currentAnalysis
         ? (sources.get(currentAnalysis.daily_market_fact_id) ?? [])
-        : [];
-      const fallbackSources = fallbackAnalysis
-        ? (sources.get(fallbackAnalysis.daily_market_fact_id) ?? [])
         : [];
       const summaryAnalysis =
         currentAnalysis?.summary_zh_cn !== null && currentAnalysis
           ? currentAnalysis
-          : (fallbackAnalysis ?? currentAnalysis);
+          : (fallbackSummaryAnalysis ?? currentAnalysis);
       const sourceAnalysis =
         currentAnalysis?.status === "complete"
           ? currentAnalysis
           : currentSources.length > 0
             ? currentAnalysis
-            : fallbackSources.length > 0
-              ? fallbackAnalysis
-              : (fallbackAnalysis ?? currentAnalysis);
+            : (fallbackSourceAnalysis ??
+              currentAnalysis ??
+              fallbackSummaryAnalysis);
+      const fallbackEvidence =
+        fallbackSummaryAnalysis ?? fallbackSourceAnalysis;
       const analysisStatus = currentAnalysis?.status
         ? currentAnalysis.status
         : fact
@@ -607,7 +633,7 @@ export class PortfolioReadModelService {
               ? "fresh"
               : currentAnalysis
                 ? currentAnalysis.status
-                : fallbackAnalysis
+                : fallbackEvidence
                   ? "stale"
                   : "unavailable"
             : marketFreshness;

@@ -460,6 +460,22 @@ export class EventImportsService {
         }
       }
     }
+    const previousCoverageRanges = blockingSnapshots.flatMap(
+      ({ instrument, snapshot }) => {
+        const coverage =
+          coverageByKey.get(
+            this.coverageKey(instrument.id, snapshot.range.provider),
+          ) ?? null;
+        return coverage
+          ? [
+              {
+                startDate: coverage.requestedStartDate,
+                endDate: coverage.requestedEndDate,
+              },
+            ]
+          : [];
+      },
+    );
 
     const batchId = this.newId();
     const expectedPositionBasisRevision = await this.positionBasis.revision();
@@ -498,6 +514,18 @@ export class EventImportsService {
           : []),
         this.imports.createBatchStatement(batch),
         ...this.stagingRowStatements(batchId, rows),
+        ...(previousCoverageRanges.length > 0
+          ? [
+              this.revisions.bumpRangesStatement(
+                previousCoverageRanges,
+                timestamp,
+              ),
+              this.revisions.bumpLatestForRangesStatement(
+                previousCoverageRanges,
+                timestamp,
+              ),
+            ]
+          : []),
         ...this.blockingSnapshotStatements(blockingSnapshots, timestamp),
         ...(blockingSnapshots.length > 0
           ? [
@@ -661,6 +689,22 @@ export class EventImportsService {
         provider: snapshot.range.provider,
       })),
     );
+    const previousCoverageRanges = refreshed.flatMap(
+      ({ instrument, snapshot }) => {
+        const coverage =
+          coverageByKey.get(
+            this.coverageKey(instrument.id, snapshot.range.provider),
+          ) ?? null;
+        return coverage
+          ? [
+              {
+                startDate: coverage.requestedStartDate,
+                endDate: coverage.requestedEndDate,
+              },
+            ]
+          : [];
+      },
+    );
     for (const { instrument, snapshot } of refreshed) {
       const group = byInstrument.get(instrument.id) ?? [];
       const coverage =
@@ -717,6 +761,18 @@ export class EventImportsService {
         expectedRevision: input.expectedPositionBasisRevision,
         createdAt: timestamp,
       }),
+      ...(previousCoverageRanges.length > 0
+        ? [
+            this.revisions.bumpRangesStatement(
+              previousCoverageRanges,
+              timestamp,
+            ),
+            this.revisions.bumpLatestForRangesStatement(
+              previousCoverageRanges,
+              timestamp,
+            ),
+          ]
+        : []),
       ...this.snapshotSyncStatements(refreshed, timestamp),
       this.dependencies.db
         .prepare(
