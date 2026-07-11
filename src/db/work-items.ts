@@ -226,6 +226,21 @@ export class WorkItemRepository {
     return row ? mapWorkItem(row) : null;
   }
 
+  promotePriorityStatement(input: {
+    id: string;
+    priority: number;
+    updatedAt: string;
+  }): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE work_items
+         SET priority = CASE WHEN priority < ?1 THEN ?1 ELSE priority END,
+             updated_at = ?2
+         WHERE id = ?3 AND scope = 'global_fact'`,
+      )
+      .bind(input.priority, input.updatedAt, input.id);
+  }
+
   linkToJobStatement(input: {
     pipelineJobId: string;
     workItemId: string;

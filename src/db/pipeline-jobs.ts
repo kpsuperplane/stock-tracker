@@ -33,6 +33,32 @@ export interface PipelineJobProgress {
   workFailed: number;
 }
 
+interface PipelineJobRow {
+  id: string;
+  trigger_type: PipelineJobTrigger;
+  requested_start_date: string | null;
+  requested_end_date: string | null;
+  affected_instruments_json: string;
+  eligibility_intervals_json: string;
+  priority: number;
+  status: PipelineJobStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+const mapPipelineJob = (row: PipelineJobRow): PipelineJobRecord => ({
+  id: row.id,
+  triggerType: row.trigger_type,
+  requestedStartDate: row.requested_start_date,
+  requestedEndDate: row.requested_end_date,
+  affectedInstrumentsJson: row.affected_instruments_json,
+  eligibilityIntervalsJson: row.eligibility_intervals_json,
+  priority: row.priority,
+  status: row.status,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
 const allowedTransitions: Readonly<
   Record<PipelineJobStatus, readonly PipelineJobStatus[]>
 > = {
@@ -46,6 +72,20 @@ const allowedTransitions: Readonly<
 
 export class PipelineJobRepository {
   constructor(private readonly db: D1Database) {}
+
+  async findById(id: string): Promise<PipelineJobRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT id, trigger_type, requested_start_date,
+                requested_end_date, affected_instruments_json,
+                eligibility_intervals_json, priority, status,
+                created_at, updated_at
+         FROM pipeline_jobs WHERE id = ?1`,
+      )
+      .bind(id)
+      .first<PipelineJobRow>();
+    return row ? mapPipelineJob(row) : null;
+  }
 
   createStatement(job: PipelineJobRecord): D1PreparedStatement {
     return this.db
