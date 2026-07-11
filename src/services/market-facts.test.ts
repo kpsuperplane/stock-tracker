@@ -270,6 +270,46 @@ describe("MarketFactsService", () => {
     });
   });
 
+  it("expands small finite exponent fallback prices", async () => {
+    const facts = await new MarketFactsService(
+      {
+        getInstrument: async () =>
+          series([
+            { date: "2026-07-08", close: 1e-7, adjustedClose: 1e-7 },
+            { date: "2026-07-09", close: 2e-7, adjustedClose: 2e-7 },
+          ]),
+      },
+      () => now,
+    ).normalize(input({ startDate: "2026-07-09", endDate: "2026-07-09" }));
+
+    expect(facts[0]).toMatchObject({
+      previousRawCloseDecimal: "0.0000001",
+      currentRawCloseDecimal: "0.0000002",
+      movementAmountDecimal: "0.0000001",
+      movementPercentDecimal: "100",
+    });
+  });
+
+  it("expands large finite exponent fallback prices", async () => {
+    const facts = await new MarketFactsService(
+      {
+        getInstrument: async () =>
+          series([
+            { date: "2026-07-08", close: 1e21, adjustedClose: 1e21 },
+            { date: "2026-07-09", close: 2e21, adjustedClose: 2e21 },
+          ]),
+      },
+      () => now,
+    ).normalize(input({ startDate: "2026-07-09", endDate: "2026-07-09" }));
+
+    expect(facts[0]).toMatchObject({
+      previousRawCloseDecimal: "1000000000000000000000",
+      currentRawCloseDecimal: "2000000000000000000000",
+      movementAmountDecimal: "1000000000000000000000",
+      movementPercentDecimal: "100",
+    });
+  });
+
   it("does not materialize invalid bars or overwrite a last valid repository fact on provider failure", async () => {
     const invalid = await new MarketFactsService(
       {

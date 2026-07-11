@@ -37,18 +37,44 @@ const rawDecimalTokenPattern =
  * parsed payload so the decimal boundary can retain the provider's exact
  * spelling. Yahoo's close/adjclose arrays are flat number-or-null arrays.
  */
-const rawDecimalArray = (
+const rawDecimalArrays = (
   body: string,
   key: "close" | "adjclose",
-): RawDecimalToken[] | undefined => {
+): RawDecimalToken[][] => {
   const pattern = new RegExp(`"${key}"\\s*:\\s*\\[([^\\[\\]]*)\\]`, "g");
+  const arrays: RawDecimalToken[][] = [];
   for (const match of body.matchAll(pattern)) {
     const content = match[1]?.trim() ?? "";
-    if (!content) return [];
+    if (!content) {
+      arrays.push([]);
+      continue;
+    }
     const tokens = content.split(",").map((token) => token.trim());
     if (tokens.every((token) => rawDecimalTokenPattern.test(token))) {
-      return tokens.map((token) => (token === "null" ? null : token));
+      arrays.push(tokens.map((token) => (token === "null" ? null : token)));
     }
+  }
+  return arrays;
+};
+
+/**
+ * Select the raw candidate that corresponds to the already validated array.
+ * This prevents an unrelated `close` field elsewhere in the payload from
+ * being assigned to the quote path.
+ */
+const rawDecimalArrayForParsed = (
+  body: string,
+  key: "close" | "adjclose",
+  parsed: readonly (number | null)[],
+): RawDecimalToken[] | undefined => {
+  for (const candidate of rawDecimalArrays(body, key)) {
+    if (candidate.length !== parsed.length) continue;
+    const matches = candidate.every((token, index) => {
+      const parsedValue = parsed[index];
+      if (token === null) return parsedValue === null;
+      return parsedValue !== null && Number(token) === parsedValue;
+    });
+    if (matches) return candidate;
   }
   return undefined;
 };
@@ -92,11 +118,11 @@ export class YahooMarketDataProvider implements MarketDataProvider {
     if (!result) throw new Error("market_schema");
     const adjusted = result.indicators.adjclose?.[0]?.adjclose ?? [];
     const closes = result.indicators.quote[0]?.close ?? [];
-    const rawCloses = rawDecimalArray(body, "close");
+    const rawCloses = rawDecimalArrayForParsed(body, "close", closes);
     if (!rawCloses || rawCloses.length !== closes.length) {
       throw new Error("market_schema");
     }
-    const rawAdjusted = rawDecimalArray(body, "adjclose");
+    const rawAdjusted = rawDecimalArrayForParsed(body, "adjclose", adjusted);
     if (
       adjusted.length > 0 &&
       (!rawAdjusted || rawAdjusted.length !== adjusted.length)

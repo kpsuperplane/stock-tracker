@@ -167,6 +167,27 @@ const assertRange = (input: MarketFactsInput): void => {
   }
 };
 
+const exponentPattern = /^([+-]?)(\d+)(?:\.(\d*))?[eE]([+-]?\d+)$/;
+
+/** Expand a finite scientific-notation token before DecimalValue validation. */
+const expandFiniteExponent = (value: string): string => {
+  const match = exponentPattern.exec(value);
+  if (!match) return value;
+  const [, sign = "", integerPart = "", fractionPart = "", exponentText = ""] =
+    match;
+  const exponent = Number(exponentText);
+  if (!Number.isSafeInteger(exponent)) return value;
+  const digits = `${integerPart}${fractionPart}`;
+  const decimalIndex = integerPart.length + exponent;
+  if (decimalIndex <= 0) {
+    return `${sign}0.${"0".repeat(-decimalIndex)}${digits}`;
+  }
+  if (decimalIndex >= digits.length) {
+    return `${sign}${digits}${"0".repeat(decimalIndex - digits.length)}`;
+  }
+  return `${sign}${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
+};
+
 const canonicalProviderPrice = (
   value: number | null,
   exactValue?: string | null,
@@ -174,7 +195,7 @@ const canonicalProviderPrice = (
   const source = exactValue ?? (value === null ? null : String(value));
   if (source === null) return null;
   try {
-    const canonical = canonicalizeDecimal(source);
+    const canonical = canonicalizeDecimal(expandFiniteExponent(source));
     return DecimalValue.parse(canonical).isPositive() ? canonical : null;
   } catch {
     return null;

@@ -32,6 +32,7 @@ describe("YahooMarketDataProvider", () => {
 
   it("preserves raw high-precision price tokens through normalization", async () => {
     const body = `{
+      "unrelated": { "close": [999, 998] },
       "chart": {
         "result": [{
           "meta": {
