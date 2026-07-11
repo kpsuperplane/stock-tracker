@@ -31,6 +31,7 @@ export const CalendarDayCell = ({
       className={`calendar-day${day.outsideMonth ? " calendar-day--outside" : ""}${
         day.isToday ? " calendar-day--today" : ""
       }`}
+      aria-current={day.isToday ? "date" : undefined}
       title={`${formatDate(day.date, locale)}${outsideLabel}`}
     >
       <div className="calendar-day__header">

@@ -8,6 +8,7 @@ import {
 } from "../../services/backfill-pipeline";
 import { JobsService } from "../../services/jobs";
 import type { Env } from "../env";
+import { ApiError } from "../errors";
 
 const createSchema = z
   .object({
@@ -28,6 +29,58 @@ const pipelineRetrySchema = z
   });
 
 export const backfillRoutes = new Hono<{ Bindings: Env }>();
+
+const parseLimit = (value: string | undefined): number => {
+  if (value === undefined) return 25;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 50) {
+    throw new ApiError(
+      422,
+      "limit",
+      "The limit is outside the supported range.",
+    );
+  }
+  return parsed;
+};
+
+type BackfillCursor = { id: string } | { id: string; createdAt: string };
+
+const decodeCursor = (value: string | undefined): BackfillCursor | null => {
+  if (!value) return null;
+  try {
+    const parsed = z
+      .object({
+        id: z.string().min(1).max(128),
+        createdAt: z.string().min(1).max(64).optional(),
+      })
+      .strict()
+      .parse(JSON.parse(atob(value)));
+    return parsed.createdAt
+      ? { id: parsed.id, createdAt: parsed.createdAt }
+      : { id: parsed.id };
+  } catch {
+    throw new ApiError(422, "cursor", "The cursor is invalid.");
+  }
+};
+
+const encodeCursor = (value: object): string => btoa(JSON.stringify(value));
+
+backfillRoutes.get("/", async (context) => {
+  const query = context.req.query();
+  const cursor = decodeCursor(query.cursor);
+  const result = await new RunRepository(context.env.DB).listBackfills({
+    limit: parseLimit(query.limit),
+    cursor: cursor
+      ? "createdAt" in cursor
+        ? { id: cursor.id, createdAt: cursor.createdAt }
+        : cursor.id
+      : null,
+  });
+  return context.json({
+    jobs: result.jobs,
+    nextCursor: result.nextCursor ? encodeCursor(result.nextCursor) : null,
+  });
+});
 
 backfillRoutes.post("/", async (context) => {
   const body = createSchema.parse(await context.req.json());

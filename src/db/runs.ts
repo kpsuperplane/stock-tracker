@@ -671,6 +671,63 @@ export class RunRepository {
     };
   }
 
+  async listBackfills(
+    input: {
+      limit?: number;
+      cursor?: { createdAt?: string; id: string } | string | null;
+    } = {},
+  ): Promise<{
+    jobs: Record<string, unknown>[];
+    nextCursor: { createdAt: string; id: string } | null;
+  }> {
+    const limit = Math.min(Math.max(input.limit ?? 25, 1), 50);
+    const cursor =
+      typeof input.cursor === "string"
+        ? { id: input.cursor, createdAt: null }
+        : (input.cursor ?? null);
+    const rows = cursor?.createdAt
+      ? await this.db
+          .prepare(
+            `SELECT id, created_at FROM backfill_jobs
+             WHERE created_at < ?1
+                OR (created_at = ?1 AND id < ?2)
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?3`,
+          )
+          .bind(cursor.createdAt, cursor.id, limit + 1)
+          .all<{ id: string; created_at: string }>()
+      : cursor
+        ? await this.db
+            .prepare(
+              `SELECT id, created_at FROM backfill_jobs
+               WHERE id < ?1
+               ORDER BY id DESC
+               LIMIT ?2`,
+            )
+            .bind(cursor.id, limit + 1)
+            .all<{ id: string; created_at: string }>()
+        : await this.db
+            .prepare(
+              `SELECT id, created_at FROM backfill_jobs
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?1`,
+            )
+            .bind(limit + 1)
+            .all<{ id: string; created_at: string }>();
+    const page = rows.results.slice(0, limit);
+    const jobs = (
+      await Promise.all(page.map(({ id }) => this.getBackfill(id)))
+    ).filter((job): job is Record<string, unknown> => job !== null);
+    const lastRow = page.at(-1);
+    return {
+      jobs,
+      nextCursor:
+        rows.results.length > limit && lastRow
+          ? { id: lastRow.id, createdAt: lastRow.created_at }
+          : null,
+    };
+  }
+
   async pauseRunningBackfills(_now: string): Promise<void> {
     await this.db
       .prepare(

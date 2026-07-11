@@ -304,7 +304,11 @@ const SplitReviewDialog = ({
         {snapshot.events.length === 0 ? (
           <div>{t("splitReviewNoEvents")}</div>
         ) : (
-          <Table density="compact" dividers="rows">
+          <Table
+            density="compact"
+            dividers="rows"
+            aria-label={t("splitReviewTitle")}
+          >
             <TableHeader>
               <TableRow isHeaderRow>
                 <TableHeaderCell>{t("date")}</TableHeaderCell>
@@ -684,7 +688,13 @@ export const EventsPage = ({
       ) : events.length === 0 ? (
         <Banner status="info" title={t("noEvents")} />
       ) : (
-        <Table density="compact" dividers="rows" hasHover textOverflow="wrap">
+        <Table
+          density="compact"
+          dividers="rows"
+          hasHover
+          textOverflow="wrap"
+          aria-label={t("eventsHeading")}
+        >
           <TableHeader>
             <TableRow isHeaderRow>
               <TableHeaderCell>{t("date")}</TableHeaderCell>

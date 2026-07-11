@@ -19,7 +19,7 @@ The new Portfolio/Events/Calendar/Backfill shell is opt-in while the migration
 is in progress. Leaving `VITE_NEW_PRODUCT_UI` unset keeps the legacy dashboard
 as the default. The shell and its derived read models are separate gates: copy
 the commented `READ_MODELS_ENABLED=true` line into `.dev.vars` before previewing
-Portfolio or Calendar, then run:
+Portfolio, Calendar, or normalized reconciliation jobs, then run:
 
 ```bash
 VITE_NEW_PRODUCT_UI=true npm run dev
@@ -28,6 +28,33 @@ VITE_NEW_PRODUCT_UI=true npm run dev
 If only the shell gate is enabled, Portfolio and Calendar show an explicit
 read-model-disabled message instead of silently treating a 404 as an empty
 portfolio.
+
+### Product UI preview
+
+With the product flag enabled, the persistent sidebar links to four stable
+destinations:
+
+- **Portfolio** shows today’s derived holdings, quantity, native-currency
+  valuation, latest completed close movement, and Chinese analysis/source links
+  for qualifying movers.
+- **Events** is the source of truth for holdings. Add, edit, or delete a buy or
+  sell, or use **Import CSV** to preview rows, review projected holdings, confirm
+  provider split history, and commit the staged batch. A successful commit
+  queues reconciliation; it does not write a second holdings table.
+- **Calendar** shows historical movers and ex-dividend events in month or week
+  view. Select a mover for its Chinese summary, split-adjusted movement basis,
+  held quantity, valuation, and source links.
+- **Backfill** starts a bounded historical refresh and shows manual and automatic
+  reconciliation progress. Work counts, partial errors, retryable items, and
+  background continuation remain visible after navigation. The page merges the
+  normalized pipeline list with the legacy backfill list, so turning the
+  normalized Backfill flag off does not make older manual runs disappear.
+
+The sidebar language control switches static labels between **EN** and **中文**
+and persists the choice locally. Stored LLM summaries remain Simplified Chinese
+in either locale. On narrow screens, forms wrap and ASTRYX tables expose a
+keyboard-focusable horizontal scroll region; the calendar intentionally keeps
+its dense seven-column grid scrollable rather than hiding event details.
 
 Whenever bindings change in `wrangler.jsonc`, regenerate and commit the binding-aware Worker types:
 
@@ -42,6 +69,15 @@ npm run check
 ```
 
 `npm run check` regenerates Worker types, checks formatting/lint and TypeScript, runs service and local D1/Worker tests, and creates the production build.
+
+The product shell remains opt-in during migration. For a flag-boundary smoke
+check, run the same gate once with the legacy default and once with the product
+preview enabled:
+
+```bash
+VITE_NEW_PRODUCT_UI=false npm run check
+VITE_NEW_PRODUCT_UI=true READ_MODELS_ENABLED=true npm run check
+```
 
 Worker integration tests use the local-only `wrangler.test.jsonc`. Keep that test configuration separate from `wrangler.jsonc`; pointing Vitest at the production configuration can connect remote bindings and mutate deployed Worker state.
 

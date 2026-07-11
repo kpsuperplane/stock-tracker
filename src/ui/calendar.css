@@ -147,3 +147,14 @@
     padding: 0.4rem;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .calendar-page__grid {
+    scroll-behavior: auto;
+  }
+
+  .calendar-event-chip,
+  .calendar-more {
+    transition: none;
+  }
+}

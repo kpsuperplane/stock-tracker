@@ -319,4 +319,21 @@ describe("product event API clients", () => {
       expect.objectContaining({ headers: expect.any(Headers) }),
     );
   });
+
+  it("lists legacy backfills with the same cursor shape", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ jobs: [], nextCursor: null }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.backfills(25, "cursor-legacy");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/backfills?limit=25&cursor=cursor-legacy",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+  });
 });

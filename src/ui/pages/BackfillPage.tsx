@@ -70,6 +70,7 @@ export const isJobReadModelDisabledError = (error: unknown): boolean =>
 export interface BackfillPageApiClient {
   startBackfill: typeof api.startBackfill;
   backfill: typeof api.backfill;
+  backfills: typeof api.backfills;
   jobs: typeof api.jobs;
   job: typeof api.job;
   retryBackfill: typeof api.retryBackfill;
@@ -79,6 +80,7 @@ export interface BackfillPageApiClient {
 const defaultBackfillApiClient: BackfillPageApiClient = {
   startBackfill: api.startBackfill,
   backfill: api.backfill,
+  backfills: api.backfills,
   jobs: api.jobs,
   job: api.job,
   retryBackfill: api.retryBackfill,
@@ -336,6 +338,7 @@ const ProductBackfillPage = ({
   const [jobs, setJobs] = useState<JobSource[]>(initialJobs);
   const jobsRef = useRef(jobs);
   const [jobsCursor, setJobsCursor] = useState<string | null>(null);
+  const [legacyJobsCursor, setLegacyJobsCursor] = useState<string | null>(null);
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [loadingMoreJobs, setLoadingMoreJobs] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -361,23 +364,29 @@ const ProductBackfillPage = ({
   useEffect(() => {
     let active = true;
     setLoadingJobs(true);
-    void apiClient
-      .jobs(25)
-      .then(({ jobs: loadedJobs, nextCursor }) => {
+    void Promise.allSettled([apiClient.jobs(25), apiClient.backfills(25)])
+      .then(([pipelineResult, legacyResult]) => {
         if (!active) return;
-        mergeJobs(loadedJobs);
-        setJobsCursor(nextCursor);
-        setError(null);
-        setPollError(null);
-      })
-      .catch((caught: unknown) => {
-        if (!active) return;
-        if (isJobReadModelDisabledError(caught)) {
+        let hasError = false;
+        if (pipelineResult.status === "fulfilled") {
+          mergeJobs(pipelineResult.value.jobs);
+          setJobsCursor(pipelineResult.value.nextCursor);
+        } else if (!isJobReadModelDisabledError(pipelineResult.reason)) {
+          hasError = true;
           setJobsCursor(null);
-          setError(null);
-          return;
+        } else {
+          setJobsCursor(null);
         }
-        setError(t("backfillLoadError"));
+        if (legacyResult.status === "fulfilled") {
+          mergeJobs(legacyResult.value.jobs);
+          setLegacyJobsCursor(legacyResult.value.nextCursor);
+        } else {
+          hasError = true;
+          setLegacyJobsCursor(null);
+        }
+        if (hasError) setError(t("backfillLoadError"));
+        else setError(null);
+        setPollError(null);
       })
       .finally(() => {
         if (active) setLoadingJobs(false);
@@ -388,13 +397,37 @@ const ProductBackfillPage = ({
   }, [apiClient, mergeJobs, t]);
 
   const loadMoreJobs = useCallback(async () => {
-    if (!jobsCursor || loadingMoreJobs) return;
+    if ((!jobsCursor && !legacyJobsCursor) || loadingMoreJobs) return;
     setLoadingMoreJobs(true);
     try {
-      const result = await apiClient.jobs(25, jobsCursor);
-      mergeJobs(result.jobs);
-      setJobsCursor(result.nextCursor);
-      setError(null);
+      const requests = await Promise.allSettled([
+        jobsCursor ? apiClient.jobs(25, jobsCursor) : null,
+        legacyJobsCursor ? apiClient.backfills(25, legacyJobsCursor) : null,
+      ]);
+      let hasError = false;
+      const pipelineResult = requests[0];
+      if (pipelineResult.status === "fulfilled" && pipelineResult.value) {
+        mergeJobs(pipelineResult.value.jobs);
+        setJobsCursor(pipelineResult.value.nextCursor);
+      } else if (
+        pipelineResult.status === "rejected" &&
+        !isJobReadModelDisabledError(pipelineResult.reason)
+      ) {
+        hasError = true;
+      } else if (pipelineResult.status === "rejected") {
+        setJobsCursor(null);
+      } else if (pipelineResult.status === "fulfilled") {
+        setJobsCursor(null);
+      }
+      const legacyResult = requests[1];
+      if (legacyResult.status === "fulfilled" && legacyResult.value) {
+        mergeJobs(legacyResult.value.jobs);
+        setLegacyJobsCursor(legacyResult.value.nextCursor);
+      } else if (legacyResult.status === "rejected") {
+        hasError = true;
+      }
+      if (hasError) setError(t("backfillLoadError"));
+      else setError(null);
       setPollError(null);
     } catch (caught: unknown) {
       if (isJobReadModelDisabledError(caught)) {
@@ -406,7 +439,7 @@ const ProductBackfillPage = ({
     } finally {
       setLoadingMoreJobs(false);
     }
-  }, [apiClient, jobsCursor, loadingMoreJobs, mergeJobs, t]);
+  }, [apiClient, jobsCursor, legacyJobsCursor, loadingMoreJobs, mergeJobs, t]);
 
   const refreshJob = useCallback(
     async (job: JobSource): Promise<JobSource> => {
@@ -646,7 +679,7 @@ const ProductBackfillPage = ({
       )}
       {renderGroup("manual", groups.manual)}
       {renderGroup("automatic", groups.automatic)}
-      {jobsCursor && (
+      {(jobsCursor || legacyJobsCursor) && (
         <HStack gap={2} align="center" wrap="wrap">
           <span>{t("backfillMoreJobs")}</span>
           <Button

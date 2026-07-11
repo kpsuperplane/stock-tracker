@@ -79,6 +79,19 @@ describe("backfill routes", () => {
     expect(job.errors).toEqual([
       expect.objectContaining({ errorCode: "news_schema", retryable: true }),
     ]);
+    const legacyList = await exports.default.fetch(
+      new Request("http://local/api/backfills?limit=25", { headers }),
+    );
+    expect(legacyList.status).toBe(200);
+    expect(
+      await legacyList.json<{
+        jobs: Array<{ id: string; status: string }>;
+        nextCursor: string | null;
+      }>(),
+    ).toEqual({
+      jobs: [expect.objectContaining({ id, status: "running" })],
+      nextCursor: null,
+    });
   });
 
   it("rejects 31 inclusive calendar days", async () => {

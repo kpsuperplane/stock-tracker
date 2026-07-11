@@ -529,6 +529,15 @@ export const api = {
     }),
   backfill: (id: string) =>
     request<{ job: BackfillJob }>(`/api/backfills/${id}`),
+  backfills: (limit?: number, cursor?: string) => {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (cursor) params.set("cursor", cursor);
+    const query = params.toString();
+    return request<{ jobs: BackfillJob[]; nextCursor: string | null }>(
+      `/api/backfills${query ? `?${query}` : ""}`,
+    );
+  },
   jobs: (limit?: number, cursor?: string) => {
     const params = new URLSearchParams();
     if (limit !== undefined) params.set("limit", String(limit));

@@ -225,7 +225,7 @@ export const JobProgress = ({
           formatValueLabel={(value, max) => `${value}/${max}`}
           variant={statusVariant(job.status)}
         />
-        <HStack gap={1} wrap="wrap">
+        <HStack gap={1} wrap="wrap" role="status" aria-live="polite">
           <Badge label={`${t("workReused")}: ${counts.workReused}`} />
           <Badge label={`${t("workSkipped")}: ${counts.workSkipped}`} />
           <Badge label={`${t("workFetched")}: ${counts.workFetched}`} />
@@ -240,7 +240,12 @@ export const JobProgress = ({
         {runs.length > 0 ? (
           <VStack gap={1}>
             <Heading level={4}>{t("runHistory")}</Heading>
-            <Table density="compact" dividers="rows" textOverflow="wrap">
+            <Table
+              density="compact"
+              dividers="rows"
+              textOverflow="wrap"
+              aria-label={t("runHistory")}
+            >
               <TableHeader>
                 <TableRow isHeaderRow>
                   <TableHeaderCell>{t("date")}</TableHeaderCell>
@@ -269,7 +274,12 @@ export const JobProgress = ({
             title={`${t("jobErrors")} (${errors.length})`}
             defaultIsExpanded
           >
-            <Table density="compact" dividers="rows" textOverflow="wrap">
+            <Table
+              density="compact"
+              dividers="rows"
+              textOverflow="wrap"
+              aria-label={t("jobErrors")}
+            >
               <TableHeader>
                 <TableRow isHeaderRow>
                   <TableHeaderCell>{t("instrument")}</TableHeaderCell>

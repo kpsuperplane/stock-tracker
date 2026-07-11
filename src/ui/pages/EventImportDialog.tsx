@@ -34,6 +34,8 @@ export interface EventImportDialogProps {
   positionBasisRevision: number;
   apiClient?: EventImportsApiClient;
   onCommitted?: (result: ImportCommitResponse) => void;
+  /** Optional seed used by fixture-driven previews and SSR verification. */
+  initialPreview?: ImportPreviewResponse;
 }
 
 const errorCopyKey = (
@@ -128,7 +130,11 @@ const SplitReviewCard = ({
         {review.snapshot.events.length === 0 ? (
           <div>{t("splitReviewNoEvents")}</div>
         ) : (
-          <Table density="compact" dividers="rows">
+          <Table
+            density="compact"
+            dividers="rows"
+            aria-label={t("splitReviewTitle")}
+          >
             <TableHeader>
               <TableRow isHeaderRow>
                 <TableHeaderCell>{t("date")}</TableHeaderCell>
@@ -162,12 +168,15 @@ export const EventImportDialog = ({
   positionBasisRevision,
   apiClient = eventImportsApi,
   onCommitted,
+  initialPreview,
 }: EventImportDialogProps) => {
   const { t } = useI18n();
   const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<ImportPreviewResponse | null>(null);
+  const [preview, setPreview] = useState<ImportPreviewResponse | null>(
+    initialPreview ?? null,
+  );
   const [confirmedReviews, setConfirmedReviews] = useState<Set<number>>(
-    new Set(),
+    () => new Set(initialPreview?.reviews.map((_, index) => index) ?? []),
   );
   const [error, setError] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
@@ -382,6 +391,7 @@ export const EventImportDialog = ({
               dividers="rows"
               hasHover
               textOverflow="wrap"
+              aria-label={t("csvImportTitle")}
             >
               <TableHeader>
                 <TableRow isHeaderRow>
@@ -424,7 +434,11 @@ export const EventImportDialog = ({
 
             <VStack gap={2}>
               <strong>{t("projectedHoldings")}</strong>
-              <Table density="compact" dividers="rows">
+              <Table
+                density="compact"
+                dividers="rows"
+                aria-label={t("projectedHoldings")}
+              >
                 <TableHeader>
                   <TableRow isHeaderRow>
                     <TableHeaderCell>{t("instrument")}</TableHeaderCell>
