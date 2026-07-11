@@ -397,20 +397,28 @@ export class ReconciliationPlannerService {
       if (planner.processingLeaseUntil !== expectedLease) {
         throw new Error("planner_lease_conflict");
       }
-      if (planner.processingLeaseUntil <= timestamp) {
-        throw new Error("planner_lease_expired");
-      }
     }
     const leaseUntil = this.nextPlannerLease(timestamp);
-    const claimed = await this.workItems.claimPlanning({
-      id: planner.id,
-      pipelineJobId,
-      now: timestamp,
-      leaseUntil,
-      ...(expectedLease === undefined
-        ? {}
-        : { expectedLeaseUntil: expectedLease }),
-    });
+    const claimed =
+      planner.state === "processing" &&
+      planner.processingLeaseUntil !== null &&
+      planner.processingLeaseUntil <= timestamp
+        ? await this.workItems.reclaimExpiredPlanning({
+            id: planner.id,
+            pipelineJobId,
+            now: timestamp,
+            leaseUntil,
+            expectedLeaseUntil: planner.processingLeaseUntil,
+          })
+        : await this.workItems.claimPlanning({
+            id: planner.id,
+            pipelineJobId,
+            now: timestamp,
+            leaseUntil,
+            ...(expectedLease === undefined
+              ? {}
+              : { expectedLeaseUntil: expectedLease }),
+          });
     if (!claimed) throw new Error("planner_claim_conflict");
     let planningStatus = job.status;
     if (job.status === "pending") {
@@ -429,7 +437,7 @@ export class ReconciliationPlannerService {
     const offset = parseCursor(input.cursor);
     const built = await this.buildCandidates(job, input);
     const page = built.candidates.slice(offset, offset + pageSize);
-    const dividendOffset = parseCursor(input.dividendCursor ?? input.cursor);
+    const dividendOffset = parseCursor(input.dividendCursor);
     const dividendPage = built.dividendRecalculations.slice(
       dividendOffset,
       dividendOffset + pageSize,

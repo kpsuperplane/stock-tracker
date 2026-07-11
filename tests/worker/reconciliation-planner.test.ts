@@ -460,7 +460,7 @@ describe("incremental reconciliation planner", () => {
     ]);
     await createJob({
       id: "dividend-pages",
-      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-04" }],
+      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-08" }],
     });
 
     const service = planner();
@@ -474,23 +474,39 @@ describe("incremental reconciliation planner", () => {
       "2026-07-02",
       "2026-07-03",
     ]);
-    expect(first.nextCursor).toBe(null);
+    expect(first.nextCursor).toBe("2");
     expect(first.nextDividendCursor).toBe("2");
     expect(first.complete).toBe(false);
 
     const second = await service.planPage({
       pipelineJobId: "dividend-pages",
-      dividendCursor: first.nextDividendCursor,
+      cursor: first.nextCursor,
       plannerLeaseUntil: first.plannerLeaseUntil as string,
       pageSize: 2,
       latestCompletedTradingDate: latestDate,
       previousCompletedTradingDate: previousDate,
     });
     expect(second.dividendRecalculations.map((event) => event.exDate)).toEqual([
+      "2026-07-02",
+      "2026-07-03",
+    ]);
+    expect(second.nextDividendCursor).toBe("2");
+    expect(second.complete).toBe(false);
+
+    const third = await service.planPage({
+      pipelineJobId: "dividend-pages",
+      cursor: "4",
+      dividendCursor: second.nextDividendCursor,
+      plannerLeaseUntil: second.plannerLeaseUntil as string,
+      pageSize: 2,
+      latestCompletedTradingDate: latestDate,
+      previousCompletedTradingDate: previousDate,
+    });
+    expect(third.dividendRecalculations.map((event) => event.exDate)).toEqual([
       "2026-07-04",
     ]);
-    expect(second.nextDividendCursor).toBe(null);
-    expect(second.complete).toBe(true);
+    expect(third.nextDividendCursor).toBe(null);
+    expect(third.complete).toBe(true);
   });
 
   it("uses automatic priority for scheduled historical intervals", async () => {
@@ -562,19 +578,25 @@ describe("incremental reconciliation planner", () => {
         pageSize: 1,
       }),
     ).rejects.toThrow("planner_lease_required");
-    const final = await service.planPage({
+    const expiredLease = "2026-07-10T20:00:00.000Z";
+    await env.DB.prepare(
+      "UPDATE work_items SET processing_lease_until = ?1 WHERE id = 'planner-leased-owner'",
+    )
+      .bind(expiredLease)
+      .run();
+    const recovered = await service.planPage({
       pipelineJobId: "leased-owner",
       cursor: first.nextCursor,
-      plannerLeaseUntil: first.plannerLeaseUntil as string,
+      plannerLeaseUntil: expiredLease,
       pageSize: 1,
       latestCompletedTradingDate: latestDate,
       previousCompletedTradingDate: previousDate,
     });
-    expect(final.complete).toBe(true);
+    expect(recovered.complete).toBe(true);
     expect(
       await env.DB.prepare(
-        "SELECT state FROM work_items WHERE id = 'planner-leased-owner'",
+        "SELECT state, attempt_count FROM work_items WHERE id = 'planner-leased-owner'",
       ).first(),
-    ).toEqual({ state: "complete" });
+    ).toEqual({ state: "complete", attempt_count: 2 });
   });
 });

@@ -294,6 +294,35 @@ export class WorkItemRepository {
     return result.meta.changes === 1;
   }
 
+  async reclaimExpiredPlanning(input: {
+    id: string;
+    pipelineJobId: string;
+    now: string;
+    leaseUntil: string;
+    expectedLeaseUntil: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'processing', processing_lease_until = ?1,
+             attempt_count = attempt_count + 1, updated_at = ?2
+         WHERE id = ?3 AND pipeline_job_id = ?4
+           AND scope = 'job_planning' AND state = 'processing'
+           AND processing_lease_until IS ?5
+           AND processing_lease_until <= ?2
+           AND attempt_count < max_attempts`,
+      )
+      .bind(
+        input.leaseUntil,
+        input.now,
+        input.id,
+        input.pipelineJobId,
+        input.expectedLeaseUntil,
+      )
+      .run();
+    return result.meta.changes === 1;
+  }
+
   async completePlanning(input: {
     id: string;
     pipelineJobId: string;
