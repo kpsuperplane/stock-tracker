@@ -8,10 +8,16 @@ import { JobsService } from "../services/jobs";
 import type { Env } from "./env";
 import { logEvent } from "./log";
 
+export const LEGACY_SCREENING_CRON = "0 22 * * MON-FRI";
+
 export const handleScheduled = async (
   controller: ScheduledController,
   env: Env,
 ) => {
+  // Task 1 only provisions the future planner/dispatcher triggers. They must
+  // remain no-ops until Task 4 wires a normalized scheduler. The legacy
+  // trigger remains unchanged until that cutover is explicitly implemented.
+  if (controller.cron !== LEGACY_SCREENING_CRON) return;
   const now = new Date(controller.scheduledTime).toISOString();
   const jobs = new JobsService(
     new RunRepository(env.DB),

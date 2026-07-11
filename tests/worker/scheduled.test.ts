@@ -37,4 +37,25 @@ describe("scheduled handler", () => {
       ).first(),
     ).toEqual({ count: 1 });
   });
+
+  it("does not run the legacy scheduler for new planner or dispatcher triggers", async () => {
+    const before = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM report_runs WHERE origin = 'scheduled'",
+    ).first<{ count: number }>();
+    const triggers = ["30 20 * * MON-FRI", "30 21 * * MON-FRI", "*/15 * * * *"];
+    for (const cron of triggers) {
+      await handleScheduled(
+        {
+          scheduledTime: Date.parse("2026-07-10T20:30:00.000Z"),
+          cron,
+          noRetry() {},
+        } as ScheduledController,
+        env,
+      );
+    }
+    const after = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM report_runs WHERE origin = 'scheduled'",
+    ).first<{ count: number }>();
+    expect(after).toEqual(before);
+  });
 });
