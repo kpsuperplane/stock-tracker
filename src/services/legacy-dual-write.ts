@@ -13,6 +13,7 @@ const LEGACY_PROVIDER = "legacy-report";
 const LEGACY_INSTRUMENT_PREFIX = "legacy-ticker:";
 const LEGACY_ANALYSIS_PREFIX = "legacy-analysis:";
 const LEGACY_REPAIR_PREFIX = "legacy-dual-write:";
+const REPAIR_LEASE_MS = 10 * 60 * 1000;
 
 type LegacyScreeningRow = {
   runId: string;
@@ -65,8 +66,9 @@ interface ExistingAnalysisRow {
 }
 
 interface RepairRetryRow extends LegacyScreeningRow {
-  repairState: "pending" | "failed" | null;
-  attemptCount: number | null;
+  repairState: "pending" | "failed";
+  attemptCount: number;
+  updatedAt: string;
 }
 
 export interface LegacyDualWriteOptions {
@@ -158,6 +160,7 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
   async onPublishedRun(runId: string, now: string): Promise<void> {
     if (!this.enabled) return;
     try {
+      await this.seedRepairMarkers(runId, now);
       const screenings = await this.loadPublishedScreenings(runId);
       if (screenings.length === 0) return;
       const sourceRows = await this.loadSources(runId);
@@ -177,6 +180,11 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
     } catch {
       // Publication already committed. Per-screening markers cover normal
       // failures; this guard protects that invariant if loading itself fails.
+      try {
+        await this.seedRepairMarkers(runId, now);
+      } catch {
+        // A transient D1 failure here is retried by the next scheduled run.
+      }
       logEvent("legacy_dual_write_load_failed", {
         runId,
         code: "legacy_dual_write_load_failed",
@@ -199,6 +207,9 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
     if (!this.enabled) return 0;
     const limit = Math.max(0, Math.min(options.limit ?? 100, 500));
     const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
+    const leaseCutoff = new Date(
+      Date.parse(now) - REPAIR_LEASE_MS,
+    ).toISOString();
     if (limit === 0) return 0;
     const rows = await this.db
       .prepare(
@@ -216,22 +227,23 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
                 a.explanation_zh_cn AS analysisSummary,
                 a.model AS analysisModel, a.status AS analysisStatus,
                 repair.state AS repairState,
-                repair.attempt_count AS attemptCount
-           FROM report_runs r
-           JOIN screenings s ON s.report_run_id = r.id
-           LEFT JOIN legacy_dual_write_repairs repair
-             ON repair.legacy_screening_id = s.id
+                repair.attempt_count AS attemptCount,
+                repair.updated_at AS updatedAt
+           FROM legacy_dual_write_repairs repair
+           JOIN report_runs r ON r.id = repair.legacy_run_id
+           JOIN screenings s ON s.id = repair.legacy_screening_id
            LEFT JOIN analyses a ON a.screening_id = s.id
           WHERE r.published = 1
-            AND (repair.id IS NULL OR (
-              repair.state IN ('pending', 'failed')
-              AND repair.attempt_count < ?1
-              AND r.generation = repair.legacy_generation
+            AND (repair.state = 'failed' OR (
+              repair.state = 'pending'
+              AND (repair.attempt_count = 0 OR repair.updated_at < ?2)
             ))
-          ORDER BY repair.last_attempted_at, repair.id, s.id
-          LIMIT ?2`,
+            AND repair.attempt_count < ?1
+            AND r.generation = repair.legacy_generation
+          ORDER BY repair.last_attempted_at, repair.id
+          LIMIT ?3`,
       )
-      .bind(maxAttempts, limit)
+      .bind(maxAttempts, leaseCutoff, limit)
       .all<RepairRetryRow>();
     if (rows.results.length === 0) return 0;
 
@@ -256,6 +268,26 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
       if (claimed) attempted += 1;
     }
     return attempted;
+  }
+
+  private async seedRepairMarkers(runId: string, now: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO legacy_dual_write_repairs
+           (id, legacy_run_id, legacy_screening_id, legacy_generation,
+            trading_date, ticker_id, state, attempt_count,
+            first_attempted_at, last_attempted_at, created_at, updated_at)
+         SELECT 'legacy-dual-write:' || s.id, r.id, s.id, r.generation,
+                r.trading_date, s.ticker_id, 'pending', 0,
+                ?2, ?2, ?2, ?2
+           FROM report_runs r
+           JOIN screenings s ON s.report_run_id = r.id
+          WHERE r.id = ?1 AND r.published = 1
+          ORDER BY s.id
+          LIMIT 500`,
+      )
+      .bind(runId, now)
+      .run();
   }
 
   private async loadPublishedScreenings(
@@ -344,14 +376,18 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
     now: string,
     maxAttempts?: number,
   ): Promise<{ claimed: boolean; needsBucketRepair: boolean }> {
+    const leaseCutoff = new Date(
+      Date.parse(now) - REPAIR_LEASE_MS,
+    ).toISOString();
     let existing = await this.db
       .prepare(
-        `SELECT state, attempt_count AS attemptCount
+        `SELECT state, attempt_count AS attemptCount,
+                updated_at AS updatedAt
            FROM legacy_dual_write_repairs
           WHERE legacy_screening_id = ?1`,
       )
       .bind(screening.screeningId)
-      .first<{ state: string; attemptCount: number }>();
+      .first<{ state: string; attemptCount: number; updatedAt: string }>();
     if (!existing) {
       const inserted = await this.db
         .prepare(
@@ -376,16 +412,19 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
       }
       existing = await this.db
         .prepare(
-          `SELECT state, attempt_count AS attemptCount
+          `SELECT state, attempt_count AS attemptCount,
+                  updated_at AS updatedAt
              FROM legacy_dual_write_repairs
             WHERE legacy_screening_id = ?1`,
         )
         .bind(screening.screeningId)
-        .first<{ state: string; attemptCount: number }>();
+        .first<{ state: string; attemptCount: number; updatedAt: string }>();
     }
     if (!existing) return { claimed: false, needsBucketRepair: false };
     const retryableState =
-      existing.state === "pending" || existing.state === "failed";
+      existing.state === "failed" ||
+      (existing.state === "pending" &&
+        (existing.attemptCount === 0 || existing.updatedAt < leaseCutoff));
     const canClaim =
       retryableState &&
       (maxAttempts === undefined || existing.attemptCount < maxAttempts);
@@ -399,7 +438,11 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
                 attempt_count = attempt_count + 1,
                 last_attempted_at = ?5, resolved_at = NULL, updated_at = ?5
           WHERE legacy_screening_id = ?6
-            AND (?7 IS NULL OR state IN ('pending', 'failed'))
+            AND (
+              state = 'failed' OR
+              (state = 'pending' AND
+               (attempt_count = 0 OR updated_at < ?8))
+            )
             AND (?7 IS NULL OR attempt_count < ?7)`,
       )
       .bind(
@@ -410,6 +453,7 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         now,
         screening.screeningId,
         maxAttempts ?? null,
+        leaseCutoff,
       )
       .run();
     return {
