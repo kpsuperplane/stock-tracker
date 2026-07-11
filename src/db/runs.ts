@@ -1,5 +1,6 @@
 import type { ExplanationResult } from "../providers/explanations";
 import type { NewsItem } from "../providers/news";
+import type { LegacyPublishedRunHook } from "../services/legacy-dual-write";
 import type {
   MoverDto,
   ReportDto,
@@ -41,7 +42,10 @@ interface ExistingRun {
 }
 
 export class RunRepository {
-  constructor(private readonly db: D1Database) {}
+  constructor(
+    private readonly db: D1Database,
+    private readonly afterPublished?: LegacyPublishedRunHook,
+  ) {}
 
   private async existingScheduledRun(
     tradingDate: string,
@@ -348,15 +352,26 @@ export class RunRepository {
     return row?.runId ?? null;
   }
 
-  async publishGeneration(runId: string, now: string): Promise<void> {
+  async publishGeneration(runId: string, now: string): Promise<boolean> {
     const run = await this.db
       .prepare(
-        `SELECT trading_date AS tradingDate FROM report_runs
+        `SELECT trading_date AS tradingDate, generation FROM report_runs
          WHERE id = ?1 AND status IN ('complete', 'complete_with_errors')`,
       )
       .bind(runId)
-      .first<{ tradingDate: string }>();
+      .first<{ tradingDate: string; generation: number }>();
     if (!run) throw new Error("run_not_publishable");
+    const current = await this.db
+      .prepare(
+        `SELECT generation FROM report_runs
+           WHERE trading_date = ?1 AND published = 1`,
+      )
+      .bind(run.tradingDate)
+      .first<{ generation: number }>();
+    // A late duplicate finalization from an older generation must not undo a
+    // newer published winner. This also keeps the compatibility hook scoped to
+    // the currently published generation.
+    if (current && current.generation > run.generation) return false;
     await this.db.batch([
       this.db
         .prepare(
@@ -370,6 +385,7 @@ export class RunRepository {
         )
         .bind(now, runId),
     ]);
+    return true;
   }
 
   async reconcileStaleLeases(cutoff: string): Promise<number> {
@@ -509,7 +525,15 @@ export class RunRepository {
       )
       .run();
     if (status === "complete" || status === "complete_with_errors") {
-      await this.publishGeneration(runId, now);
+      const published = await this.publishGeneration(runId, now);
+      if (published && this.afterPublished) {
+        try {
+          await this.afterPublished.onPublishedRun(runId, now);
+        } catch {
+          // Compatibility failures are recorded by the hook and must never
+          // turn an already-published legacy run into a failed run.
+        }
+      }
     }
     await this.refreshBackfillForRun(runId, now);
     return status;

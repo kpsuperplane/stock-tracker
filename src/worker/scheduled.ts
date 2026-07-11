@@ -1,3 +1,4 @@
+import { readPortfolioFeatureFlags } from "../config/features";
 import { RunRepository } from "../db/runs";
 import { TickerRepository } from "../db/tickers";
 import {
@@ -5,6 +6,7 @@ import {
   backfillPipelineFlagEnabled,
 } from "../services/backfill-pipeline";
 import { JobsService } from "../services/jobs";
+import { LegacyDualWriteService } from "../services/legacy-dual-write";
 import type { Env } from "./env";
 import { logEvent } from "./log";
 
@@ -19,8 +21,11 @@ export const handleScheduled = async (
   // trigger remains unchanged until that cutover is explicitly implemented.
   if (controller.cron !== LEGACY_SCREENING_CRON) return;
   const now = new Date(controller.scheduledTime).toISOString();
+  const dualWrite = new LegacyDualWriteService(env.DB, {
+    enabled: readPortfolioFeatureFlags(env).dualWrite,
+  });
   const jobs = new JobsService(
-    new RunRepository(env.DB),
+    new RunRepository(env.DB, dualWrite),
     new TickerRepository(env.DB),
     env.SCREENING_QUEUE,
   );

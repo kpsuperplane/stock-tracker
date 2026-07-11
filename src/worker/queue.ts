@@ -1,3 +1,4 @@
+import { readPortfolioFeatureFlags } from "../config/features";
 import { RunRepository } from "../db/runs";
 import { ExaNewsProvider } from "../providers/exa";
 import { WorkersAiExplanationProvider } from "../providers/explanations";
@@ -5,6 +6,7 @@ import { FallbackNewsProvider } from "../providers/fallback-news";
 import { GoogleNewsProvider } from "../providers/google-news";
 import { MarketauxNewsProvider } from "../providers/marketaux";
 import { YahooMarketDataProvider } from "../providers/yahoo";
+import { LegacyDualWriteService } from "../services/legacy-dual-write";
 import { ScreeningService } from "../services/screening";
 import type { ScreeningJobMessage } from "../shared/contracts";
 import type { Env } from "./env";
@@ -21,7 +23,10 @@ export const handleQueue = async (
   batch: MessageBatch<ScreeningJobMessage>,
   env: Env,
 ) => {
-  const repository = new RunRepository(env.DB);
+  const dualWrite = new LegacyDualWriteService(env.DB, {
+    enabled: readPortfolioFeatureFlags(env).dualWrite,
+  });
+  const repository = new RunRepository(env.DB, dualWrite);
   const exa = env.EXA_API_KEY ? new ExaNewsProvider(env.EXA_API_KEY) : null;
   const marketaux = env.MARKETAUX_API_TOKEN
     ? new MarketauxNewsProvider(env.MARKETAUX_API_TOKEN)
