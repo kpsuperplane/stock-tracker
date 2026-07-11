@@ -1,6 +1,9 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
-import { DispatchBatchRepository } from "../../src/db/dispatch-batches";
+import {
+  type DispatchBatchRecord,
+  DispatchBatchRepository,
+} from "../../src/db/dispatch-batches";
 import { WorkItemRepository } from "../../src/db/work-items";
 import {
   type WorkDispatcherDependencies,
@@ -641,5 +644,195 @@ describe("normalized work dispatcher and queue consumer", () => {
       { work_item_id: "mixed-complete", outcome: "processed" },
       { work_item_id: "mixed-terminal", outcome: "failed" },
     ]);
+  });
+
+  it("reconciles links before acknowledging a duplicate complete batch", async () => {
+    await insertInstrument();
+    await env.DB.prepare(
+      `INSERT INTO pipeline_jobs
+       (id, trigger_type, affected_instruments_json, eligibility_intervals_json,
+        priority, status, created_at, updated_at)
+       VALUES ('job-complete-reconcile', 'backfill', '[]', '[]', 1,
+               'running', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await insertWork({ id: "complete-reconcile", date: "2026-01-01" });
+    await env.DB.prepare(
+      `INSERT INTO job_work_items
+       (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+       VALUES ('job-complete-reconcile', 'complete-reconcile', 'required',
+               'pending', ?1)`,
+    )
+      .bind(now)
+      .run();
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const first = message(sent[0] as PipelineDispatchMessage);
+    const consumer = new PipelineQueueConsumer({
+      db: env.DB,
+      now: () => new Date(now),
+    });
+    await consumer.handle({ messages: [first] } as never);
+    await env.DB.prepare(
+      `UPDATE job_work_items SET outcome = 'pending', updated_at = ?1
+       WHERE pipeline_job_id = 'job-complete-reconcile'`,
+    )
+      .bind(now)
+      .run();
+    const duplicate = message(sent[0] as PipelineDispatchMessage);
+    await consumer.handle({ messages: [duplicate] } as never);
+    expect(duplicate.ack).toHaveBeenCalledOnce();
+    expect(
+      await env.DB.prepare(
+        `SELECT outcome FROM job_work_items
+         WHERE pipeline_job_id = 'job-complete-reconcile'`,
+      ).first(),
+    ).toEqual({ outcome: "processed" });
+  });
+
+  it("reconciles terminal links even after DLQ delivery already completed", async () => {
+    await insertInstrument();
+    await env.DB.prepare(
+      `INSERT INTO pipeline_jobs
+       (id, trigger_type, affected_instruments_json, eligibility_intervals_json,
+        priority, status, created_at, updated_at)
+       VALUES ('job-terminal-reconcile', 'backfill', '[]', '[]', 1,
+               'running', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await insertWork({ id: "terminal-reconcile", date: "2026-01-01" });
+    await env.DB.prepare(
+      `INSERT INTO job_work_items
+       (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+       VALUES ('job-terminal-reconcile', 'terminal-reconcile', 'required',
+               'pending', ?1)`,
+    )
+      .bind(now)
+      .run();
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const dlq = fakeQueue();
+    const consumer = new PipelineQueueConsumer({
+      db: env.DB,
+      dlq: dlq.queue,
+      now: () => new Date(now),
+      processor: {
+        process: async ({ work }) => [
+          {
+            workItemId: work[0]?.id ?? "",
+            kind: "terminal" as const,
+            errorCode: "provider_failed",
+          },
+        ],
+      },
+    });
+    const first = message(sent[0] as PipelineDispatchMessage);
+    await consumer.handle({ messages: [first] } as never);
+    await env.DB.prepare(
+      `UPDATE job_work_items SET outcome = 'pending', updated_at = ?1
+       WHERE pipeline_job_id = 'job-terminal-reconcile'`,
+    )
+      .bind(now)
+      .run();
+    const duplicate = message(sent[0] as PipelineDispatchMessage);
+    await consumer.handle({ messages: [duplicate] } as never);
+    expect(duplicate.ack).toHaveBeenCalledOnce();
+    expect(
+      await env.DB.prepare(
+        `SELECT outcome FROM job_work_items
+         WHERE pipeline_job_id = 'job-terminal-reconcile'`,
+      ).first(),
+    ).toEqual({ outcome: "failed" });
+    expect(dlq.sent).toHaveLength(1);
+  });
+
+  it("terminalizes max-attempt orphan dispatch claims", async () => {
+    await insertInstrument();
+    await insertWork({
+      id: "orphan-max-attempt",
+      date: "2026-01-01",
+      maxAttempts: 1,
+    });
+    await env.DB.prepare(
+      `UPDATE work_items
+       SET state = 'dispatching', attempt_count = max_attempts,
+           dispatch_lease_until = '2026-07-10T20:00:00.000Z'
+       WHERE id = 'orphan-max-attempt'`,
+    ).run();
+    const { service } = dispatcher();
+    await service.dispatch();
+    expect(
+      await env.DB.prepare(
+        `SELECT state, terminal_error_code FROM work_items
+         WHERE id = 'orphan-max-attempt'`,
+      ).first(),
+    ).toEqual({
+      state: "terminal",
+      terminal_error_code: "dispatch_attempts_exhausted",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM dispatch_batch_items WHERE work_item_id = 'orphan-max-attempt'",
+      ).first(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("fences an expired daily reservation before creating a batch", async () => {
+    await insertInstrument();
+    await insertWork({ id: "reservation-fenced", date: "2026-01-01" });
+    const batches = new DispatchBatchRepository(env.DB);
+    await batches.reserveDailyCapacity({
+      dispatchBatchId: "batch-fenced",
+      reservationDay: "2026-07-10",
+      workCount: 1,
+      dailyCeiling: 1,
+      createdAt: now,
+      expiresAt: "2026-07-10T20:00:00.000Z",
+    });
+    await batches.recoverExpiredDailyReservations(now);
+    const work = await new WorkItemRepository(env.DB).findById(
+      "reservation-fenced",
+    );
+    if (!work) throw new Error("work_missing");
+    const batch: DispatchBatchRecord = {
+      id: "batch-fenced",
+      workType: "market_fact",
+      instrumentId: "instrument-1",
+      requestedStartDate: "2026-01-01",
+      requestedEndDate: "2026-01-01",
+      state: "dispatching",
+      dispatchLeaseUntil: "2026-07-10T21:05:00.000Z",
+      processingLeaseUntil: null,
+      attemptCount: 0,
+      maxAttempts: 3,
+      dispatchAttemptCount: 0,
+      dispatchMaxAttempts: 3,
+      dlqState: "none",
+      dlqAttemptCount: 0,
+      dlqLeaseUntil: null,
+      dlqLastError: null,
+      dlqDeliveredAt: null,
+      terminalErrorCode: null,
+      terminalErrorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: null,
+      retentionUntil: null,
+    };
+    await expect(
+      batches.createClaimedForWork({ batch, work: [work] }),
+    ).rejects.toThrow();
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM work_items WHERE id = 'reservation-fenced'",
+      ).first(),
+    ).toEqual({ state: "pending" });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM dispatch_batches WHERE id = 'batch-fenced'",
+      ).first(),
+    ).toEqual({ count: 0 });
   });
 });

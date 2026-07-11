@@ -220,9 +220,19 @@ export class DispatchBatchRepository {
         )
         .bind(input.batch.dispatchLeaseUntil, input.batch.createdAt, item.id),
     );
+    const guardedBatchStatement = this.createStatementWithReservation(
+      input.batch,
+    );
     await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE dispatch_daily_reservations
+           SET expires_at = expires_at
+           WHERE dispatch_batch_id = ?1 AND expires_at > ?2`,
+        )
+        .bind(input.batch.id, input.batch.createdAt),
       ...claimStatements,
-      this.createStatement(input.batch),
+      guardedBatchStatement,
       ...input.work.map((item) =>
         this.db
           .prepare(
@@ -233,6 +243,53 @@ export class DispatchBatchRepository {
           .bind(input.batch.id, item.id, input.batch.createdAt),
       ),
     ]);
+  }
+
+  private createStatementWithReservation(
+    batch: DispatchBatchRecord,
+  ): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `INSERT INTO dispatch_batches
+         (id, work_type, instrument_id, requested_start_date,
+          requested_end_date, state, dispatch_lease_until,
+          processing_lease_until, attempt_count, max_attempts,
+          dispatch_attempt_count, dispatch_max_attempts, dlq_state,
+          dlq_attempt_count, dlq_lease_until, dlq_last_error, dlq_delivered_at,
+          terminal_error_code, terminal_error_message, created_at,
+          updated_at, completed_at, retention_until)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+         WHERE EXISTS (
+           SELECT 1 FROM dispatch_daily_reservations
+           WHERE dispatch_batch_id = ?1 AND expires_at > ?20
+         )`,
+      )
+      .bind(
+        batch.id,
+        batch.workType,
+        batch.instrumentId,
+        batch.requestedStartDate,
+        batch.requestedEndDate,
+        batch.state,
+        batch.dispatchLeaseUntil,
+        batch.processingLeaseUntil,
+        batch.attemptCount,
+        batch.maxAttempts,
+        batch.dispatchAttemptCount ?? 0,
+        batch.dispatchMaxAttempts ?? 3,
+        batch.dlqState ?? "none",
+        batch.dlqAttemptCount ?? 0,
+        batch.dlqLeaseUntil ?? null,
+        batch.dlqLastError ?? null,
+        batch.dlqDeliveredAt ?? null,
+        batch.terminalErrorCode,
+        batch.terminalErrorMessage,
+        batch.createdAt,
+        batch.updatedAt,
+        batch.completedAt,
+        batch.retentionUntil,
+      );
   }
 
   async reserveDailyCapacity(input: {

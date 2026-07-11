@@ -146,6 +146,7 @@ export class WorkDispatcherService {
   async dispatch(input: DispatchWorkInput = {}): Promise<DispatchResult> {
     const timestamp = this.now().toISOString();
     await this.batches.recoverExpiredDailyReservations(timestamp);
+    await this.reconcileSettledLinks(timestamp);
     await this.recoverPendingDlq(timestamp);
     const recovered = await this.recover(timestamp);
     let dispatchedBatches = 0;
@@ -429,16 +430,10 @@ export class WorkDispatcherService {
     batchId: string,
     timestamp: string,
   ): Promise<void> {
-    const work = await this.batches.listWork(batchId);
-    await Promise.all(
-      work.map((item) =>
-        this.workItems.markJobLinkForItem({
-          workItemId: item.id,
-          outcome: item.state === "complete" ? "processed" : "failed",
-          now: timestamp,
-        }),
-      ),
-    );
+    await this.workItems.reconcileJobLinksForBatch({
+      dispatchBatchId: batchId,
+      now: timestamp,
+    });
   }
 
   private async deliverDlq(
@@ -500,7 +495,27 @@ export class WorkDispatcherService {
       .bind(timestamp)
       .all<{ id: string }>();
     await Promise.all(
-      rows.results.map((row) => this.deliverDlq(row.id, timestamp)),
+      rows.results.map(async (row) => {
+        await this.markSettledLinks(row.id, timestamp);
+        await this.deliverDlq(row.id, timestamp);
+      }),
+    );
+  }
+
+  private async reconcileSettledLinks(timestamp: string): Promise<void> {
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT DISTINCT batch.id
+         FROM dispatch_batches batch
+         JOIN dispatch_batch_items item
+           ON item.dispatch_batch_id = batch.id
+         JOIN job_work_items link ON link.work_item_id = item.work_item_id
+         WHERE batch.state IN ('complete', 'terminal')
+           AND link.outcome = 'pending'`,
+      )
+      .all<{ id: string }>();
+    await Promise.all(
+      rows.results.map((row) => this.markSettledLinks(row.id, timestamp)),
     );
   }
 

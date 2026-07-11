@@ -134,6 +134,7 @@ export class PipelineQueueConsumer {
     }
     const timestamp = this.now().toISOString();
     if (batch.state === "complete") {
+      await this.reconcileSettledLinks(batch.id, timestamp);
       message.ack();
       return;
     }
@@ -160,7 +161,12 @@ export class PipelineQueueConsumer {
       }
     }
     const current = await this.batches.findById(batch.id);
-    if (!current || current.state === "complete") {
+    if (!current) {
+      message.ack();
+      return;
+    }
+    if (current.state === "complete") {
+      await this.reconcileSettledLinks(current.id, timestamp);
       message.ack();
       return;
     }
@@ -178,7 +184,12 @@ export class PipelineQueueConsumer {
     });
     if (!claimed) {
       const latest = await this.batches.findById(current.id);
-      if (!latest || latest.state === "complete") {
+      if (!latest) {
+        message.ack();
+        return;
+      }
+      if (latest.state === "complete") {
+        await this.reconcileSettledLinks(latest.id, timestamp);
         message.ack();
         return;
       }
@@ -375,7 +386,7 @@ export class PipelineQueueConsumer {
       input.message.retry({ delaySeconds: this.retryDelaySeconds });
       return;
     }
-    await this.markLinksForSettledWork(settled, input.timestamp);
+    await this.reconcileSettledLinks(input.batch.id, input.timestamp);
     if (
       hasTerminal &&
       !(await this.deliverDlq(input.batch.id, input.timestamp))
@@ -422,7 +433,7 @@ export class PipelineQueueConsumer {
       input.message.retry({ delaySeconds: this.retryDelaySeconds });
       return;
     }
-    await this.markLinksForSettledWork(work, input.timestamp);
+    await this.reconcileSettledLinks(input.batch.id, input.timestamp);
     if (
       hasTerminal &&
       !(await this.deliverDlq(input.batch.id, input.timestamp))
@@ -433,19 +444,14 @@ export class PipelineQueueConsumer {
     input.message.ack();
   }
 
-  private async markLinksForSettledWork(
-    work: readonly WorkItemRecord[],
+  private async reconcileSettledLinks(
+    batchId: string,
     timestamp: string,
   ): Promise<void> {
-    await Promise.all(
-      work.map((item) =>
-        this.workItems.markJobLinkForItem({
-          workItemId: item.id,
-          outcome: item.state === "complete" ? "processed" : "failed",
-          now: timestamp,
-        }),
-      ),
-    );
+    await this.workItems.reconcileJobLinksForBatch({
+      dispatchBatchId: batchId,
+      now: timestamp,
+    });
   }
 
   private async handleFailure(input: {
@@ -495,10 +501,7 @@ export class PipelineQueueConsumer {
       input.message.retry({ delaySeconds: this.retryDelaySeconds });
       return;
     }
-    await this.markLinksForSettledWork(
-      await this.batches.listWork(input.batch.id),
-      input.timestamp,
-    );
+    await this.reconcileSettledLinks(input.batch.id, input.timestamp);
     if (!(await this.deliverDlq(input.batch.id, input.timestamp))) {
       input.message.retry({ delaySeconds: this.retryDelaySeconds });
       return;
@@ -511,6 +514,7 @@ export class PipelineQueueConsumer {
     timestamp: string,
     message: Message<PipelineDispatchMessage>,
   ): Promise<void> {
+    await this.reconcileSettledLinks(batchId, timestamp);
     if (await this.deliverDlq(batchId, timestamp)) message.ack();
     else message.retry({ delaySeconds: this.retryDelaySeconds });
   }
@@ -562,7 +566,12 @@ export class PipelineQueueConsumer {
     message: Message<PipelineDispatchMessage>,
   ): Promise<void> {
     const current = await this.batches.findById(batch.id);
-    if (!current || current.state === "complete") {
+    if (!current) {
+      message.ack();
+      return;
+    }
+    if (current.state === "complete") {
+      await this.reconcileSettledLinks(current.id, timestamp);
       message.ack();
       return;
     }
@@ -633,10 +642,7 @@ export class PipelineQueueConsumer {
       message.retry({ delaySeconds: this.retryDelaySeconds });
       return;
     }
-    await this.markLinksForSettledWork(
-      await this.batches.listWork(current.id),
-      timestamp,
-    );
+    await this.reconcileSettledLinks(current.id, timestamp);
     if (!(await this.deliverDlq(current.id, timestamp))) {
       message.retry({ delaySeconds: this.retryDelaySeconds });
       return;

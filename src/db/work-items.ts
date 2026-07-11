@@ -515,21 +515,52 @@ export class WorkItemRepository {
   }
 
   async recoverOrphanedDispatches(now: string): Promise<number> {
-    const result = await this.db
+    const terminalize = this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'terminal', dispatch_lease_until = NULL,
+             terminal_error_code = 'dispatch_attempts_exhausted',
+             terminal_error_message = 'Orphaned dispatch attempt ceiling exhausted.',
+             completed_at = ?1, updated_at = ?1
+         WHERE scope = 'global_fact' AND state = 'dispatching'
+           AND dispatch_lease_until IS NOT NULL
+           AND dispatch_lease_until <= ?1
+           AND attempt_count >= max_attempts
+           AND NOT EXISTS (
+             SELECT 1 FROM dispatch_batch_items item
+             WHERE item.work_item_id = work_items.id
+           )`,
+      )
+      .bind(now);
+    const failLinks = this.db
+      .prepare(
+        `UPDATE job_work_items
+         SET outcome = 'failed', updated_at = ?1
+         WHERE outcome = 'pending'
+           AND work_item_id IN (
+             SELECT id FROM work_items
+             WHERE state = 'terminal'
+               AND terminal_error_code = 'dispatch_attempts_exhausted'
+               AND completed_at = ?1
+           )`,
+      )
+      .bind(now);
+    const reclaim = this.db
       .prepare(
         `UPDATE work_items
          SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
          WHERE scope = 'global_fact' AND state = 'dispatching'
            AND dispatch_lease_until IS NOT NULL
            AND dispatch_lease_until <= ?1
+           AND attempt_count < max_attempts
            AND NOT EXISTS (
              SELECT 1 FROM dispatch_batch_items item
              WHERE item.work_item_id = work_items.id
            )`,
       )
-      .bind(now)
-      .run();
-    return result.meta.changes;
+      .bind(now);
+    const results = await this.db.batch([terminalize, failLinks, reclaim]);
+    return (results[0]?.meta.changes ?? 0) + (results[2]?.meta.changes ?? 0);
   }
 
   async releaseDispatchClaim(input: {
@@ -700,6 +731,31 @@ export class WorkItemRepository {
          WHERE work_item_id = ?3 AND outcome = 'pending'`,
       )
       .bind(input.outcome, input.now, input.workItemId)
+      .run();
+    return result.meta.changes;
+  }
+
+  async reconcileJobLinksForBatch(input: {
+    dispatchBatchId: string;
+    now: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE job_work_items
+         SET outcome = CASE
+             WHEN work.state = 'complete' THEN 'processed'
+             WHEN work.state = 'terminal' THEN 'failed'
+             ELSE job_work_items.outcome
+           END,
+           updated_at = ?1
+         FROM dispatch_batch_items item
+         JOIN work_items work ON work.id = item.work_item_id
+         WHERE job_work_items.work_item_id = item.work_item_id
+           AND item.dispatch_batch_id = ?2
+           AND job_work_items.outcome = 'pending'
+           AND work.state IN ('complete', 'terminal')`,
+      )
+      .bind(input.now, input.dispatchBatchId)
       .run();
     return result.meta.changes;
   }
