@@ -32,51 +32,177 @@ const rawDecimalTokenPattern =
   /^(?:null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)$/;
 
 /**
- * JSON.parse converts long price tokens to binary numbers before the
- * normalizer sees them. Extract the number-array token text alongside the
- * parsed payload so the decimal boundary can retain the provider's exact
- * spelling. Yahoo's close/adjclose arrays are flat number-or-null arrays.
+ * A minimal JSON tree that retains numeric token text. JSON.parse is still
+ * used for schema validation, but it rounds long numbers before callers can
+ * preserve them.
  */
-const rawDecimalArrays = (
-  body: string,
-  key: "close" | "adjclose",
-): RawDecimalToken[][] => {
-  const pattern = new RegExp(`"${key}"\\s*:\\s*\\[([^\\[\\]]*)\\]`, "g");
-  const arrays: RawDecimalToken[][] = [];
-  for (const match of body.matchAll(pattern)) {
-    const content = match[1]?.trim() ?? "";
-    if (!content) {
-      arrays.push([]);
-      continue;
+type RawJsonNode =
+  | null
+  | boolean
+  | string
+  | { kind: "number"; token: string }
+  | { kind: "array"; values: RawJsonNode[] }
+  | { kind: "object"; values: Record<string, RawJsonNode> };
+
+const rawNumberPattern = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/;
+
+const parseRawJson = (body: string): RawJsonNode => {
+  let index = 0;
+
+  const skipWhitespace = () => {
+    while (
+      body[index] === " " ||
+      body[index] === "\n" ||
+      body[index] === "\r" ||
+      body[index] === "\t"
+    ) {
+      index += 1;
     }
-    const tokens = content.split(",").map((token) => token.trim());
-    if (tokens.every((token) => rawDecimalTokenPattern.test(token))) {
-      arrays.push(tokens.map((token) => (token === "null" ? null : token)));
+  };
+
+  function parseString(): string {
+    const start = index;
+    index += 1;
+    let escaped = false;
+    while (index < body.length) {
+      const character = body[index];
+      index += 1;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        return JSON.parse(body.slice(start, index)) as string;
+      }
     }
+    throw new Error("market_schema");
   }
-  return arrays;
+
+  function parseObject(): RawJsonNode {
+    index += 1;
+    const values: Record<string, RawJsonNode> = Object.create(null);
+    skipWhitespace();
+    if (body[index] === "}") {
+      index += 1;
+      return { kind: "object", values };
+    }
+    while (index < body.length) {
+      skipWhitespace();
+      if (body[index] !== '"') throw new Error("market_schema");
+      const key = parseString();
+      skipWhitespace();
+      if (body[index] !== ":") throw new Error("market_schema");
+      index += 1;
+      values[key] = parseValue();
+      skipWhitespace();
+      if (body[index] === "}") {
+        index += 1;
+        return { kind: "object", values };
+      }
+      if (body[index] !== ",") throw new Error("market_schema");
+      index += 1;
+    }
+    throw new Error("market_schema");
+  }
+
+  function parseArray(): RawJsonNode {
+    index += 1;
+    const values: RawJsonNode[] = [];
+    skipWhitespace();
+    if (body[index] === "]") {
+      index += 1;
+      return { kind: "array", values };
+    }
+    while (index < body.length) {
+      values.push(parseValue());
+      skipWhitespace();
+      if (body[index] === "]") {
+        index += 1;
+        return { kind: "array", values };
+      }
+      if (body[index] !== ",") throw new Error("market_schema");
+      index += 1;
+      skipWhitespace();
+    }
+    throw new Error("market_schema");
+  }
+
+  function parseValue(): RawJsonNode {
+    skipWhitespace();
+    const character = body[index];
+    if (character === '"') return parseString();
+    if (character === "{") return parseObject();
+    if (character === "[") return parseArray();
+    if (body.startsWith("true", index)) {
+      index += 4;
+      return true;
+    }
+    if (body.startsWith("false", index)) {
+      index += 5;
+      return false;
+    }
+    if (body.startsWith("null", index)) {
+      index += 4;
+      return null;
+    }
+    const number = body.slice(index).match(rawNumberPattern)?.[0];
+    if (!number) throw new Error("market_schema");
+    index += number.length;
+    return { kind: "number", token: number };
+  }
+
+  const root = parseValue();
+  skipWhitespace();
+  if (index !== body.length) throw new Error("market_schema");
+  return root;
 };
 
 /**
- * Select the raw candidate that corresponds to the already validated array.
- * This prevents an unrelated `close` field elsewhere in the payload from
- * being assigned to the quote path.
+ * Extract a flat number/null array from the validated Yahoo path. Keeping
+ * path identity avoids collisions where unrelated raw tokens round to the
+ * same JavaScript Number.
  */
-const rawDecimalArrayForParsed = (
-  body: string,
-  key: "close" | "adjclose",
-  parsed: readonly (number | null)[],
+const rawDecimalArrayAtPath = (
+  root: RawJsonNode,
+  path: readonly (string | number)[],
 ): RawDecimalToken[] | undefined => {
-  for (const candidate of rawDecimalArrays(body, key)) {
-    if (candidate.length !== parsed.length) continue;
-    const matches = candidate.every((token, index) => {
-      const parsedValue = parsed[index];
-      if (token === null) return parsedValue === null;
-      return parsedValue !== null && Number(token) === parsedValue;
-    });
-    if (matches) return candidate;
+  let current: RawJsonNode | undefined = root;
+  for (const part of path) {
+    if (typeof part === "string") {
+      if (
+        !current ||
+        typeof current !== "object" ||
+        current.kind !== "object"
+      ) {
+        return undefined;
+      }
+      current = current.values[part];
+    } else {
+      if (!current || typeof current !== "object" || current.kind !== "array") {
+        return undefined;
+      }
+      current = current.values[part];
+    }
   }
-  return undefined;
+  if (!current || typeof current !== "object" || current.kind !== "array") {
+    return undefined;
+  }
+  const tokens: RawDecimalToken[] = [];
+  for (const value of current.values) {
+    if (value === null) {
+      tokens.push(null);
+      continue;
+    }
+    if (
+      typeof value !== "object" ||
+      value.kind !== "number" ||
+      !rawDecimalTokenPattern.test(value.token)
+    ) {
+      return undefined;
+    }
+    tokens.push(value.token);
+  }
+  return tokens;
 };
 
 const epoch = (date: string) =>
@@ -114,15 +240,37 @@ export class YahooMarketDataProvider implements MarketDataProvider {
     } catch {
       throw new Error("market_schema");
     }
+    let rawPayload: RawJsonNode;
+    try {
+      rawPayload = parseRawJson(body);
+    } catch {
+      throw new Error("market_schema");
+    }
     const result = chartSchema.parse(payload).chart.result[0];
     if (!result) throw new Error("market_schema");
     const adjusted = result.indicators.adjclose?.[0]?.adjclose ?? [];
     const closes = result.indicators.quote[0]?.close ?? [];
-    const rawCloses = rawDecimalArrayForParsed(body, "close", closes);
+    const rawCloses = rawDecimalArrayAtPath(rawPayload, [
+      "chart",
+      "result",
+      0,
+      "indicators",
+      "quote",
+      0,
+      "close",
+    ]);
     if (!rawCloses || rawCloses.length !== closes.length) {
       throw new Error("market_schema");
     }
-    const rawAdjusted = rawDecimalArrayForParsed(body, "adjclose", adjusted);
+    const rawAdjusted = rawDecimalArrayAtPath(rawPayload, [
+      "chart",
+      "result",
+      0,
+      "indicators",
+      "adjclose",
+      0,
+      "adjclose",
+    ]);
     if (
       adjusted.length > 0 &&
       (!rawAdjusted || rawAdjusted.length !== adjusted.length)
