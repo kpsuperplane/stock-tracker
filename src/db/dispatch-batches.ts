@@ -289,15 +289,17 @@ export class DispatchBatchRepository {
     return result.meta.changes === 1;
   }
 
-  async recoverExpiredDailyReservations(): Promise<number> {
+  async recoverExpiredDailyReservations(now: string): Promise<number> {
     const result = await this.db
       .prepare(
         `DELETE FROM dispatch_daily_reservations
-         WHERE NOT EXISTS (
+         WHERE expires_at <= ?1
+           AND NOT EXISTS (
              SELECT 1 FROM dispatch_batches
              WHERE dispatch_batches.id = dispatch_daily_reservations.dispatch_batch_id
            )`,
       )
+      .bind(now)
       .run();
     return result.meta.changes;
   }

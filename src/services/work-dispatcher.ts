@@ -145,7 +145,7 @@ export class WorkDispatcherService {
 
   async dispatch(input: DispatchWorkInput = {}): Promise<DispatchResult> {
     const timestamp = this.now().toISOString();
-    await this.batches.recoverExpiredDailyReservations();
+    await this.batches.recoverExpiredDailyReservations(timestamp);
     await this.recoverPendingDlq(timestamp);
     const recovered = await this.recover(timestamp);
     let dispatchedBatches = 0;
