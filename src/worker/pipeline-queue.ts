@@ -514,6 +514,16 @@ export class PipelineQueueConsumer {
     timestamp: string,
     message: Message<PipelineDispatchMessage>,
   ): Promise<void> {
+    const batch = await this.batches.findById(batchId);
+    if (batch?.state === "terminal") {
+      await this.workItems.terminalizeUnsettledBatchItems({
+        dispatchBatchId: batchId,
+        now: timestamp,
+        errorCode: batch.terminalErrorCode ?? "dispatch_terminal",
+        errorMessage:
+          batch.terminalErrorMessage ?? "Dispatch batch was terminalized.",
+      });
+    }
     await this.reconcileSettledLinks(batchId, timestamp);
     if (await this.deliverDlq(batchId, timestamp)) message.ack();
     else message.retry({ delaySeconds: this.retryDelaySeconds });

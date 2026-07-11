@@ -146,6 +146,7 @@ export class WorkDispatcherService {
   async dispatch(input: DispatchWorkInput = {}): Promise<DispatchResult> {
     const timestamp = this.now().toISOString();
     await this.batches.recoverExpiredDailyReservations(timestamp);
+    await this.recoverTerminalBatches(timestamp);
     await this.reconcileSettledLinks(timestamp);
     await this.recoverPendingDlq(timestamp);
     const recovered = await this.recover(timestamp);
@@ -383,6 +384,22 @@ export class WorkDispatcherService {
     if (batch.state !== "dispatching" && batch.state !== "queued") {
       return batch.state === "terminal";
     }
+    if (batch.state === "dispatching" && batch.dispatchLeaseUntil) {
+      await this.workItems.terminalizeBatchItems({
+        dispatchBatchId: batch.id,
+        now: timestamp,
+        errorCode: "dispatch_attempts_exhausted",
+        errorMessage: "Queue dispatch attempt ceiling exhausted.",
+        expectedDispatchLeaseUntil: batch.dispatchLeaseUntil,
+      });
+    } else {
+      await this.workItems.terminalizeBatchItems({
+        dispatchBatchId: batch.id,
+        now: timestamp,
+        errorCode: "dispatch_attempts_exhausted",
+        errorMessage: "Queue dispatch attempt ceiling exhausted.",
+      });
+    }
     const transitioned =
       batch.state === "dispatching"
         ? batch.dispatchLeaseUntil
@@ -405,22 +422,6 @@ export class WorkDispatcherService {
             errorMessage: "Queue dispatch attempt ceiling exhausted.",
           });
     if (!transitioned) return false;
-    if (batch.state === "dispatching" && batch.dispatchLeaseUntil) {
-      await this.workItems.terminalizeBatchItems({
-        dispatchBatchId: batch.id,
-        now: timestamp,
-        errorCode: "dispatch_attempts_exhausted",
-        errorMessage: "Queue dispatch attempt ceiling exhausted.",
-        expectedDispatchLeaseUntil: batch.dispatchLeaseUntil,
-      });
-    } else {
-      await this.workItems.terminalizeBatchItems({
-        dispatchBatchId: batch.id,
-        now: timestamp,
-        errorCode: "dispatch_attempts_exhausted",
-        errorMessage: "Queue dispatch attempt ceiling exhausted.",
-      });
-    }
     await this.markSettledLinks(batch.id, timestamp);
     await this.deliverDlq(batch.id, timestamp);
     return true;
@@ -516,6 +517,36 @@ export class WorkDispatcherService {
       .all<{ id: string }>();
     await Promise.all(
       rows.results.map((row) => this.markSettledLinks(row.id, timestamp)),
+    );
+  }
+
+  private async recoverTerminalBatches(timestamp: string): Promise<void> {
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT DISTINCT batch.id, batch.terminal_error_code AS errorCode,
+                batch.terminal_error_message AS errorMessage
+         FROM dispatch_batches batch
+         JOIN dispatch_batch_items item
+           ON item.dispatch_batch_id = batch.id
+         JOIN work_items work ON work.id = item.work_item_id
+         WHERE batch.state = 'terminal'
+           AND work.state NOT IN ('complete', 'terminal')`,
+      )
+      .all<{
+        id: string;
+        errorCode: string | null;
+        errorMessage: string | null;
+      }>();
+    await Promise.all(
+      rows.results.map(async (row) => {
+        await this.workItems.terminalizeUnsettledBatchItems({
+          dispatchBatchId: row.id,
+          now: timestamp,
+          errorCode: row.errorCode ?? "dispatch_terminal",
+          errorMessage: row.errorMessage ?? "Dispatch batch was terminalized.",
+        });
+        await this.markSettledLinks(row.id, timestamp);
+      }),
     );
   }
 

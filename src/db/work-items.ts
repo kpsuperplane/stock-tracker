@@ -685,7 +685,10 @@ export class WorkItemRepository {
            AND (
              (?5 IS NULL AND ?6 IS NULL)
              OR (?5 IS NOT NULL AND processing_lease_until IS ?5)
-             OR (?6 IS NOT NULL AND dispatch_lease_until IS ?6)
+             OR (
+               ?6 IS NOT NULL
+               AND (dispatch_lease_until IS ?6 OR state = 'queued')
+             )
            )`,
       )
       .bind(
@@ -695,6 +698,35 @@ export class WorkItemRepository {
         input.dispatchBatchId,
         input.expectedLeaseUntil ?? null,
         input.expectedDispatchLeaseUntil ?? null,
+      )
+      .run();
+    return result.meta.changes;
+  }
+
+  async terminalizeUnsettledBatchItems(input: {
+    dispatchBatchId: string;
+    now: string;
+    errorCode: string;
+    errorMessage: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'terminal', dispatch_lease_until = NULL,
+             processing_lease_until = NULL, terminal_error_code = ?1,
+             terminal_error_message = ?2, completed_at = ?3, updated_at = ?3
+         WHERE scope = 'global_fact'
+           AND state IN ('dispatching', 'queued', 'processing')
+           AND id IN (
+             SELECT work_item_id FROM dispatch_batch_items
+             WHERE dispatch_batch_id = ?4
+           )`,
+      )
+      .bind(
+        input.errorCode,
+        input.errorMessage,
+        input.now,
+        input.dispatchBatchId,
       )
       .run();
     return result.meta.changes;

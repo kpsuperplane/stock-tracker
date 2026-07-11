@@ -835,4 +835,57 @@ describe("normalized work dispatcher and queue consumer", () => {
       ).first(),
     ).toEqual({ count: 0 });
   });
+
+  it("recovers terminal batches whose work was unsettled at the crash point", async () => {
+    await insertInstrument();
+    await env.DB.prepare(
+      `INSERT INTO pipeline_jobs
+       (id, trigger_type, affected_instruments_json, eligibility_intervals_json,
+        priority, status, created_at, updated_at)
+       VALUES ('job-terminal-gap', 'backfill', '[]', '[]', 1,
+               'running', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await insertWork({ id: "terminal-gap", date: "2026-01-01" });
+    await env.DB.prepare(
+      `INSERT INTO job_work_items
+       (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+       VALUES ('job-terminal-gap', 'terminal-gap', 'required', 'pending', ?1)`,
+    )
+      .bind(now)
+      .run();
+    const { service } = dispatcher();
+    await service.dispatch();
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE dispatch_batches
+         SET state = 'terminal', dispatch_lease_until = NULL,
+             terminal_error_code = 'dispatch_attempts_exhausted',
+             terminal_error_message = 'Queue dispatch attempt ceiling exhausted.',
+             completed_at = ?1, updated_at = ?1
+         WHERE id = 'batch-1'`,
+      ).bind(now),
+      env.DB.prepare(
+        `UPDATE work_items SET state = 'queued', dispatch_lease_until = NULL,
+         processing_lease_until = NULL WHERE id = 'terminal-gap'`,
+      ),
+    ]);
+    await service.dispatch();
+    expect(
+      await env.DB.prepare(
+        `SELECT state, terminal_error_code FROM work_items
+         WHERE id = 'terminal-gap'`,
+      ).first(),
+    ).toEqual({
+      state: "terminal",
+      terminal_error_code: "dispatch_attempts_exhausted",
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT outcome FROM job_work_items
+         WHERE pipeline_job_id = 'job-terminal-gap'`,
+      ).first(),
+    ).toEqual({ outcome: "failed" });
+  });
 });
