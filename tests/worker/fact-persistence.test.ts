@@ -76,15 +76,18 @@ const dividendRange = (
   events,
 });
 
-const dividendEvent = (amount: string, revision: string) => ({
+const dividendEvent = (
+  amount: string,
+  revision: string,
+  exDate = "2026-08-01",
+) => ({
   type: "dividend" as const,
   symbol: "CASE-INSTRUMENT-1",
-  exDate: "2026-08-01",
+  exDate,
   amount,
   currency: "USD",
   provider: "alpha-vantage-dividends",
-  providerEventId:
-    "alpha-vantage-dividends:CASE-INSTRUMENT-1:dividend:2026-08-01:2026-07-01",
+  providerEventId: `alpha-vantage-dividends:CASE-INSTRUMENT-1:dividend:${exDate}:2026-07-01`,
   providerRevision: revision,
 });
 
@@ -197,6 +200,70 @@ describe("normalized fact persistence", () => {
     ).toEqual({ count: 0 });
   });
 
+  it("marks an existing market fact error while retaining its last valid close on refresh failure", async () => {
+    await insertInstrument();
+    const service = new MarketFactsPersistenceService(
+      env.DB,
+      () => new Date(now),
+    );
+    await service.persist({
+      facts: [marketFact("2026-07-10")],
+      latestTradingDate: "2026-07-10",
+    });
+    const result = await service.persistResult({
+      facts: [],
+      errors: [
+        {
+          id: "instrument-1:2026-07-10",
+          instrumentId: "instrument-1",
+          tradingDate: "2026-07-10",
+          previousTradingDate: null,
+          previousRawCloseDecimal: null,
+          currentRawCloseDecimal: null,
+          provider: "yahoo-chart-v8",
+          providerRevision: "market-r2",
+          retrievedAt: now,
+          freshness: "fresh",
+          status: "error",
+          persistable: false,
+          errorCode: "provider_http_503",
+          errorMessage: "provider unavailable",
+        },
+      ],
+      latestTradingDate: "2026-07-10",
+    });
+    expect(result.preservedErrors[0]?.preserved).toBe(true);
+    expect(
+      await env.DB.prepare(
+        `SELECT current_raw_close_decimal, status, error_code
+         FROM daily_market_facts WHERE id = 'instrument-1:2026-07-10'`,
+      ).first(),
+    ).toEqual({
+      current_raw_close_decimal: "110",
+      status: "error",
+      error_code: "provider_http_503",
+    });
+  });
+
+  it("uses Toronto calendar date when an omitted latest date crosses UTC midnight", async () => {
+    await insertInstrument();
+    const service = new MarketFactsPersistenceService(
+      env.DB,
+      () => new Date("2026-07-11T02:00:00.000Z"),
+    );
+    await service.persist({ facts: [marketFact("2026-07-10")] });
+    expect(
+      await env.DB.prepare(
+        "SELECT revision FROM fact_revision_buckets WHERE bucket_key = 'latest'",
+      ).first(),
+    ).toEqual({ revision: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT revision FROM fact_revision_buckets WHERE bucket_key = '2026-07'",
+      ).first(),
+    ).toBeNull();
+  });
+
   it("keeps source-reported future dividends truthful, corrects identities, and preserves rows on failure", async () => {
     await insertInstrument();
     let current: DividendEventRange = dividendRange([
@@ -290,9 +357,72 @@ describe("normalized fact persistence", () => {
     });
     expect(
       await env.DB.prepare(
-        "SELECT amount_per_share_decimal, status FROM dividend_events WHERE status = 'active'",
+        `SELECT amount_per_share_decimal, status, error_code
+         FROM dividend_events WHERE status = 'error'`,
       ).first(),
-    ).toEqual({ amount_per_share_decimal: "0.3", status: "active" });
+    ).toEqual({
+      amount_per_share_decimal: "0.3",
+      status: "error",
+      error_code: "provider_http_429",
+    });
+  });
+
+  it("quarantines a provider identity correction across ex-date months", async () => {
+    await insertInstrument();
+    let current: DividendEventRange = dividendRange([
+      dividendEvent("0.25", "event-r1", "2026-06-30"),
+    ]);
+    const provider: DividendProvider = {
+      getDividends: vi.fn(async () => current),
+    };
+    const service = new DividendFactsService({
+      db: env.DB,
+      provider,
+      now: () => new Date(now),
+    });
+    const first = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(first).toMatchObject({
+      kind: "refreshed",
+      noAnnouncedEventCurrentlyKnown: true,
+    });
+    current = dividendRange([dividendEvent("0.25", "event-r2", "2026-08-01")]);
+    const corrected = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(corrected).toMatchObject({
+      kind: "refreshed",
+      correctionConflict: true,
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT ex_date, status, error_code FROM dividend_events
+         ORDER BY ex_date`,
+      ).all(),
+    ).toMatchObject({
+      results: [
+        { ex_date: "2026-06-30", status: "superseded", error_code: null },
+        {
+          ex_date: "2026-08-01",
+          status: "error",
+          error_code: "provider_identity_changed",
+        },
+      ],
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT bucket_key FROM fact_revision_buckets ORDER BY bucket_key",
+      ).all(),
+    ).toMatchObject({
+      results: [{ bucket_key: "2026-06" }, { bucket_key: "2026-08" }],
+    });
   });
 
   it("reuses analyses for unchanged dependencies, invalidates on movement changes, and preserves last valid summaries on failure", async () => {
@@ -307,7 +437,13 @@ describe("normalized fact persistence", () => {
       latestTradingDate: "2026-07-10",
     });
     const newsProvider: NewsProvider = {
-      search: vi.fn(async () => [newsItem()]),
+      search: vi.fn(async () => [
+        {
+          ...newsItem(" HTTPS://EXAMPLE.COM:443/news "),
+          title: "  Case Corp reports results  ",
+          publisher: " Example News ",
+        },
+      ]),
     };
     const explanationProvider: ExplanationProvider = {
       explain: vi.fn(async () => explanation),
@@ -328,6 +464,15 @@ describe("normalized fact persistence", () => {
     });
     expect(first.kind).toBe("refreshed");
     expect(explanationProvider.explain).toHaveBeenCalledOnce();
+    expect(
+      await env.DB.prepare(
+        "SELECT title, publisher, source_url FROM news_sources",
+      ).first(),
+    ).toEqual({
+      title: "Case Corp reports results",
+      publisher: "Example News",
+      source_url: "https://example.com/news",
+    });
 
     const historicalFact = marketFact("2026-06-05", {
       id: "instrument-1:2026-06-05",

@@ -17,6 +17,7 @@ import type {
   ExplanationResult,
 } from "../providers/explanations";
 import type { NewsItem, NewsProvider } from "../providers/news";
+import { easternMarketDate } from "../shared/dates";
 import type { MarketFactError, NormalizedMarketFact } from "./market-facts";
 
 const providerErrorCode = (error: unknown): string => {
@@ -29,15 +30,6 @@ const analysisErrorCode = (error: unknown): string => {
   const message =
     error instanceof Error ? error.message : "analysis_unavailable";
   return message.length > 0 ? message.slice(0, 120) : "analysis_unavailable";
-};
-
-const isSafeUrl = (value: string): boolean => {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
 };
 
 const bucketForDate = (
@@ -76,10 +68,25 @@ export class MarketFactsPersistenceService {
     facts: readonly NormalizedMarketFact[];
     latestTradingDate?: string;
   }): Promise<MarketPersistenceResult> {
-    if (input.facts.length === 0) {
+    return this.persistBatch({
+      facts: input.facts,
+      errors: [],
+      ...(input.latestTradingDate === undefined
+        ? {}
+        : { latestTradingDate: input.latestTradingDate }),
+    });
+  }
+
+  private async persistBatch(input: {
+    facts: readonly NormalizedMarketFact[];
+    errors: readonly MarketFactError[];
+    latestTradingDate?: string;
+  }): Promise<MarketPersistenceResult> {
+    if (input.facts.length === 0 && input.errors.length === 0) {
       return { persistedCount: 0, preservedErrors: [] };
     }
     const timestamp = this.now().toISOString();
+    const localToday = easternMarketDate(timestamp);
     const bucketKeys = new Set<string>();
     const statements: D1PreparedStatement[] = [];
     for (const fact of input.facts) {
@@ -110,14 +117,52 @@ export class MarketFactsPersistenceService {
         }),
       );
       bucketKeys.add(
-        bucketForDate(fact.tradingDate, input.latestTradingDate, timestamp),
+        bucketForDate(fact.tradingDate, input.latestTradingDate, localToday),
       );
+    }
+    const markedErrors = new Set<string>();
+    for (const error of input.errors) {
+      const dates = error.tradingDate
+        ? [error.tradingDate]
+        : await this.facts.listDatesForInstrument({
+            instrumentId: error.instrumentId,
+            provider: error.provider,
+          });
+      for (const date of dates) {
+        bucketKeys.add(
+          bucketForDate(date, input.latestTradingDate, localToday),
+        );
+      }
+      const markerKey = `${error.instrumentId}|${error.provider}|${error.tradingDate ?? "*"}|${error.errorCode}`;
+      if (!markedErrors.has(markerKey)) {
+        markedErrors.add(markerKey);
+        statements.push(
+          this.facts.markErrorStatement({
+            instrumentId: error.instrumentId,
+            provider: error.provider,
+            providerRevision: error.providerRevision,
+            retrievedAt: error.retrievedAt,
+            errorCode: error.errorCode,
+            errorMessage: error.errorMessage,
+            updatedAt: timestamp,
+            ...(error.tradingDate === null
+              ? {}
+              : { tradingDate: error.tradingDate }),
+          }),
+        );
+      }
     }
     for (const bucketKey of bucketKeys) {
       statements.push(this.buckets.bumpStatement(bucketKey, timestamp));
     }
-    await this.db.batch(statements);
-    return { persistedCount: input.facts.length, preservedErrors: [] };
+    if (statements.length > 0) await this.db.batch(statements);
+    return {
+      persistedCount: input.facts.length,
+      preservedErrors: input.errors.map((error) => ({
+        ...error,
+        preserved: true as const,
+      })),
+    };
   }
 
   async persistResult(input: {
@@ -125,14 +170,7 @@ export class MarketFactsPersistenceService {
     errors: readonly MarketFactError[];
     latestTradingDate?: string;
   }): Promise<MarketPersistenceResult> {
-    const result = await this.persist(input);
-    return {
-      ...result,
-      preservedErrors: input.errors.map((error) => ({
-        ...error,
-        preserved: true as const,
-      })),
-    };
+    return this.persistBatch(input);
   }
 }
 
@@ -142,9 +180,34 @@ export type DividendRefreshResult =
       events: NormalizedDividendEvent[];
       incompleteHistoryWarning: true;
       noAnnouncedEventCurrentlyKnown: boolean;
+      correctionConflict: boolean;
     }
   | { kind: "provider_unavailable"; code: string; preserved: true }
-  | { kind: "provider_invalid"; code: string; preserved: true };
+  | { kind: "provider_invalid"; code: string; preserved: true }
+  | { kind: "persistence_error"; code: string; preserved: true };
+
+const persistenceErrorCode = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : "persistence_error";
+  return message.length > 0 ? message.slice(0, 120) : "persistence_error";
+};
+
+const dividendDeclarationKey = (providerEventId: string): string | null => {
+  const parts = providerEventId.split(":");
+  const declaration = parts.at(-1);
+  return declaration && declaration !== "unknown-declaration"
+    ? declaration
+    : null;
+};
+
+const canonicalUrl = (value: string): string | null => {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+};
 
 export interface DividendFactsServiceDependencies {
   db: D1Database;
@@ -180,6 +243,35 @@ export class DividendFactsService {
         input.endDate,
       );
     } catch (error) {
+      try {
+        const existing = await this.dividends.listForInstrument(
+          input.instrumentId,
+        );
+        const providers = new Set(existing.map((row) => row.provider));
+        const buckets = new Set(existing.map((row) => row.exDate.slice(0, 7)));
+        const timestamp = this.now().toISOString();
+        const statements = [
+          ...[...providers].map((provider) =>
+            this.dividends.markProviderErrorStatement({
+              instrumentId: input.instrumentId,
+              provider,
+              errorCode: providerErrorCode(error),
+              errorMessage: providerErrorCode(error),
+              updatedAt: timestamp,
+            }),
+          ),
+          ...[...buckets].map((bucket) =>
+            this.buckets.bumpStatement(bucket, timestamp),
+          ),
+        ];
+        if (statements.length > 0) await this.dependencies.db.batch(statements);
+      } catch (persistenceError) {
+        return {
+          kind: "persistence_error",
+          code: persistenceErrorCode(persistenceError),
+          preserved: true,
+        };
+      }
       return {
         kind: "provider_unavailable",
         code: providerErrorCode(error),
@@ -203,18 +295,73 @@ export class DividendFactsService {
     const timestamp = this.now().toISOString();
     const statements: D1PreparedStatement[] = [];
     const buckets = new Set<string>();
+    let correctionConflict = false;
     try {
+      const existingProviderRows = await this.dividends.listForProvider({
+        instrumentId: input.instrumentId,
+        provider: range.range.provider,
+      });
+      const activeProviderRows = existingProviderRows.filter(
+        (row) => row.status === "active",
+      );
+      const seenProviderEventIds = new Set(
+        range.events.map((event) => event.providerEventId),
+      );
+      const identityCorrectionFor = (event: NormalizedDividendEvent) => {
+        const declarationKey = dividendDeclarationKey(event.providerEventId);
+        return activeProviderRows.find(
+          (row) =>
+            row.exDate >= input.startDate &&
+            row.exDate <= input.endDate &&
+            row.providerEventId !== event.providerEventId &&
+            ((declarationKey !== null &&
+              dividendDeclarationKey(row.providerEventId) === declarationKey) ||
+              row.exDate === event.exDate),
+        );
+      };
+      const identityMatchedOldIds = new Set(
+        range.events
+          .map(identityCorrectionFor)
+          .filter(
+            (row): row is (typeof activeProviderRows)[number] =>
+              row !== undefined,
+          )
+          .map((row) => row.providerEventId),
+      );
+      const unmatchedActiveRows = activeProviderRows.filter(
+        (row) =>
+          row.exDate >= input.startDate &&
+          row.exDate <= input.endDate &&
+          !seenProviderEventIds.has(row.providerEventId) &&
+          !identityMatchedOldIds.has(row.providerEventId),
+      );
+      // A source-reported range cannot prove whether an unreturned row was
+      // deleted or merely omitted. Keep the conflict visible and prevent two
+      // active rows until a later refresh supplies a stable identity.
+      const quarantineUnmatchedEvents =
+        unmatchedActiveRows.length > 0 && range.events.length > 0;
+      if (quarantineUnmatchedEvents) correctionConflict = true;
       for (const event of range.events) {
-        const amount = canonicalizeDecimal(event.amount);
+        if (
+          event.symbol.toUpperCase() !== input.symbol.toUpperCase() ||
+          event.provider !== range.range.provider
+        ) {
+          throw new Error("provider_snapshot_mismatch");
+        }
+        let amount: string;
+        try {
+          amount = canonicalizeDecimal(event.amount);
+        } catch {
+          throw new Error("provider_invalid_amount");
+        }
         if (amount.startsWith("-")) throw new Error("provider_invalid_amount");
         if (event.currency !== "USD" && event.currency !== "CAD") {
           throw new Error("provider_unsupported_currency");
         }
-        const existing = await this.dividends.listByIdentity({
-          instrumentId: input.instrumentId,
-          provider: event.provider,
-          providerEventId: event.providerEventId,
-        });
+        const existing = existingProviderRows.filter(
+          (row) => row.providerEventId === event.providerEventId,
+        );
+        const identityCorrection = identityCorrectionFor(event);
         const sameActive = existing.some(
           (row) =>
             row.providerRevision === event.providerRevision &&
@@ -222,7 +369,47 @@ export class DividendFactsService {
             row.amountPerShareDecimal === amount &&
             row.exDate === event.exDate,
         );
-        if (!sameActive) {
+        if (identityCorrection) {
+          correctionConflict = true;
+          statements.push(
+            this.dividends.supersedeIdentityStatement({
+              instrumentId: input.instrumentId,
+              provider: event.provider,
+              providerEventId: identityCorrection.providerEventId,
+              providerRevision: event.providerRevision,
+              updatedAt: timestamp,
+            }),
+            this.dividends.upsertStatement({
+              id: this.newId(),
+              instrumentId: input.instrumentId,
+              exDate: event.exDate,
+              declarationDate: null,
+              recordDate: null,
+              paymentDate: null,
+              amountPerShareDecimal: amount,
+              currency: event.currency as "USD" | "CAD",
+              provider: event.provider,
+              providerEventId: event.providerEventId,
+              providerRevision: event.providerRevision,
+              sourceUrl: null,
+              announcedAt: null,
+              retrievedAt: range.range.observedAt,
+              status: "error",
+              errorCode: "provider_identity_changed",
+              errorMessage: "Provider identity changed; review required.",
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            }),
+          );
+          buckets.add(identityCorrection.exDate.slice(0, 7));
+          buckets.add(event.exDate.slice(0, 7));
+        } else if (!sameActive) {
+          for (const row of existing.filter(
+            (candidate) => candidate.status === "active",
+          )) {
+            buckets.add(row.exDate.slice(0, 7));
+          }
+          const quarantined = quarantineUnmatchedEvents;
           statements.push(
             this.dividends.supersedeIdentityStatement({
               instrumentId: input.instrumentId,
@@ -246,9 +433,11 @@ export class DividendFactsService {
               sourceUrl: null,
               announcedAt: null,
               retrievedAt: range.range.observedAt,
-              status: "active",
-              errorCode: null,
-              errorMessage: null,
+              status: quarantined ? "error" : "active",
+              errorCode: quarantined ? "provider_identity_changed" : null,
+              errorMessage: quarantined
+                ? "Provider identity changed; review required."
+                : null,
               createdAt: timestamp,
               updatedAt: timestamp,
             }),
@@ -256,22 +445,45 @@ export class DividendFactsService {
           buckets.add(event.exDate.slice(0, 7));
         }
       }
+      if (quarantineUnmatchedEvents) {
+        for (const row of unmatchedActiveRows) {
+          statements.push(
+            this.dividends.markErrorStatement({
+              id: row.id,
+              errorCode: "provider_identity_changed",
+              errorMessage:
+                "Provider identity changed or event disappeared; review required.",
+              updatedAt: timestamp,
+            }),
+          );
+          buckets.add(row.exDate.slice(0, 7));
+        }
+      }
       for (const bucketKey of buckets) {
         statements.push(this.buckets.bumpStatement(bucketKey, timestamp));
       }
       if (statements.length > 0) await this.dependencies.db.batch(statements);
     } catch (error) {
-      const code = providerErrorCode(error);
-      return { kind: "provider_invalid", code, preserved: true };
+      const code = error instanceof Error ? error.message : "provider_invalid";
+      if (code.startsWith("provider_")) {
+        return { kind: "provider_invalid", code, preserved: true };
+      }
+      return {
+        kind: "persistence_error",
+        code: persistenceErrorCode(error),
+        preserved: true,
+      };
     }
 
-    const today = timestamp.slice(0, 10);
+    const today = easternMarketDate(timestamp);
     return {
       kind: "refreshed",
       events: range.events,
       incompleteHistoryWarning: true,
-      noAnnouncedEventCurrentlyKnown:
-        range.events.length === 0 && input.endDate >= today,
+      noAnnouncedEventCurrentlyKnown: !range.events.some(
+        (event) => event.exDate > today,
+      ),
+      correctionConflict,
     };
   }
 }
@@ -310,7 +522,16 @@ export class AnalysisFactsService {
     publishedBefore: string;
     latestTradingDate?: string;
   }): Promise<AnalysisRefreshResult> {
-    const existing = await this.analyses.findByFact(input.fact.id);
+    let existing: MovementAnalysisRecord | null;
+    try {
+      existing = await this.analyses.findByFact(input.fact.id);
+    } catch (error) {
+      return {
+        kind: "error",
+        code: persistenceErrorCode(error),
+        preserved: true,
+      };
+    }
     let sources: NewsItem[];
     try {
       sources = await this.dependencies.newsProvider.search({
@@ -319,17 +540,6 @@ export class AnalysisFactsService {
         publishedAfter: input.publishedAfter,
         publishedBefore: input.publishedBefore,
       });
-      if (
-        sources.some(
-          (source) =>
-            !source.title ||
-            !source.publisher ||
-            !source.publishedAt ||
-            !isSafeUrl(source.url),
-        )
-      ) {
-        throw new Error("unsafe_source_url");
-      }
     } catch (error) {
       return this.persistAnalysisError(
         input,
@@ -337,21 +547,69 @@ export class AnalysisFactsService {
         analysisErrorCode(error),
       );
     }
-    const normalizedSources = [...sources]
-      .map((source) => ({
-        title: source.title.trim(),
-        publisher: source.publisher.trim(),
-        publishedAt: source.publishedAt,
-        url: source.url,
-        description: source.description ?? "",
-      }))
-      .sort((left, right) =>
-        `${left.url}|${left.publishedAt}`.localeCompare(
-          `${right.url}|${right.publishedAt}`,
-        ),
+    let normalizedSources: Array<{
+      title: string;
+      publisher: string;
+      publishedAt: string;
+      url: string;
+      description: string;
+    }>;
+    try {
+      normalizedSources = sources
+        .map((source) => {
+          const title = source.title.trim();
+          const publisher = source.publisher.trim();
+          const url = canonicalUrl(source.url);
+          if (!title || !publisher || !source.publishedAt || !url) {
+            throw new Error("unsafe_source_url");
+          }
+          return {
+            title,
+            publisher,
+            publishedAt: source.publishedAt,
+            url,
+            description: source.description?.trim() ?? "",
+          };
+        })
+        .sort((left, right) =>
+          JSON.stringify([
+            left.url,
+            left.title,
+            left.publisher,
+            left.publishedAt,
+            left.description,
+          ]).localeCompare(
+            JSON.stringify([
+              right.url,
+              right.title,
+              right.publisher,
+              right.publishedAt,
+              right.description,
+            ]),
+          ),
+        );
+    } catch (error) {
+      return this.persistAnalysisError(
+        input,
+        existing,
+        analysisErrorCode(error),
       );
+    }
+    const normalizedNews: NewsItem[] = normalizedSources.map((source) => ({
+      title: source.title,
+      publisher: source.publisher,
+      publishedAt: source.publishedAt,
+      url: source.url,
+      description: source.description,
+    }));
     const dependencyFingerprint = await digest(
       JSON.stringify({
+        context: {
+          symbol: input.symbol,
+          companyName: input.companyName,
+          publishedAfter: input.publishedAfter,
+          publishedBefore: input.publishedBefore,
+        },
         movement: {
           provider: input.fact.provider,
           providerRevision: input.fact.providerRevision,
@@ -382,7 +640,7 @@ export class AnalysisFactsService {
         symbol: input.symbol,
         companyName: input.companyName,
         changePct: Number(input.fact.movementPercentDecimal),
-        sources,
+        sources: normalizedNews,
       });
     } catch (error) {
       return this.persistAnalysisError(
@@ -418,21 +676,29 @@ export class AnalysisFactsService {
         createdAt: timestamp,
       }),
     );
-    await this.dependencies.db.batch([
-      this.analyses.upsertStatement(analysis),
-      ...this.analyses.replaceSourcesStatements({
-        movementAnalysisId: analysis.id,
-        sources: sourceRecords,
-      }),
-      this.buckets.bumpStatement(
-        bucketForDate(
-          input.fact.tradingDate,
-          input.latestTradingDate,
-          timestamp.slice(0, 10),
+    try {
+      await this.dependencies.db.batch([
+        this.analyses.upsertStatement(analysis),
+        ...this.analyses.replaceSourcesStatements({
+          movementAnalysisId: analysis.id,
+          sources: sourceRecords,
+        }),
+        this.buckets.bumpStatement(
+          bucketForDate(
+            input.fact.tradingDate,
+            input.latestTradingDate,
+            easternMarketDate(timestamp),
+          ),
+          timestamp,
         ),
-        timestamp,
-      ),
-    ]);
+      ]);
+    } catch (error) {
+      return {
+        kind: "error",
+        code: persistenceErrorCode(error),
+        preserved: true,
+      };
+    }
     return { kind: "refreshed", analysis };
   }
 
@@ -459,17 +725,25 @@ export class AnalysisFactsService {
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
-    await this.dependencies.db.batch([
-      this.analyses.upsertStatement(analysis),
-      this.buckets.bumpStatement(
-        bucketForDate(
-          input.fact.tradingDate,
-          input.latestTradingDate,
-          timestamp.slice(0, 10),
+    try {
+      await this.dependencies.db.batch([
+        this.analyses.upsertStatement(analysis),
+        this.buckets.bumpStatement(
+          bucketForDate(
+            input.fact.tradingDate,
+            input.latestTradingDate,
+            easternMarketDate(timestamp),
+          ),
+          timestamp,
         ),
-        timestamp,
-      ),
-    ]);
+      ]);
+    } catch (error) {
+      return {
+        kind: "error",
+        code: persistenceErrorCode(error),
+        preserved: true,
+      };
+    }
     return { kind: "error", code, preserved: true };
   }
 }

@@ -81,4 +81,53 @@ export class MarketFactRepository {
         fact.updatedAt,
       );
   }
+
+  async listDatesForInstrument(input: {
+    instrumentId: string;
+    provider?: string;
+  }): Promise<string[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT trading_date AS tradingDate FROM daily_market_facts
+         WHERE instrument_id = ?1
+           AND (?2 IS NULL OR provider = ?2)
+         ORDER BY trading_date`,
+      )
+      .bind(input.instrumentId, input.provider ?? null)
+      .all<{ tradingDate: string }>();
+    return result.results.map((row) => row.tradingDate);
+  }
+
+  markErrorStatement(input: {
+    instrumentId: string;
+    tradingDate?: string;
+    provider: string;
+    providerRevision: string;
+    retrievedAt: string;
+    errorCode: string;
+    errorMessage: string;
+    updatedAt: string;
+  }): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE daily_market_facts
+         SET provider = ?1, provider_revision = ?2, retrieved_at = ?3,
+             status = 'error', error_code = ?4, error_message = ?5,
+             updated_at = ?6
+         WHERE instrument_id = ?7
+           AND (?8 IS NULL OR trading_date = ?8)
+           AND (?8 IS NOT NULL OR provider = ?9)`,
+      )
+      .bind(
+        input.provider,
+        input.providerRevision,
+        input.retrievedAt,
+        input.errorCode,
+        input.errorMessage,
+        input.updatedAt,
+        input.instrumentId,
+        input.tradingDate ?? null,
+        input.provider,
+      );
+  }
 }

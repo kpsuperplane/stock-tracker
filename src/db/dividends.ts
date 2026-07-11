@@ -91,6 +91,90 @@ export class DividendRepository {
     return result.results;
   }
 
+  async listForProvider(input: {
+    instrumentId: string;
+    provider: string;
+  }): Promise<DividendEventRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT id, instrument_id AS instrumentId, ex_date AS exDate,
+                declaration_date AS declarationDate, record_date AS recordDate,
+                payment_date AS paymentDate,
+                amount_per_share_decimal AS amountPerShareDecimal, currency,
+                provider, provider_event_id AS providerEventId,
+                provider_revision AS providerRevision, source_url AS sourceUrl,
+                announced_at AS announcedAt, retrieved_at AS retrievedAt,
+                status, error_code AS errorCode, error_message AS errorMessage,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM dividend_events WHERE instrument_id = ?1 AND provider = ?2
+         ORDER BY ex_date, provider_event_id, provider_revision`,
+      )
+      .bind(input.instrumentId, input.provider)
+      .all<DividendEventRecord>();
+    return result.results;
+  }
+
+  async listForInstrument(
+    instrumentId: string,
+  ): Promise<DividendEventRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT id, instrument_id AS instrumentId, ex_date AS exDate,
+                declaration_date AS declarationDate, record_date AS recordDate,
+                payment_date AS paymentDate,
+                amount_per_share_decimal AS amountPerShareDecimal, currency,
+                provider, provider_event_id AS providerEventId,
+                provider_revision AS providerRevision, source_url AS sourceUrl,
+                announced_at AS announcedAt, retrieved_at AS retrievedAt,
+                status, error_code AS errorCode, error_message AS errorMessage,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM dividend_events WHERE instrument_id = ?1
+         ORDER BY ex_date, provider, provider_event_id, provider_revision`,
+      )
+      .bind(instrumentId)
+      .all<DividendEventRecord>();
+    return result.results;
+  }
+
+  markProviderErrorStatement(input: {
+    instrumentId: string;
+    provider: string;
+    errorCode: string;
+    errorMessage: string;
+    updatedAt: string;
+  }): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE dividend_events
+         SET status = 'error', error_code = ?1, error_message = ?2,
+             updated_at = ?3
+         WHERE instrument_id = ?4 AND provider = ?5 AND status = 'active'`,
+      )
+      .bind(
+        input.errorCode,
+        input.errorMessage,
+        input.updatedAt,
+        input.instrumentId,
+        input.provider,
+      );
+  }
+
+  markErrorStatement(input: {
+    id: string;
+    errorCode: string;
+    errorMessage: string;
+    updatedAt: string;
+  }): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE dividend_events
+         SET status = 'error', error_code = ?1, error_message = ?2,
+             updated_at = ?3
+         WHERE id = ?4 AND status = 'active'`,
+      )
+      .bind(input.errorCode, input.errorMessage, input.updatedAt, input.id);
+  }
+
   supersedeIdentityStatement(input: {
     instrumentId: string;
     provider: string;
