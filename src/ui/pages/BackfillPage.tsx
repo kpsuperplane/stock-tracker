@@ -6,7 +6,12 @@ const inclusiveDays = (start: string, end: string) =>
   (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) /
     86_400_000 +
   1;
-const terminal = new Set(["complete", "complete_with_errors", "paused"]);
+const terminal = new Set([
+  "complete",
+  "complete_with_errors",
+  "failed",
+  "paused",
+]);
 const statusLabels: Record<string, string> = {
   pending: "待处理",
   queued: "已排队",
@@ -191,7 +196,7 @@ export const BackfillPage = () => {
                   </thead>
                   <tbody>
                     {job.errors.map((jobError) => (
-                      <tr key={jobError.screeningId}>
+                      <tr key={jobError.workItemId ?? jobError.screeningId}>
                         <td>
                           <strong>{jobError.symbol}</strong>
                         </td>
@@ -205,11 +210,22 @@ export const BackfillPage = () => {
                           {jobError.retryable && (
                             <button
                               type="button"
-                              disabled={retrying === jobError.screeningId}
+                              disabled={
+                                retrying ===
+                                (jobError.workItemId ?? jobError.screeningId)
+                              }
                               onClick={() => {
-                                setRetrying(jobError.screeningId);
-                                void api
-                                  .retry(jobError.screeningId)
+                                const retryId =
+                                  jobError.workItemId ?? jobError.screeningId;
+                                setRetrying(retryId);
+                                const retryRequest =
+                                  job.pipeline_job_id && jobError.workItemId
+                                    ? api.retryBackfill(
+                                        job.pipeline_job_id,
+                                        jobError.workItemId,
+                                      )
+                                    : api.retry(jobError.screeningId);
+                                void retryRequest
                                   .then(() => setRetrying(null))
                                   .catch(() => {
                                     setRetrying(null);
@@ -217,7 +233,8 @@ export const BackfillPage = () => {
                                   });
                               }}
                             >
-                              {retrying === jobError.screeningId
+                              {retrying ===
+                              (jobError.workItemId ?? jobError.screeningId)
                                 ? "正在重试…"
                                 : "重试分析"}
                             </button>

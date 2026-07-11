@@ -83,7 +83,10 @@ const mapPipelineJob = (row: PipelineJobRow): PipelineJobRecord => ({
 const allowedTransitions: Readonly<
   Record<PipelineJobStatus, readonly PipelineJobStatus[]>
 > = {
-  pending: ["planning", "terminal"],
+  // A worker can crash after the planner has completed but before it records
+  // the pending -> planning transition.  Allow settlement to repair that
+  // persisted-state gap without requiring browser polling.
+  pending: ["planning", "complete", "complete_with_errors", "terminal"],
   planning: ["running", "complete", "complete_with_errors", "terminal"],
   running: ["complete", "complete_with_errors", "terminal"],
   complete: [],

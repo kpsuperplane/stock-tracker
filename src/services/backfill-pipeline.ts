@@ -32,6 +32,7 @@ interface PipelineDateRow {
   total: number;
   completed: number;
   failed: number;
+  unsettled: number;
 }
 
 interface PipelineErrorRow {
@@ -40,10 +41,32 @@ interface PipelineErrorRow {
   effective_date: string | null;
   work_type: string;
   state: string;
+  outcome: string;
   error_code: string | null;
   last_error: string | null;
   attempt_count: number;
 }
+
+const MAX_START_PLANNER_PAGES = 10;
+const MAX_CONTINUATION_PAGES = 25;
+const MAX_GENERATION_RESERVATION_ATTEMPTS = 5;
+
+const isGenerationReservationConflict = (error: unknown): boolean =>
+  /unique constraint|pipeline_jobs_backfill_generation|constraint failed/i.test(
+    String(error),
+  );
+
+const isRetryableTerminalError = (errorCode: string | null): boolean => {
+  if (!errorCode) return false;
+  return /(?:timeout|timed[_-]?out|network|abort|provider_(?:429|5\d\d)|http_(?:429|5\d\d)|provider_partial_range|dispatch_attempts_exhausted|pipeline_attempts_exhausted|pipeline_failed)/i.test(
+    errorCode,
+  );
+};
+
+const isContinuationRace = (error: unknown): boolean =>
+  /planner_(?:claim|lease|work_item).*conflict|planner_lease_(?:required|unexpected)|pipeline_planner_cursor_conflict|planner_(?:work_item_not_active|work_not_active|completion_conflict)/i.test(
+    String(error),
+  );
 
 /**
  * Backfill's compatibility adapter for the normalized reconciliation pipeline.
@@ -68,36 +91,6 @@ export class BackfillPipelineAdapter {
     const instrumentIds = await this.findInstrumentIds(symbols);
     const plannerWorkItemId = crypto.randomUUID();
     const now = input.now;
-    const forcedRefreshGeneration = input.reprocessExisting
-      ? await this.nextForcedRefreshGeneration()
-      : null;
-    const pipelineJob: PipelineJobRecord = {
-      id,
-      triggerType: "backfill",
-      requestedStartDate: input.startDate,
-      requestedEndDate: input.endDate,
-      affectedInstrumentsJson: JSON.stringify(instrumentIds),
-      // Backfills retain the legacy weekday contract while the planner still
-      // expands each date against each instrument's holding timeline. Keeping
-      // these intervals unscoped lets one shared planner handle a multi-
-      // instrument book without duplicating the date list per instrument.
-      eligibilityIntervalsJson: JSON.stringify(
-        weekdaysInRange(input.startDate, input.endDate).map((date) => ({
-          startDate: date,
-          endDate: date,
-        })),
-      ),
-      priority: 200,
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-      backfillReprocessExisting: input.reprocessExisting,
-      backfillForcedRefreshGeneration: forcedRefreshGeneration,
-      plannerCursor: null,
-      plannerDividendCursor: null,
-      plannerLeaseUntil: null,
-    };
-
     const plannerWorkItem = {
       id: plannerWorkItemId,
       pipelineJobId: id,
@@ -112,19 +105,71 @@ export class BackfillPipelineAdapter {
       updatedAt: now,
     };
 
-    await this.dependencies.db.batch([
-      this.pipelineJobs.createStatement(pipelineJob),
-      this.workItems.createPlanningStatement(plannerWorkItem),
-      this.dependencies.db
-        .prepare(
-          `INSERT INTO job_work_items
-             (pipeline_job_id, work_item_id, relationship, outcome, created_at)
-           VALUES (?1, ?2, 'required', 'pending', ?3)`,
-        )
-        .bind(id, plannerWorkItemId, now),
-    ]);
+    // The unique generation index is the reservation boundary.  If two
+    // requests race on MAX()+1, one insert wins and the other retries from the
+    // newly persisted pipeline-job generation.  This also allocates a unique
+    // generation when the planner ultimately has no work to materialize.
+    for (
+      let attempt = 0;
+      attempt < MAX_GENERATION_RESERVATION_ATTEMPTS;
+      attempt += 1
+    ) {
+      const forcedRefreshGeneration = input.reprocessExisting
+        ? await this.nextForcedRefreshGeneration()
+        : null;
+      const pipelineJob: PipelineJobRecord = {
+        id,
+        triggerType: "backfill",
+        requestedStartDate: input.startDate,
+        requestedEndDate: input.endDate,
+        affectedInstrumentsJson: JSON.stringify(instrumentIds),
+        // Backfills retain the legacy weekday contract while the planner still
+        // expands each date against each instrument's holding timeline.
+        eligibilityIntervalsJson: JSON.stringify(
+          weekdaysInRange(input.startDate, input.endDate).map((date) => ({
+            startDate: date,
+            endDate: date,
+          })),
+        ),
+        priority: 200,
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+        backfillReprocessExisting: input.reprocessExisting,
+        backfillForcedRefreshGeneration: forcedRefreshGeneration,
+        plannerCursor: null,
+        plannerDividendCursor: null,
+        plannerLeaseUntil: null,
+      };
+      try {
+        await this.dependencies.db.batch([
+          this.pipelineJobs.createStatement(pipelineJob),
+          this.workItems.createPlanningStatement(plannerWorkItem),
+          this.dependencies.db
+            .prepare(
+              `INSERT INTO job_work_items
+                 (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+               VALUES (?1, ?2, 'required', 'pending', ?3)`,
+            )
+            .bind(id, plannerWorkItemId, now),
+        ]);
+        break;
+      } catch (error) {
+        if (
+          !input.reprocessExisting ||
+          !isGenerationReservationConflict(error) ||
+          attempt === MAX_GENERATION_RESERVATION_ATTEMPTS - 1
+        ) {
+          throw error;
+        }
+      }
+    }
 
     await this.planNextPage(id, now);
+    // Complete a bounded amount of planning in the creating worker.  Larger
+    // ranges retain their cursor and are advanced by the explicit continuation
+    // path below; status polling never performs this work.
+    await this.continuePlanning(id, now, MAX_START_PLANNER_PAGES);
     await this.completeIfSettled(id, now);
 
     return id;
@@ -136,23 +181,25 @@ export class BackfillPipelineAdapter {
    * legacy `backfill_jobs` row.
    */
   async getStatus(id: string): Promise<Record<string, unknown> | null> {
-    let job = await this.pipelineJobs.findById(id);
+    const job = await this.pipelineJobs.findById(id);
     if (!job) return null;
+    // Scheduled and ledger jobs are not Backfill resources.  The route may
+    // fall through to its legacy lookup for those ids.
+    if (job.triggerType !== "backfill") return null;
 
-    if (job.triggerType === "backfill") {
-      await this.continuePlanning(id);
-      await this.completeIfSettled(id, new Date().toISOString());
-      job = await this.pipelineJobs.findById(id);
-      if (!job) return null;
-    }
-
-    const [progress, dateRows, errors, forcedRefreshGeneration] =
+    const [progress, dateRows, errors, forcedRefreshGeneration, settlement] =
       await Promise.all([
         this.loadProgress(id),
         this.loadDateRows(id),
         this.loadErrors(id),
         this.loadForcedRefreshGeneration(id),
+        this.loadSettlement(id),
       ]);
+    const projectedStatus = mapPipelineStatus(
+      job.status,
+      progress.workFailed,
+      settlement,
+    );
     const dates = weekdaysInRange(job.requestedStartDate, job.requestedEndDate);
     const runs = dates.map((date) => {
       const row = dateRows.find(
@@ -162,9 +209,7 @@ export class BackfillPipelineAdapter {
         return {
           date,
           tradingDate: date,
-          status: ["complete", "complete_with_errors", "terminal"].includes(
-            job.status,
-          )
+          status: ["complete", "complete_with_errors"].includes(projectedStatus)
             ? "skipped"
             : "pending",
           tickerJobsTotal: 0,
@@ -174,15 +219,15 @@ export class BackfillPipelineAdapter {
         };
       }
       const failed = Number(row.failed) > 0;
-      const complete = Number(row.completed) === Number(row.total);
+      const complete = Number(row.unsettled ?? 0) === 0;
       return {
         date,
         tradingDate: date,
-        status: failed
-          ? "complete_with_errors"
-          : complete
-            ? "complete"
-            : "running",
+        status: !complete
+          ? "running"
+          : failed
+            ? "complete_with_errors"
+            : "complete",
         tickerJobsTotal: Number(row.total),
         tickerJobsProcessed: Number(row.completed),
         tickerJobsFailed: Number(row.failed),
@@ -190,13 +235,13 @@ export class BackfillPipelineAdapter {
       };
     });
 
-    const status = mapPipelineStatus(job.status, progress.workFailed);
+    const status = projectedStatus;
     const datesProcessed = runs.filter((run) =>
       ["complete", "complete_with_errors", "skipped"].includes(run.status),
     ).length;
     const pipeline = {
       id: job.id,
-      status: job.status,
+      status: projectedStatus,
       triggerType: job.triggerType,
       requestedStartDate: job.requestedStartDate,
       requestedEndDate: job.requestedEndDate,
@@ -218,6 +263,7 @@ export class BackfillPipelineAdapter {
       started_at: job.startedAt ?? null,
       completed_at: job.completedAt ?? null,
       reprocess_existing: job.backfillReprocessExisting === true,
+      forcedRefreshGeneration,
       pipeline_job_id: job.id,
       status,
       dates_total: dates.length,
@@ -308,25 +354,63 @@ export class BackfillPipelineAdapter {
     if (!updated) throw new Error("pipeline_planner_cursor_conflict");
   }
 
-  private async continuePlanning(pipelineJobId: string): Promise<void> {
-    const job = await this.pipelineJobs.findById(pipelineJobId);
-    if (
-      !job ||
-      job.status === "complete" ||
-      job.status === "complete_with_errors" ||
-      job.status === "terminal"
-    ) {
-      return;
+  /**
+   * Explicit, browser-independent planner continuation.  A bounded number of
+   * pages is processed per invocation; the persisted cursor remains the
+   * durable trigger for the next worker invocation when more work remains.
+   */
+  async continuePlanning(
+    pipelineJobId: string,
+    now = new Date().toISOString(),
+    maxPages = MAX_CONTINUATION_PAGES,
+  ): Promise<{ pages: number; complete: boolean }> {
+    const pageLimit = Math.max(1, Math.min(MAX_CONTINUATION_PAGES, maxPages));
+    let pages = 0;
+    while (pages < pageLimit) {
+      const job = await this.pipelineJobs.findById(pipelineJobId);
+      if (
+        job?.triggerType !== "backfill" ||
+        job.status === "complete" ||
+        job.status === "complete_with_errors" ||
+        job.status === "terminal"
+      ) {
+        return { pages, complete: true };
+      }
+      const plannerWork =
+        await this.workItems.findPlanningForJob(pipelineJobId);
+      if (
+        !plannerWork ||
+        plannerWork.state === "complete" ||
+        plannerWork.state === "terminal"
+      ) {
+        await this.completeIfSettled(pipelineJobId, now);
+        return { pages, complete: true };
+      }
+      try {
+        await this.planNextPage(pipelineJobId, now);
+      } catch (error) {
+        // Another worker may have claimed the planner between the read above
+        // and this page.  Its lease/cursor is the authoritative continuation;
+        // an explicit worker invocation should be idempotent in that case.
+        if (isContinuationRace(error)) {
+          await this.completeIfSettled(pipelineJobId, now);
+          return { pages, complete: false };
+        }
+        throw error;
+      }
+      pages += 1;
+      const advanced = await this.pipelineJobs.findById(pipelineJobId);
+      if (
+        !advanced ||
+        (advanced.plannerCursor === null &&
+          advanced.plannerDividendCursor === null)
+      ) {
+        await this.completeIfSettled(pipelineJobId, now);
+        return { pages, complete: true };
+      }
     }
-    const plannerWork = await this.workItems.findPlanningForJob(pipelineJobId);
-    if (
-      !plannerWork ||
-      plannerWork.state === "complete" ||
-      plannerWork.state === "terminal"
-    ) {
-      return;
-    }
-    await this.planNextPage(pipelineJobId, new Date().toISOString());
+    await this.completeIfSettled(pipelineJobId, now);
+    return { pages, complete: false };
   }
 
   async retry(input: {
@@ -343,6 +427,7 @@ export class BackfillPipelineAdapter {
     if (!job || !work || work.scope !== "global_fact") {
       return { kind: "not_found" };
     }
+    if (job.triggerType !== "backfill") return { kind: "not_retryable" };
     if (
       !(await this.workItems.isLinkedToJob({
         pipelineJobId: input.pipelineJobId,
@@ -351,26 +436,19 @@ export class BackfillPipelineAdapter {
     ) {
       return { kind: "not_found" };
     }
-    if (work.state !== "terminal") return { kind: "not_retryable" };
-    await this.dependencies.db.batch([
-      this.dependencies.db
-        .prepare(
-          `UPDATE work_items
-              SET state = 'pending', attempt_count = 0,
-                  dispatch_lease_until = NULL, processing_lease_until = NULL,
-                  terminal_error_code = NULL, terminal_error_message = NULL,
-                  completed_at = NULL, available_at = ?1, updated_at = ?1
-            WHERE id = ?2 AND scope = 'global_fact' AND state = 'terminal'`,
-        )
-        .bind(input.now, input.workItemId),
-      this.dependencies.db
-        .prepare(
-          `UPDATE job_work_items
-              SET outcome = 'pending', updated_at = ?1
-            WHERE pipeline_job_id = ?2 AND work_item_id = ?3`,
-        )
-        .bind(input.now, input.pipelineJobId, input.workItemId),
-    ]);
+    if (
+      work.state !== "terminal" ||
+      !isRetryableTerminalError(work.terminalErrorCode)
+    ) {
+      return { kind: "not_retryable" };
+    }
+    const reset = await this.workItems.resetForRetry({
+      id: input.workItemId,
+      pipelineJobId: input.pipelineJobId,
+      expectedUpdatedAt: work.updatedAt,
+      now: input.now,
+    });
+    if (!reset) return { kind: "not_retryable" };
     if (
       job.status === "complete" ||
       job.status === "complete_with_errors" ||
@@ -387,9 +465,17 @@ export class BackfillPipelineAdapter {
   private async nextForcedRefreshGeneration(): Promise<number> {
     const row = await this.dependencies.db
       .prepare(
-        `SELECT COALESCE(MAX(forced_refresh_generation), 0) + 1 AS next_generation
-          FROM work_items
-          WHERE scope = 'global_fact'`,
+        `SELECT COALESCE(MAX(generation), 0) + 1 AS next_generation
+           FROM (
+             SELECT backfill_forced_refresh_generation AS generation
+               FROM pipeline_jobs
+              WHERE backfill_forced_refresh_generation IS NOT NULL
+             UNION ALL
+             SELECT forced_refresh_generation AS generation
+               FROM work_items
+              WHERE scope = 'global_fact'
+                AND forced_refresh_generation IS NOT NULL
+           )`,
       )
       .first<{ next_generation: number }>();
     return Math.max(1, Number(row?.next_generation ?? 1));
@@ -410,10 +496,11 @@ export class BackfillPipelineAdapter {
            SUM(CASE WHEN link.outcome = 'reused' THEN 1 ELSE 0 END) AS linked_work_reused,
            SUM(CASE WHEN link.outcome = 'skipped' THEN 1 ELSE 0 END) AS linked_work_skipped,
            SUM(CASE WHEN work.work_type = 'market_fact' AND work.state = 'complete'
-                    THEN 1 ELSE 0 END) AS linked_work_fetched,
+                    AND link.outcome = 'processed' THEN 1 ELSE 0 END) AS linked_work_fetched,
            SUM(CASE WHEN work.work_type = 'analysis' AND work.state = 'complete'
-                    THEN 1 ELSE 0 END) AS linked_work_analyzed,
-           SUM(CASE WHEN work.state = 'complete' THEN 1 ELSE 0 END) AS linked_work_processed,
+                    AND link.outcome = 'processed' THEN 1 ELSE 0 END) AS linked_work_analyzed,
+           SUM(CASE WHEN work.state = 'complete' AND link.outcome <> 'failed'
+                    THEN 1 ELSE 0 END) AS linked_work_processed,
            SUM(CASE WHEN link.outcome = 'failed' OR work.state = 'terminal'
                     THEN 1 ELSE 0 END) AS linked_work_failed
          FROM pipeline_jobs p
@@ -446,9 +533,16 @@ export class BackfillPipelineAdapter {
         Number(row?.stored_work_analyzed ?? 0),
         Number(row?.linked_work_analyzed ?? 0),
       ),
+      // Planner skips are settled work even though they have no global row.
+      // Include them without double-counting jobs created after the planner's
+      // persisted processed counter was upgraded to include skips.
       workProcessed: Math.max(
         Number(row?.stored_work_processed ?? 0),
-        Number(row?.linked_work_processed ?? 0),
+        Number(row?.linked_work_processed ?? 0) +
+          Math.max(
+            Number(row?.stored_work_skipped ?? 0),
+            Number(row?.linked_work_skipped ?? 0),
+          ),
       ),
       // A targeted retry clears the terminal work state. Do not retain the
       // previous failure counter as if it were still an active error.
@@ -464,8 +558,13 @@ export class BackfillPipelineAdapter {
         `SELECT
            w.effective_date,
            COUNT(*) AS total,
-           SUM(CASE WHEN w.state = 'complete' THEN 1 ELSE 0 END) AS completed,
-           SUM(CASE WHEN w.state = 'terminal' THEN 1 ELSE 0 END) AS failed
+           SUM(CASE WHEN w.state = 'complete' AND j.outcome <> 'failed'
+                    THEN 1 ELSE 0 END) AS completed,
+           SUM(CASE WHEN w.state = 'terminal' OR j.outcome = 'failed'
+                    THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN j.outcome = 'pending'
+                     AND w.state IN ('pending', 'dispatching', 'queued', 'processing')
+                    THEN 1 ELSE 0 END) AS unsettled
          FROM job_work_items j
          JOIN work_items w ON w.id = j.work_item_id
         WHERE j.pipeline_job_id = ?1
@@ -485,6 +584,7 @@ export class BackfillPipelineAdapter {
     const result = await this.dependencies.db
       .prepare(
         `SELECT w.id, i.symbol, w.effective_date, w.work_type, w.state,
+                j.outcome,
                 w.terminal_error_code AS error_code,
                 w.terminal_error_message AS last_error, w.attempt_count
            FROM job_work_items j
@@ -492,7 +592,7 @@ export class BackfillPipelineAdapter {
            LEFT JOIN instruments i ON i.id = w.instrument_id
           WHERE j.pipeline_job_id = ?1
             AND w.scope = 'global_fact'
-            AND w.state = 'terminal'
+            AND (w.state = 'terminal' OR j.outcome = 'failed')
           ORDER BY w.effective_date, w.id`,
       )
       .bind(pipelineJobId)
@@ -505,11 +605,22 @@ export class BackfillPipelineAdapter {
       tradingDate: row.effective_date ?? "",
       workType: row.work_type,
       state: row.state,
-      errorCode: row.error_code,
-      errorMessage: row.last_error,
-      message: row.last_error,
+      errorCode:
+        row.error_code ??
+        (row.outcome === "failed" ? "shared_work_failed" : null),
+      errorMessage:
+        row.last_error ??
+        (row.outcome === "failed"
+          ? "This shared work item failed for this backfill."
+          : null),
+      message:
+        row.last_error ??
+        (row.outcome === "failed"
+          ? "This shared work item failed for this backfill."
+          : null),
       attemptCount: Number(row.attempt_count),
-      retryable: true,
+      retryable:
+        row.state === "terminal" && isRetryableTerminalError(row.error_code),
     }));
   }
 
@@ -518,12 +629,18 @@ export class BackfillPipelineAdapter {
   ): Promise<number | null> {
     const row = await this.dependencies.db
       .prepare(
-        `SELECT MAX(w.forced_refresh_generation) AS generation
-           FROM job_work_items j
-           JOIN work_items w ON w.id = j.work_item_id
-          WHERE j.pipeline_job_id = ?1
+        `SELECT COALESCE(
+                  MAX(w.forced_refresh_generation),
+                  p.backfill_forced_refresh_generation
+                ) AS generation
+           FROM pipeline_jobs p
+           LEFT JOIN job_work_items j ON j.pipeline_job_id = p.id
+           LEFT JOIN work_items w
+             ON w.id = j.work_item_id
             AND w.scope = 'global_fact'
-            AND w.forced_refresh_generation IS NOT NULL`,
+            AND w.forced_refresh_generation IS NOT NULL
+          WHERE p.id = ?1
+          GROUP BY p.id, p.backfill_forced_refresh_generation`,
       )
       .bind(pipelineJobId)
       .first<{ generation: number | null }>();
@@ -532,31 +649,100 @@ export class BackfillPipelineAdapter {
       : Number(row.generation);
   }
 
+  private async loadSettlement(pipelineJobId: string): Promise<{
+    complete: boolean;
+    failed: number;
+  }> {
+    const row = await this.dependencies.db
+      .prepare(
+        `SELECT pipeline.planner_cursor,
+                pipeline.planner_dividend_cursor,
+                planner.state AS planner_state,
+                (SELECT COUNT(*)
+                   FROM job_work_items link
+                   JOIN work_items work ON work.id = link.work_item_id
+                  WHERE link.pipeline_job_id = pipeline.id
+                    AND work.scope = 'global_fact'
+                    AND link.outcome = 'pending'
+                    AND work.state IN ('pending', 'dispatching', 'queued', 'processing'))
+                  AS unsettled,
+                (SELECT COUNT(*)
+                   FROM job_work_items link
+                   JOIN work_items work ON work.id = link.work_item_id
+                  WHERE link.pipeline_job_id = pipeline.id
+                    AND work.scope = 'global_fact'
+                    AND (work.state = 'terminal' OR link.outcome = 'failed')) AS failed
+           FROM pipeline_jobs pipeline
+           LEFT JOIN work_items planner
+             ON planner.pipeline_job_id = pipeline.id
+            AND planner.scope = 'job_planning'
+          WHERE pipeline.id = ?1`,
+      )
+      .bind(pipelineJobId)
+      .first<{
+        planner_cursor: string | null;
+        planner_dividend_cursor: string | null;
+        planner_state: string | null;
+        unsettled: number | null;
+        failed: number | null;
+      }>();
+    const complete =
+      row?.planner_state === "complete" &&
+      row?.planner_cursor === null &&
+      row?.planner_dividend_cursor === null &&
+      Number(row.unsettled ?? 0) === 0;
+    return { complete, failed: Number(row?.failed ?? 0) };
+  }
+
   private async completeIfSettled(id: string, now: string): Promise<void> {
     const row = await this.dependencies.db
       .prepare(
         `SELECT
+           pipeline.status AS pipeline_status,
+           pipeline.planner_cursor,
+           pipeline.planner_dividend_cursor,
+           planner.state AS planner_state,
            COUNT(work.id) AS total,
-           SUM(CASE WHEN work.state IN ('pending', 'dispatching', 'queued', 'processing')
+           SUM(CASE WHEN link.outcome = 'pending'
+                     AND work.state IN ('pending', 'dispatching', 'queued', 'processing')
                     THEN 1 ELSE 0 END) AS unsettled,
-           SUM(CASE WHEN work.state = 'terminal' THEN 1 ELSE 0 END) AS terminal
-         FROM job_work_items link
-         JOIN work_items work ON work.id = link.work_item_id
-        WHERE link.pipeline_job_id = ?1
-          AND work.scope = 'global_fact'`,
+           SUM(CASE WHEN work.state = 'terminal' OR link.outcome = 'failed'
+                    THEN 1 ELSE 0 END) AS terminal
+         FROM pipeline_jobs pipeline
+         LEFT JOIN work_items planner
+           ON planner.pipeline_job_id = pipeline.id
+          AND planner.scope = 'job_planning'
+         LEFT JOIN job_work_items link
+           ON link.pipeline_job_id = pipeline.id
+         LEFT JOIN work_items work
+           ON work.id = link.work_item_id AND work.scope = 'global_fact'
+        WHERE pipeline.id = ?1`,
       )
       .bind(id)
       .first<{
+        pipeline_status: PipelineJobRecord["status"];
+        planner_cursor: string | null;
+        planner_dividend_cursor: string | null;
+        planner_state: string | null;
         total: number;
         unsettled: number | null;
         terminal: number | null;
       }>();
+    if (
+      !row ||
+      !["pending", "planning", "running"].includes(row.pipeline_status) ||
+      row.planner_state !== "complete" ||
+      row.planner_cursor !== null ||
+      row.planner_dividend_cursor !== null
+    ) {
+      return;
+    }
     if (Number(row?.unsettled ?? 0) > 0) return;
     const to =
       Number(row?.terminal ?? 0) > 0 ? "complete_with_errors" : "complete";
     await this.pipelineJobs.transition({
       id,
-      from: "running",
+      from: row.pipeline_status,
       to,
       now,
     });
@@ -566,10 +752,19 @@ export class BackfillPipelineAdapter {
 function mapPipelineStatus(
   status: PipelineJobRecord["status"],
   failed: number,
+  settlement?: { complete: boolean; failed: number },
 ): string {
   if (status === "complete_with_errors") return "complete_with_errors";
   if (status === "complete") return "complete";
   if (status === "terminal") return "failed";
+  // Completion is projected from settled children for read-only status
+  // requests.  The persisted transition is performed by the explicit worker
+  // continuation path, so polling never mutates the pipeline job.
+  if (settlement?.complete) {
+    return settlement.failed > 0 || failed > 0
+      ? "complete_with_errors"
+      : "complete";
+  }
   // Terminal children do not settle the compatibility job until every other
   // linked work item has reached a terminal state.
   if (status === "running" || status === "planning" || status === "pending") {

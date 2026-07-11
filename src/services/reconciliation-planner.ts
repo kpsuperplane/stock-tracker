@@ -969,9 +969,12 @@ export class ReconciliationPlannerService {
            SUM(CASE WHEN link.outcome = 'reused' THEN 1 ELSE 0 END) AS workReused,
            SUM(CASE WHEN link.outcome = 'skipped' THEN 1 ELSE 0 END) AS workSkipped,
            SUM(CASE WHEN link.outcome = 'failed' THEN 1 ELSE 0 END) AS workFailed,
-           SUM(CASE WHEN work.work_type = 'market_fact' AND work.state = 'complete' THEN 1 ELSE 0 END) AS workFetched,
-           SUM(CASE WHEN work.work_type = 'analysis' AND work.state = 'complete' THEN 1 ELSE 0 END) AS workAnalyzed,
-           SUM(CASE WHEN work.state = 'complete' THEN 1 ELSE 0 END) AS workProcessed
+           SUM(CASE WHEN work.work_type = 'market_fact' AND work.state = 'complete'
+                         AND link.outcome = 'processed' THEN 1 ELSE 0 END) AS workFetched,
+           SUM(CASE WHEN work.work_type = 'analysis' AND work.state = 'complete'
+                         AND link.outcome = 'processed' THEN 1 ELSE 0 END) AS workAnalyzed,
+           SUM(CASE WHEN work.state = 'complete' THEN 1 ELSE 0 END)
+             + SUM(CASE WHEN link.outcome = 'skipped' THEN 1 ELSE 0 END) AS workProcessed
          FROM job_work_items link
          JOIN work_items work ON work.id = link.work_item_id
          WHERE link.pipeline_job_id = ?1 AND work.scope = 'global_fact'`,
@@ -996,6 +999,8 @@ export class ReconciliationPlannerService {
         workSkipped: Math.max(row?.workSkipped ?? 0, skippedCount),
         workFetched: row?.workFetched ?? 0,
         workAnalyzed: row?.workAnalyzed ?? 0,
+        // Skips are settled planner work and therefore belong in the
+        // processed counter even though no global work row is materialized.
         workProcessed: row?.workProcessed ?? 0,
         workFailed: row?.workFailed ?? 0,
       },

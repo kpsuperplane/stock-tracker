@@ -26,6 +26,7 @@ export type Ticker = {
 
 export type BackfillJob = {
   id: string;
+  pipeline_job_id?: string | null;
   status: string;
   dates_total: number;
   dates_processed: number;
@@ -38,6 +39,7 @@ export type BackfillJob = {
     tickersFailed: number;
   }>;
   errors: Array<{
+    workItemId?: string;
     screeningId: string;
     symbol: string;
     tradingDate: string;
@@ -82,4 +84,9 @@ export const api = {
     }),
   backfill: (id: string) =>
     request<{ job: BackfillJob }>(`/api/backfills/${id}`),
+  retryBackfill: (pipelineJobId: string, workItemId: string) =>
+    request<{ queued: true }>(`/api/backfills/${pipelineJobId}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ workItemId }),
+    }),
 };

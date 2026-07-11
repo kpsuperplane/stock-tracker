@@ -502,6 +502,74 @@ export class WorkItemRepository {
     return results[0]?.meta.changes === 1;
   }
 
+  /**
+   * Reset a terminal global fact for a manual retry.  The expected updated_at
+   * value is the work-item revision token: only the caller that observed the
+   * terminal state may reset it.  The trigger installed by migration 0009
+   * detaches any old terminal dispatch-batch links atomically with this
+   * transition, while the revision buckets keep read-model ETags coherent.
+   */
+  async resetForRetry(input: {
+    id: string;
+    pipelineJobId: string;
+    expectedUpdatedAt: string;
+    now: string;
+  }): Promise<boolean> {
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+              SET state = 'pending', attempt_count = 0,
+                  dispatch_lease_until = NULL, processing_lease_until = NULL,
+                  result_revision = NULL, terminal_error_code = NULL,
+                  terminal_error_message = NULL, completed_at = NULL,
+                  available_at = ?1, updated_at = ?1
+            WHERE id = ?2 AND scope = 'global_fact' AND state = 'terminal'
+              AND terminal_error_code IS NOT NULL AND updated_at IS ?3
+              AND EXISTS (
+                SELECT 1 FROM job_work_items link
+                 WHERE link.pipeline_job_id = ?4
+                   AND link.work_item_id = work_items.id
+                   AND link.outcome IN ('pending', 'failed')
+              )`,
+        )
+        .bind(
+          input.now,
+          input.id,
+          input.expectedUpdatedAt,
+          input.pipelineJobId,
+        ),
+      this.db.prepare("SELECT changes() AS changes"),
+      this.db
+        .prepare(
+          `UPDATE job_work_items
+              SET outcome = 'pending', updated_at = ?1
+            WHERE pipeline_job_id = ?2 AND work_item_id = ?3
+              AND outcome IN ('pending', 'failed')
+              AND EXISTS (
+                SELECT 1 FROM work_items work
+                 WHERE work.id = ?3
+                   AND work.state = 'pending'
+                   AND work.updated_at = ?1
+              )`,
+        )
+        .bind(input.now, input.pipelineJobId, input.id),
+      this.db.prepare("SELECT changes() AS changes"),
+      this.revisions.bumpWorkItemAndLatestForRetryStatement(
+        input.id,
+        input.now,
+        easternMarketDate(input.now),
+      ),
+    ]);
+    const changed = Number(
+      (results[1] as D1Result<{ changes: number }>).results?.[0]?.changes ?? 0,
+    );
+    const linkChanged = Number(
+      (results[3] as D1Result<{ changes: number }>).results?.[0]?.changes ?? 0,
+    );
+    return changed === 1 && linkChanged === 1;
+  }
+
   async claimForDispatch(input: {
     id: string;
     now: string;

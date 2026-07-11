@@ -164,6 +164,44 @@ export class FactRevisionBucketRepository {
       .bind(id, updatedAt, marketDate);
   }
 
+  /**
+   * Bump both read-model buckets for a retry only when the immediately
+   * preceding CAS update changed exactly one work row.  Keeping the two
+   * bucket writes in one statement means a stale retry cannot advance ETags.
+   */
+  bumpWorkItemAndLatestForRetryStatement(
+    id: string,
+    updatedAt: string,
+    marketDate: string,
+  ): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `WITH buckets(bucket_key) AS (
+           SELECT substr(effective_date, 1, 7)
+             FROM work_items
+            WHERE id = ?1 AND scope = 'global_fact'
+              AND effective_date IS NOT NULL
+              AND state = 'pending' AND updated_at IS ?2
+              AND changes() = 1
+           UNION ALL
+           SELECT 'latest'
+             FROM work_items
+            WHERE id = ?1 AND scope = 'global_fact'
+              AND effective_date = (SELECT MAX(trading_date)
+                                     FROM daily_market_facts
+                                    WHERE trading_date <= ?3)
+              AND state = 'pending' AND updated_at IS ?2
+              AND changes() = 1
+         )
+         INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
+         SELECT bucket_key, 1, ?2 FROM buckets WHERE true
+         ON CONFLICT(bucket_key) DO UPDATE SET
+           revision = fact_revision_buckets.revision + 1,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(id, updatedAt, marketDate);
+  }
+
   bumpWorkItemsForBatchStatement(
     dispatchBatchId: string,
     updatedAt: string,

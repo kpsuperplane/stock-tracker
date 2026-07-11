@@ -54,19 +54,19 @@ backfillRoutes.post("/", async (context) => {
 
 backfillRoutes.get("/:id", async (context) => {
   const id = context.req.param("id");
-  const pipelineEnabled = backfillPipelineFlagEnabled(context.env);
   const tickerRepository = new TickerRepository(context.env.DB);
-  const pipeline = pipelineEnabled
-    ? new BackfillPipelineAdapter({
-        db: context.env.DB,
-        listActiveSymbols: async () =>
-          (await tickerRepository.listActive()).map((ticker) => ticker.symbol),
-      })
-    : undefined;
-  const job = pipeline
-    ? ((await pipeline.getStatus(id)) ??
-      (await new RunRepository(context.env.DB).getBackfill(id)))
-    : await new RunRepository(context.env.DB).getBackfill(id);
+  // Always probe normalized Backfill jobs first so an already-created
+  // pipeline job remains readable if the feature flag is later turned off.
+  // The adapter itself rejects scheduled/ledger jobs, preserving resource
+  // boundaries for this status endpoint.
+  const pipeline = new BackfillPipelineAdapter({
+    db: context.env.DB,
+    listActiveSymbols: async () =>
+      (await tickerRepository.listActive()).map((ticker) => ticker.symbol),
+  });
+  const job =
+    (await pipeline.getStatus(id)) ??
+    (await new RunRepository(context.env.DB).getBackfill(id));
   return job
     ? context.json({ job })
     : context.json(
@@ -78,6 +78,45 @@ backfillRoutes.get("/:id", async (context) => {
         },
         404,
       );
+});
+
+// Planner continuation is an explicit worker path. Browser status polling is
+// deliberately read-only and never advances cursors.
+backfillRoutes.post("/:id/continue", async (context) => {
+  if (!backfillPipelineFlagEnabled(context.env)) {
+    return context.json(
+      {
+        error: {
+          code: "pipeline_disabled",
+          message: "Pipeline continuation is not enabled.",
+        },
+      },
+      409,
+    );
+  }
+  const pipeline = new BackfillPipelineAdapter({
+    db: context.env.DB,
+    listActiveSymbols: async () =>
+      (await new TickerRepository(context.env.DB).listActive()).map(
+        (ticker) => ticker.symbol,
+      ),
+  });
+  if (!(await pipeline.getStatus(context.req.param("id")))) {
+    return context.json(
+      {
+        error: {
+          code: "backfill_not_found",
+          message: "Backfill not found.",
+        },
+      },
+      404,
+    );
+  }
+  const result = await pipeline.continuePlanning(
+    context.req.param("id"),
+    new Date().toISOString(),
+  );
+  return context.json(result, 202);
 });
 
 backfillRoutes.post("/:id/retry", async (context) => {
