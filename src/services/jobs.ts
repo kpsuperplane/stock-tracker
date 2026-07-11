@@ -47,11 +47,21 @@ interface TickerStore {
   listActive(): Promise<TickerRecord[]>;
 }
 
+export interface BackfillPipelineStore {
+  start(input: {
+    startDate: string;
+    endDate: string;
+    reprocessExisting: boolean;
+    now: string;
+  }): Promise<string>;
+}
+
 export class JobsService {
   constructor(
     private readonly runs: RunStore,
     private readonly tickers: TickerStore,
     private readonly queue: Queue<ScreeningJobMessage>,
+    private readonly backfillPipeline?: BackfillPipelineStore,
   ) {}
 
   async startScheduled(tradingDate: string, now: string): Promise<string> {
@@ -100,6 +110,9 @@ export class JobsService {
         "backfill_range",
         "Backfills are limited to 30 calendar days.",
       );
+    }
+    if (this.backfillPipeline) {
+      return this.backfillPipeline.start({ ...input, now });
     }
     const dates: string[] = [];
     for (const date of weekdaysInRange(input.startDate, input.endDate)) {
@@ -156,4 +169,5 @@ export const createJobsService = (
   runs: RunRepository,
   tickers: TickerRepository,
   queue: Queue<ScreeningJobMessage>,
-) => new JobsService(runs, tickers, queue);
+  backfillPipeline?: BackfillPipelineStore,
+) => new JobsService(runs, tickers, queue, backfillPipeline);
