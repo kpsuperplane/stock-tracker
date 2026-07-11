@@ -1,3 +1,4 @@
+import { easternMarketDate } from "../shared/dates";
 import { FactRevisionBucketRepository } from "./revision-buckets";
 
 export interface PlanningWorkRecord {
@@ -211,7 +212,11 @@ export class WorkItemRepository {
     await this.db.batch([
       this.createGlobalStatement(work),
       this.revisions.bumpWorkItemStatement(work.id, work.updatedAt),
-      this.revisions.bumpLatestForWorkItemStatement(work.id, work.updatedAt),
+      this.revisions.bumpLatestForWorkItemStatement(
+        work.id,
+        work.updatedAt,
+        easternMarketDate(work.updatedAt),
+      ),
     ]);
     const existing = await this.findByDeterministicKey(work.deterministicKey);
     if (!existing) throw new Error("global_work_missing_after_insert");
@@ -488,7 +493,11 @@ export class WorkItemRepository {
     const results = await this.db.batch([
       statementWithBindings,
       this.revisions.bumpWorkItemStatement(input.id, input.now),
-      this.revisions.bumpLatestForWorkItemStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemStatement(
+        input.id,
+        input.now,
+        easternMarketDate(input.now),
+      ),
     ]);
     return results[0]?.meta.changes === 1;
   }
@@ -510,7 +519,11 @@ export class WorkItemRepository {
         )
         .bind(input.leaseUntil, input.now, input.id),
       this.revisions.bumpWorkItemStatement(input.id, input.now),
-      this.revisions.bumpLatestForWorkItemStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemStatement(
+        input.id,
+        input.now,
+        easternMarketDate(input.now),
+      ),
     ]);
     return results[0]?.meta.changes === 1;
   }
@@ -530,7 +543,11 @@ export class WorkItemRepository {
         )
         .bind(input.now, input.id, input.expectedLeaseUntil),
       this.revisions.bumpWorkItemStatement(input.id, input.now),
-      this.revisions.bumpLatestForWorkItemStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemStatement(
+        input.id,
+        input.now,
+        easternMarketDate(input.now),
+      ),
     ]);
     return results[0]?.meta.changes === 1;
   }
@@ -585,7 +602,10 @@ export class WorkItemRepository {
       failLinks,
       reclaim,
       this.revisions.bumpWorkItemsUpdatedAtStatement(now),
-      this.revisions.bumpLatestForWorkItemsUpdatedAtStatement(now),
+      this.revisions.bumpLatestForWorkItemsUpdatedAtStatement(
+        now,
+        easternMarketDate(now),
+      ),
     ]);
     return (results[0]?.meta.changes ?? 0) + (results[2]?.meta.changes ?? 0);
   }
@@ -605,7 +625,11 @@ export class WorkItemRepository {
         )
         .bind(input.now, input.id, input.expectedLeaseUntil),
       this.revisions.bumpWorkItemStatement(input.id, input.now),
-      this.revisions.bumpLatestForWorkItemStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemStatement(
+        input.id,
+        input.now,
+        easternMarketDate(input.now),
+      ),
     ]);
     return results[0]?.meta.changes === 1;
   }
@@ -636,6 +660,7 @@ export class WorkItemRepository {
       this.revisions.bumpLatestForWorkItemsForBatchStatement(
         input.dispatchBatchId,
         input.now,
+        easternMarketDate(input.now),
       ),
     ]);
     return results[0]?.meta.changes ?? 0;
@@ -665,6 +690,7 @@ export class WorkItemRepository {
       this.revisions.bumpLatestForWorkItemsForBatchStatement(
         input.dispatchBatchId,
         input.now,
+        easternMarketDate(input.now),
       ),
     ]);
     return results[0]?.meta.changes ?? 0;
@@ -700,6 +726,7 @@ export class WorkItemRepository {
       this.revisions.bumpLatestForWorkItemsForBatchStatement(
         input.dispatchBatchId,
         input.now,
+        easternMarketDate(input.now),
       ),
     ]);
     return results[0]?.meta.changes ?? 0;
@@ -722,7 +749,10 @@ export class WorkItemRepository {
         )
         .bind(input.now, input.expectedLeaseUntil ?? null),
       this.revisions.bumpWorkItemsUpdatedAtStatement(input.now),
-      this.revisions.bumpLatestForWorkItemsUpdatedAtStatement(input.now),
+      this.revisions.bumpLatestForWorkItemsUpdatedAtStatement(
+        input.now,
+        easternMarketDate(input.now),
+      ),
     ]);
     return results[0]?.meta.changes ?? 0;
   }
@@ -790,6 +820,7 @@ export class WorkItemRepository {
       this.revisions.bumpLatestForWorkItemsForBatchStatement(
         input.dispatchBatchId,
         input.now,
+        easternMarketDate(input.now),
       ),
     ]);
     return results[0]?.meta.changes ?? 0;
@@ -828,6 +859,7 @@ export class WorkItemRepository {
       this.revisions.bumpLatestForWorkItemsForBatchStatement(
         input.dispatchBatchId,
         input.now,
+        easternMarketDate(input.now),
       ),
     ]);
     return results[0]?.meta.changes ?? 0;

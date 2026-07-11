@@ -384,6 +384,7 @@ export class LedgerService {
               coverage.requestedStartDate,
               coverage.requestedEndDate,
               timestamp,
+              today,
             ),
           ]
         : []),
@@ -414,6 +415,7 @@ export class LedgerService {
         resolved.changedStartDate,
         today,
         timestamp,
+        today,
       ),
     ];
     try {
@@ -556,6 +558,7 @@ export class LedgerService {
               coverage.requestedStartDate,
               coverage.requestedEndDate,
               timestamp,
+              today,
             ),
           ]
         : []),
@@ -585,6 +588,7 @@ export class LedgerService {
         snapshot.range.requestedStartDate,
         snapshot.range.requestedEndDate,
         timestamp,
+        today,
       ),
     ];
     try {
@@ -1203,6 +1207,7 @@ export class LedgerService {
               input.previousCoverage.requestedStartDate,
               input.previousCoverage.requestedEndDate,
               input.timestamp,
+              easternMarketDate(input.timestamp),
             ),
           ]
         : []),
@@ -1257,6 +1262,7 @@ export class LedgerService {
         input.changedStartDate,
         input.snapshot.range.requestedEndDate,
         input.timestamp,
+        easternMarketDate(input.timestamp),
       ),
     ];
     try {
@@ -1302,6 +1308,7 @@ export class LedgerService {
               input.previousCoverage.requestedStartDate,
               input.previousCoverage.requestedEndDate,
               input.timestamp,
+              easternMarketDate(input.timestamp),
             ),
           ]
         : []),
@@ -1331,6 +1338,7 @@ export class LedgerService {
         input.snapshot.range.requestedStartDate,
         input.snapshot.range.requestedEndDate,
         input.timestamp,
+        easternMarketDate(input.timestamp),
       ),
     ];
     try {

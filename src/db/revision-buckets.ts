@@ -84,26 +84,25 @@ export class FactRevisionBucketRepository {
     startDate: string,
     endDate: string,
     updatedAt: string,
+    marketDate: string,
   ): D1PreparedStatement {
     return this.db
       .prepare(
         `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
          SELECT 'latest', 1, ?3
-         WHERE COALESCE(
-             (SELECT MAX(trading_date) FROM daily_market_facts
-              WHERE trading_date <= date('now')),
-             (SELECT MAX(trading_date) FROM daily_market_facts)
-           ) BETWEEN ?1 AND ?2
+         WHERE (SELECT MAX(trading_date) FROM daily_market_facts
+                WHERE trading_date <= ?4) BETWEEN ?1 AND ?2
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
            updated_at = excluded.updated_at`,
       )
-      .bind(startDate, endDate, updatedAt);
+      .bind(startDate, endDate, updatedAt, marketDate);
   }
 
   bumpLatestForRangesStatement(
     ranges: readonly { startDate: string; endDate: string }[],
     updatedAt: string,
+    marketDate: string,
   ): D1PreparedStatement {
     return this.db
       .prepare(
@@ -116,17 +115,15 @@ export class FactRevisionBucketRepository {
          SELECT 'latest', 1, ?2
          WHERE EXISTS (
            SELECT 1 FROM ranges
-           WHERE COALESCE(
-               (SELECT MAX(trading_date) FROM daily_market_facts
-                WHERE trading_date <= date('now')),
-               (SELECT MAX(trading_date) FROM daily_market_facts)
-             ) BETWEEN start_date AND end_date
+           WHERE (SELECT MAX(trading_date) FROM daily_market_facts
+                  WHERE trading_date <= ?3)
+                 BETWEEN start_date AND end_date
          )
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
            updated_at = excluded.updated_at`,
       )
-      .bind(JSON.stringify(ranges), updatedAt);
+      .bind(JSON.stringify(ranges), updatedAt, marketDate);
   }
 
   /** Bump the month containing a work item after a state transition. */
@@ -147,6 +144,7 @@ export class FactRevisionBucketRepository {
   bumpLatestForWorkItemStatement(
     id: string,
     updatedAt: string,
+    marketDate: string,
   ): D1PreparedStatement {
     return this.db
       .prepare(
@@ -155,17 +153,15 @@ export class FactRevisionBucketRepository {
          WHERE EXISTS (
            SELECT 1 FROM work_items
            WHERE id = ?1 AND scope = 'global_fact'
-             AND effective_date = COALESCE(
-               (SELECT MAX(trading_date) FROM daily_market_facts
-                WHERE trading_date <= date('now')),
-               (SELECT MAX(trading_date) FROM daily_market_facts)
-             )
+             AND effective_date = (SELECT MAX(trading_date)
+                                   FROM daily_market_facts
+                                   WHERE trading_date <= ?3)
          )
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
            updated_at = excluded.updated_at`,
       )
-      .bind(id, updatedAt);
+      .bind(id, updatedAt, marketDate);
   }
 
   bumpWorkItemsForBatchStatement(
@@ -190,6 +186,7 @@ export class FactRevisionBucketRepository {
   bumpLatestForWorkItemsForBatchStatement(
     dispatchBatchId: string,
     updatedAt: string,
+    marketDate: string,
   ): D1PreparedStatement {
     return this.db
       .prepare(
@@ -201,17 +198,15 @@ export class FactRevisionBucketRepository {
            JOIN dispatch_batch_items item ON item.work_item_id = work.id
            WHERE item.dispatch_batch_id = ?1
              AND work.scope = 'global_fact'
-             AND work.effective_date = COALESCE(
-               (SELECT MAX(trading_date) FROM daily_market_facts
-                WHERE trading_date <= date('now')),
-               (SELECT MAX(trading_date) FROM daily_market_facts)
-             )
+             AND work.effective_date = (SELECT MAX(trading_date)
+                                        FROM daily_market_facts
+                                        WHERE trading_date <= ?3)
          )
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
            updated_at = excluded.updated_at`,
       )
-      .bind(dispatchBatchId, updatedAt);
+      .bind(dispatchBatchId, updatedAt, marketDate);
   }
 
   bumpWorkItemsUpdatedAtStatement(updatedAt: string): D1PreparedStatement {
@@ -231,6 +226,7 @@ export class FactRevisionBucketRepository {
 
   bumpLatestForWorkItemsUpdatedAtStatement(
     updatedAt: string,
+    marketDate: string,
   ): D1PreparedStatement {
     return this.db
       .prepare(
@@ -239,16 +235,14 @@ export class FactRevisionBucketRepository {
          WHERE EXISTS (
            SELECT 1 FROM work_items
            WHERE scope = 'global_fact' AND updated_at = ?1
-             AND effective_date = COALESCE(
-               (SELECT MAX(trading_date) FROM daily_market_facts
-                WHERE trading_date <= date('now')),
-               (SELECT MAX(trading_date) FROM daily_market_facts)
-             )
+             AND effective_date = (SELECT MAX(trading_date)
+                                   FROM daily_market_facts
+                                   WHERE trading_date <= ?2)
          )
          ON CONFLICT(bucket_key) DO UPDATE SET
            revision = fact_revision_buckets.revision + 1,
            updated_at = excluded.updated_at`,
       )
-      .bind(updatedAt);
+      .bind(updatedAt, marketDate);
   }
 }

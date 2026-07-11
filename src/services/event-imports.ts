@@ -22,6 +22,7 @@ import type {
   CorporateActionProvider,
   SplitEventRange,
 } from "../providers/corporate-actions";
+import { easternMarketDate } from "../shared/dates";
 
 const HEADER = "trade_date,symbol,side,quantity,price";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -362,7 +363,7 @@ export class EventImportsService {
       };
 
     const timestamp = this.now().toISOString();
-    const today = timestamp.slice(0, 10);
+    const today = easternMarketDate(timestamp);
     const instrumentsBySymbol = await this.instrumentsBySymbol(
       sourceRows.map((row) => (row[1] ?? "").trim().toUpperCase()),
     );
@@ -523,6 +524,7 @@ export class EventImportsService {
               this.revisions.bumpLatestForRangesStatement(
                 previousCoverageRanges,
                 timestamp,
+                easternMarketDate(timestamp),
               ),
             ]
           : []),
@@ -542,6 +544,7 @@ export class EventImportsService {
                   endDate: snapshot.range.requestedEndDate,
                 })),
                 timestamp,
+                easternMarketDate(timestamp),
               ),
             ]
           : []),
@@ -744,6 +747,7 @@ export class EventImportsService {
     }
 
     const timestamp = this.now().toISOString();
+    const today = easternMarketDate(timestamp);
     const jobId = this.newId();
     const workId = this.newId();
     const mutationId = this.newId();
@@ -770,6 +774,7 @@ export class EventImportsService {
             this.revisions.bumpLatestForRangesStatement(
               previousCoverageRanges,
               timestamp,
+              today,
             ),
           ]
         : []),
@@ -843,7 +848,11 @@ export class EventImportsService {
         )
         .bind(batch.id, jobId, timestamp, input.expectedPositionBasisRevision),
       this.revisions.bumpRangesStatement(allIntervals, timestamp),
-      this.revisions.bumpLatestForRangesStatement(allIntervals, timestamp),
+      this.revisions.bumpLatestForRangesStatement(
+        allIntervals,
+        timestamp,
+        today,
+      ),
     ];
     try {
       await this.dependencies.db.batch(statements);

@@ -1,3 +1,4 @@
+import { easternMarketDate } from "../shared/dates";
 import { FactRevisionBucketRepository } from "./revision-buckets";
 import type { WorkItemRecord } from "./work-items";
 
@@ -254,6 +255,7 @@ export class DispatchBatchRepository {
       this.revisions.bumpLatestForWorkItemsForBatchStatement(
         input.batch.id,
         input.batch.createdAt,
+        easternMarketDate(input.batch.createdAt),
       ),
     ]);
   }
@@ -711,6 +713,7 @@ export class DispatchBatchRepository {
       this.revisions.bumpLatestForWorkItemsForBatchStatement(
         input.id,
         input.now,
+        easternMarketDate(input.now),
       ),
     ]);
     return results[0]?.meta.changes === 1;

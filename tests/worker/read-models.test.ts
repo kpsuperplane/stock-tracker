@@ -192,6 +192,45 @@ describe("portfolio and calendar read models", () => {
     expect(calendarPayload.calendar.nextCursor).not.toBeNull();
   });
 
+  it("uses the Toronto market date for latest invalidation at a UTC boundary", async () => {
+    await insertInstrument({
+      id: "timezone-state",
+      symbol: "TIMEZONE.STATE",
+      currency: "CAD",
+    });
+    await insertFact({
+      id: "timezone-fact",
+      instrumentId: "timezone-state",
+      date: "2030-07-10",
+      previous: "10",
+      current: "11",
+      pct: "10",
+    });
+    const boundaryTimestamp = "2030-07-11T03:30:00.000Z";
+    await env.DB.prepare(
+      `INSERT INTO work_items
+       (id, scope, work_type, instrument_id, effective_date,
+        dependency_revision, deterministic_key, state, priority, max_attempts,
+        created_at, updated_at)
+       VALUES ('timezone-work', 'global_fact', 'market_fact', 'timezone-state',
+               '2030-07-10', 'r1', 'timezone-work', 'queued', 1, 3, ?1, ?1)`,
+    )
+      .bind(boundaryTimestamp)
+      .run();
+    const transitioned = await new WorkItemRepository(env.DB).transition({
+      id: "timezone-work",
+      from: "queued",
+      to: "pending",
+      now: boundaryTimestamp,
+    });
+    expect(transitioned).toBe(true);
+    expect(
+      await env.DB.prepare(
+        "SELECT revision FROM fact_revision_buckets WHERE bucket_key = 'latest'",
+      ).first<{ revision: number }>(),
+    ).toEqual({ revision: 1 });
+  });
+
   it("isolates read-model ETags to the buckets each representation reads", async () => {
     const portfolioResponse = await exports.default.fetch(
       new Request("http://local/api/portfolio?today=2026-07-10", {
