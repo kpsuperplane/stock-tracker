@@ -13,6 +13,7 @@ import {
 import type { ReactNode } from "react";
 import type { Locale } from "../i18n/catalog";
 import { I18nProvider, useI18n } from "../i18n/I18nProvider";
+import { EventsPage } from "../pages/EventsPage";
 import {
   APP_ROUTES,
   type AppRoute,
@@ -177,7 +178,12 @@ export const ProductApp = ({
         height="auto"
         contentPadding={4}
       >
-        {children ?? <ProductPage route={router.route} />}
+        {children ??
+          (router.route === "events" ? (
+            <EventsPage />
+          ) : (
+            <ProductPage route={router.route} />
+          ))}
       </AstryxAppShell>
     </I18nProvider>
   );
