@@ -683,6 +683,10 @@ export class DispatchBatchRepository {
          WHERE job_work_items.work_item_id = item.work_item_id
            AND item.dispatch_batch_id = ?2
            AND job_work_items.outcome = 'pending'
+           AND EXISTS (
+             SELECT 1 FROM dispatch_batches batch
+             WHERE batch.id = ?2 AND batch.state = 'terminal'
+           )
            AND work.state IN ('complete', 'terminal')`,
       )
       .bind(input.now, input.id);
