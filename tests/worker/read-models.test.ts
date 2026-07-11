@@ -105,6 +105,104 @@ describe("portfolio and calendar read models", () => {
     ).toBe("read_model_disabled");
   });
 
+  it("installs date-leading range indexes for calendar reads", async () => {
+    const indexes = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index'",
+    ).all<{ name: string }>();
+    expect(indexes.results.map((row) => row.name)).toEqual(
+      expect.arrayContaining([
+        "daily_market_facts_date_instrument_idx",
+        "dividend_events_ex_date_instrument_idx",
+        "work_items_fact_date_idx",
+      ]),
+    );
+  });
+
+  it("isolates read-model ETags to the buckets each representation reads", async () => {
+    const portfolioResponse = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-07-10", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    const portfolioTag = portfolioResponse.headers.get("ETag") ?? "";
+    await env.DB.prepare(
+      `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
+       VALUES ('2026-01', 1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    const portfolioUnrelated = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-07-10", {
+        headers: {
+          Authorization: authorization,
+          "If-None-Match": portfolioTag,
+        },
+      }),
+    );
+    expect(portfolioUnrelated.status).toBe(304);
+    await env.DB.prepare(
+      `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
+       VALUES ('latest', 1, ?1)
+       ON CONFLICT(bucket_key) DO UPDATE SET revision = revision + 1`,
+    )
+      .bind(now)
+      .run();
+    const portfolioLatest = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-07-10", {
+        headers: {
+          Authorization: authorization,
+          "If-None-Match": portfolioTag,
+        },
+      }),
+    );
+    expect(portfolioLatest.status).toBe(200);
+
+    const calendarResponse = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    const calendarTag = calendarResponse.headers.get("ETag") ?? "";
+    await env.DB.prepare(
+      `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
+       VALUES ('2026-06', 1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    const calendarUnrelated = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+        {
+          headers: {
+            Authorization: authorization,
+            "If-None-Match": calendarTag,
+          },
+        },
+      ),
+    );
+    expect(calendarUnrelated.status).toBe(304);
+    await env.DB.prepare(
+      `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
+       VALUES ('latest', 1, ?1)
+       ON CONFLICT(bucket_key) DO UPDATE SET revision = revision + 1`,
+    )
+      .bind(now)
+      .run();
+    const calendarLatest = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+        {
+          headers: {
+            Authorization: authorization,
+            "If-None-Match": calendarTag,
+          },
+        },
+      ),
+    );
+    expect(calendarLatest.status).toBe(200);
+  });
+
   it("derives quantities, raw-close valuation, movement, Chinese summary, and native totals", async () => {
     await insertInstrument({ id: "cad-1", symbol: "CAD.ONE", currency: "CAD" });
     await insertInstrument({ id: "usd-1", symbol: "USD.ONE", currency: "USD" });
@@ -258,10 +356,11 @@ describe("portfolio and calendar read models", () => {
       ).bind(now),
       env.DB.prepare(
         `INSERT INTO movement_analyses
-         (id, daily_market_fact_id, dependency_fingerprint, model, status,
+         (id, daily_market_fact_id, dependency_fingerprint, summary_zh_cn,
+          model, status,
           error_code, error_message, created_at, updated_at)
-         VALUES ('stale-analysis-error', 'stale-latest', 'fp', 'test', 'error',
-                 'analysis_bad', 'Analysis refresh failed', ?1, ?1)`,
+         VALUES ('stale-analysis-error', 'stale-latest', 'fp', '当前摘要',
+                 'test', 'error', 'analysis_bad', 'Analysis refresh failed', ?1, ?1)`,
       ).bind(now),
       env.DB.prepare(
         `INSERT INTO news_sources
@@ -269,6 +368,14 @@ describe("portfolio and calendar read models", () => {
           published_at, source_url, cited, created_at)
          VALUES ('stale-source', 'stale-analysis-valid', 0, 'Old story',
                  'Example', ?1, 'https://example.com/old-story', 1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO news_sources
+         (id, movement_analysis_id, source_order, title, publisher,
+          published_at, source_url, cited, created_at)
+         VALUES ('stale-current-source', 'stale-analysis-error', 0,
+                 'Current story', 'Example', ?1,
+                 'https://example.com/current-story', 1, ?1)`,
       ).bind(now),
     ]);
     const response = await exports.default.fetch(
@@ -290,7 +397,7 @@ describe("portfolio and calendar read models", () => {
         valuationDecimal: "100",
         latestTradingDate: "2026-07-09",
         freshness: "stale",
-        summaryZhCn: "旧摘要",
+        summaryZhCn: "当前摘要",
         analysisStatus: "error",
       }),
     );
@@ -298,7 +405,7 @@ describe("portfolio and calendar read models", () => {
       expect.objectContaining({ tradingDate: "2026-07-08" }),
     );
     expect(stale?.sources).toEqual([
-      expect.objectContaining({ title: "Old story" }),
+      expect.objectContaining({ title: "Current story" }),
     ]);
     expect(stale?.conflicts).toEqual(
       expect.arrayContaining([
@@ -352,10 +459,18 @@ describe("portfolio and calendar read models", () => {
     await insertFact({
       id: "calendar-legacy-fact",
       instrumentId: "calendar-1",
-      date: "2026-07-08",
+      date: "2026-07-07",
       previous: "10",
       current: "12",
       pct: "20",
+    });
+    await insertFact({
+      id: "calendar-future-fact",
+      instrumentId: "calendar-1",
+      date: "2026-07-11",
+      previous: "12",
+      current: "14",
+      pct: "16.6666666667",
     });
     await env.DB.prepare(
       `INSERT INTO dividend_events
@@ -375,6 +490,13 @@ describe("portfolio and calendar read models", () => {
       env.DB.prepare(
         "UPDATE daily_market_facts SET movement_basis = 'legacy_migration' WHERE id = 'calendar-legacy-fact'",
       ),
+      env.DB.prepare(
+        `INSERT INTO movement_analyses
+         (id, daily_market_fact_id, dependency_fingerprint, summary_zh_cn,
+          model, status, created_at, updated_at)
+         VALUES ('calendar-future-analysis', 'calendar-future-fact', 'fp',
+                 '未来摘要', 'test', 'complete', ?1, ?1)`,
+      ).bind(now),
       env.DB.prepare(
         `INSERT INTO movement_analyses
          (id, daily_market_fact_id, dependency_fingerprint, summary_zh_cn,
@@ -452,9 +574,10 @@ describe("portfolio and calendar read models", () => {
       };
     }>();
     expect(payload.calendar.actualTradingDates).toEqual([
-      "2026-07-08",
+      "2026-07-07",
       "2026-07-09",
       "2026-07-10",
+      "2026-07-11",
     ]);
     expect(payload.calendar.movers[0]).toEqual(
       expect.objectContaining({
@@ -478,11 +601,14 @@ describe("portfolio and calendar read models", () => {
     expect(
       payload.calendar.movers.find((row) => row.id === "calendar-legacy-fact"),
     ).toBeUndefined();
+    expect(
+      payload.calendar.movers.find((row) => row.id === "calendar-future-fact"),
+    ).toEqual(expect.objectContaining({ summaryZhCn: "未来摘要" }));
     expect(payload.calendar.conflicts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           code: "legacy_movement_basis",
-          effectiveDate: "2026-07-08",
+          effectiveDate: "2026-07-07",
         }),
       ]),
     );
@@ -511,9 +637,38 @@ describe("portfolio and calendar read models", () => {
     expect(payload.calendar.conflicts).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: "div_bad" })]),
     );
-    expect(payload.calendar.pendingFacts).toEqual([
-      expect.objectContaining({ date: "2026-07-08", status: "queued" }),
-    ]);
+    expect(payload.calendar.pendingFacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ date: "2026-07-08", status: "queued" }),
+        expect.objectContaining({
+          date: "2026-07-07",
+          status: "legacy_pending",
+        }),
+      ]),
+    );
+    await env.DB.prepare(
+      "UPDATE work_items SET state = 'complete' WHERE id = 'pending-fact'",
+    ).run();
+    const pendingChanged = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10&view=month",
+        {
+          headers: {
+            Authorization: authorization,
+            "If-None-Match": response.headers.get("ETag") ?? "",
+          },
+        },
+      ),
+    );
+    expect(pendingChanged.status).toBe(200);
+    const changedPayload = await pendingChanged.json<{
+      calendar: { pendingFacts: Array<Record<string, unknown>> };
+    }>();
+    expect(changedPayload.calendar.pendingFacts).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ date: "2026-07-08", status: "queued" }),
+      ]),
+    );
   });
 
   it("returns job progress and bounded-range/cursor errors", async () => {

@@ -130,6 +130,54 @@ const monthRange = (date: string): { start: string; end: string } => {
   return { start, end };
 };
 
+const calendarStateFingerprint = async (
+  db: D1Database,
+  startDate: string,
+  endDate: string,
+): Promise<string> => {
+  const [pendingFacts, pendingSplits, pendingCoverage] = await Promise.all([
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count, MAX(updated_at) AS updated_at,
+                SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN state = 'dispatching' THEN 1 ELSE 0 END) AS dispatching_count,
+                SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+                SUM(CASE WHEN state = 'processing' THEN 1 ELSE 0 END) AS processing_count
+         FROM work_items
+         WHERE scope = 'global_fact' AND work_type = 'market_fact'
+           AND effective_date >= ?1 AND effective_date <= ?2
+           AND state NOT IN ('complete', 'terminal')`,
+      )
+      .bind(startDate, endDate)
+      .first<Record<string, number | string | null>>(),
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count, MAX(updated_at) AS updated_at,
+                SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END) AS candidate_count,
+                SUM(CASE WHEN status = 'quarantined' THEN 1 ELSE 0 END) AS quarantined_count
+         FROM corporate_actions
+         WHERE status IN ('candidate', 'quarantined')
+           AND effective_date >= ?1 AND effective_date <= ?2`,
+      )
+      .bind(startDate, endDate)
+      .first<Record<string, number | string | null>>(),
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count, MAX(updated_at) AS updated_at,
+                SUM(CASE WHEN status = 'review_required' THEN 1 ELSE 0 END) AS review_required_count,
+                SUM(CASE WHEN status = 'conflict' THEN 1 ELSE 0 END) AS conflict_count,
+                SUM(CASE WHEN status = 'refreshing' THEN 1 ELSE 0 END) AS refreshing_count,
+                SUM(CASE WHEN status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable_count
+         FROM corporate_action_coverage
+         WHERE status IN ('review_required', 'conflict', 'refreshing', 'unavailable')
+           AND requested_start_date <= ?2 AND requested_end_date >= ?1`,
+      )
+      .bind(startDate, endDate)
+      .first<Record<string, number | string | null>>(),
+  ]);
+  return JSON.stringify({ pendingFacts, pendingSplits, pendingCoverage });
+};
+
 export const portfolioRoutes = new Hono<{ Bindings: Env }>();
 export const calendarRoutes = new Hono<{ Bindings: Env }>();
 export const jobRoutes = new Hono<{ Bindings: Env }>();
@@ -239,6 +287,11 @@ calendarRoutes.get("/", async (context) => {
   );
   const limit = parseLimit(query.limit, 500, 500);
   const positionRevision = await basisRevision(context.env.DB);
+  const stateFingerprint = await calendarStateFingerprint(
+    context.env.DB,
+    startDate,
+    endDate,
+  );
   const tag = await readModelTag(context.env.DB, {
     model: "calendar",
     locale,
@@ -250,8 +303,9 @@ calendarRoutes.get("/", async (context) => {
       view,
       limit,
       cursor,
+      stateFingerprint,
     }),
-    bucketKeys: monthKeysForRange(startDate, endDate),
+    bucketKeys: ["latest", ...monthKeysForRange(startDate, endDate)],
   });
   setTagHeaders(context, tag.etag, positionRevision);
   if (matchesIfNoneMatch(context.req.header("If-None-Match"), tag.etag)) {
@@ -287,7 +341,8 @@ jobRoutes.get("/:id", async (context) => {
     cursor: cursor?.id ?? null,
   });
   if (!job) throw new ApiError(404, "job_not_found", "Job not found.");
-  const etag = `"job-${job.id}-${job.updatedAt}-${limit}-${cursor?.id ?? ""}"`;
+  const cursorToken = cursor?.id ? encodeURIComponent(cursor.id) : "";
+  const etag = `"job-${encodeURIComponent(job.id)}-${encodeURIComponent(job.updatedAt)}-${limit}-${cursorToken}"`;
   context.header("ETag", etag);
   if (matchesIfNoneMatch(context.req.header("If-None-Match"), etag)) {
     return context.body(null, 304);

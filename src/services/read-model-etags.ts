@@ -30,9 +30,13 @@ const digest = async (value: string): Promise<string> => {
 };
 
 const uniqueBuckets = (bucketKeys: readonly string[]): string[] =>
-  [...new Set(bucketKeys)].filter(
-    (key) => key === "latest" || /^\d{4}-(?:0[1-9]|1[0-2])$/.test(key),
-  );
+  [...new Set(bucketKeys)]
+    .filter((key) => key === "latest" || /^\d{4}-(?:0[1-9]|1[0-2])$/.test(key))
+    .sort((left, right) => {
+      if (left === "latest") return -1;
+      if (right === "latest") return 1;
+      return left.localeCompare(right);
+    });
 
 /**
  * ETags intentionally read only the requested revision bucket rows. Calendar

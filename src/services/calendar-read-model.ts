@@ -58,6 +58,7 @@ interface AnalysisRow {
 
 interface CompleteAnalysisRow extends AnalysisRow {
   instrument_id: string;
+  trading_date: string;
 }
 
 interface SourceRow {
@@ -143,6 +144,13 @@ const safeSourceUrl = (value: string | null): string | null => {
 
 const rangePlaceholders = (ids: readonly string[]): string =>
   ids.map((_id, index) => `?${index + 1}`).join(", ");
+
+const idChunks = (ids: readonly string[], size = 250): string[][] => {
+  const chunks: string[][] = [];
+  for (let index = 0; index < ids.length; index += size)
+    chunks.push(ids.slice(index, index + size));
+  return chunks;
+};
 
 const pendingMessage = (status: string): string =>
   status === "processing"
@@ -265,6 +273,7 @@ export class CalendarReadModelService {
       ReturnType<typeof deriveHoldings>
     >();
     const conflicts: PortfolioConflictDto[] = [];
+    const legacyPendingFacts: CalendarPendingDto[] = [];
     for (const [
       instrumentId,
       instrumentTransactions,
@@ -301,70 +310,79 @@ export class CalendarReadModelService {
 
     const factIds = factResult.results.map((row) => row.id);
     const analyses = new Map<string, AnalysisRow>();
-    const lastCompleteAnalyses = new Map<string, AnalysisRow>();
+    const completeAnalysesByInstrument = new Map<
+      string,
+      CompleteAnalysisRow[]
+    >();
     const sources = new Map<string, ReadModelSourceDto[]>();
     if (factIds.length > 0) {
-      const placeholders = rangePlaceholders(factIds);
-      const result = await this.db
-        .prepare(
-          `SELECT id, daily_market_fact_id, summary_zh_cn, status,
-                  error_code, error_message
-           FROM movement_analyses WHERE daily_market_fact_id IN (${placeholders})`,
-        )
-        .bind(...factIds)
-        .all<AnalysisRow>();
-      for (const row of result.results)
+      const analysisResults = await Promise.all(
+        idChunks(factIds).map((chunk) =>
+          this.db
+            .prepare(
+              `SELECT id, daily_market_fact_id, summary_zh_cn, status,
+                      error_code, error_message
+               FROM movement_analyses WHERE daily_market_fact_id IN (${rangePlaceholders(chunk)})`,
+            )
+            .bind(...chunk)
+            .all<AnalysisRow>(),
+        ),
+      );
+      for (const row of analysisResults.flatMap((result) => result.results))
         analyses.set(row.daily_market_fact_id, row);
       const instrumentIdsWithFacts = [
         ...new Set(factResult.results.map((row) => row.instrument_id)),
       ];
-      const completePlaceholders = instrumentIdsWithFacts
-        .map((_id, index) => `?${index + 1}`)
-        .join(", ");
-      const completeDatePlaceholder = `?${instrumentIdsWithFacts.length + 1}`;
-      const completeResult = await this.db
-        .prepare(
-          `SELECT f.instrument_id, a.id, a.daily_market_fact_id,
-                  a.summary_zh_cn, a.status, a.error_code, a.error_message
-           FROM movement_analyses a
-           JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-           WHERE a.status = 'complete'
-             AND f.instrument_id IN (${completePlaceholders})
-             AND f.movement_basis <> 'legacy_migration'
-             AND f.trading_date <= ${completeDatePlaceholder}
-             AND f.trading_date = (
-               SELECT MAX(previous_fact.trading_date)
-               FROM daily_market_facts previous_fact
-               JOIN movement_analyses previous_analysis
-                 ON previous_analysis.daily_market_fact_id = previous_fact.id
-               WHERE previous_fact.instrument_id = f.instrument_id
-                 AND previous_fact.movement_basis <> 'legacy_migration'
-                 AND previous_fact.trading_date <= ${completeDatePlaceholder}
-                 AND previous_analysis.status = 'complete'
-             )`,
-        )
-        .bind(...instrumentIdsWithFacts, input.endDate)
-        .all<CompleteAnalysisRow>();
-      for (const row of completeResult.results)
-        lastCompleteAnalyses.set(row.instrument_id, row);
+      const completeResults = await Promise.all(
+        idChunks(instrumentIdsWithFacts).map((chunk) => {
+          const datePlaceholder = `?${chunk.length + 1}`;
+          return this.db
+            .prepare(
+              `SELECT f.instrument_id, f.trading_date, a.id, a.daily_market_fact_id,
+                      a.summary_zh_cn, a.status, a.error_code, a.error_message
+               FROM movement_analyses a
+               JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
+               WHERE a.status = 'complete'
+                 AND f.instrument_id IN (${rangePlaceholders(chunk)})
+                 AND f.movement_basis <> 'legacy_migration'
+                 AND f.trading_date <= ${datePlaceholder}
+               ORDER BY f.instrument_id, f.trading_date`,
+            )
+            .bind(...chunk, input.endDate)
+            .all<CompleteAnalysisRow>();
+        }),
+      );
+      for (const row of completeResults.flatMap((result) => result.results)) {
+        const rows = completeAnalysesByInstrument.get(row.instrument_id) ?? [];
+        rows.push(row);
+        completeAnalysesByInstrument.set(row.instrument_id, rows);
+      }
       const analysisIds = [
         ...new Set([
-          ...result.results.map((row) => row.id),
-          ...completeResult.results.map((row) => row.id),
+          ...analysisResults.flatMap((result) =>
+            result.results.map((row) => row.id),
+          ),
+          ...completeResults.flatMap((result) =>
+            result.results.map((row) => row.id),
+          ),
         ]),
       ];
       if (analysisIds.length > 0) {
-        const sourceResult = await this.db
-          .prepare(
-            `SELECT movement_analysis_id, title, publisher, published_at,
-                    source_url, cited
-             FROM news_sources
-             WHERE movement_analysis_id IN (${rangePlaceholders(analysisIds)})
-             ORDER BY movement_analysis_id, source_order`,
-          )
-          .bind(...analysisIds)
-          .all<SourceRow>();
-        for (const row of sourceResult.results) {
+        const sourceResults = await Promise.all(
+          idChunks(analysisIds).map((chunk) =>
+            this.db
+              .prepare(
+                `SELECT movement_analysis_id, title, publisher, published_at,
+                        source_url, cited
+                 FROM news_sources
+                 WHERE movement_analysis_id IN (${rangePlaceholders(chunk)})
+                 ORDER BY movement_analysis_id, source_order`,
+              )
+              .bind(...chunk)
+              .all<SourceRow>(),
+          ),
+        );
+        for (const row of sourceResults.flatMap((result) => result.results)) {
           const sourceUrl = safeSourceUrl(row.source_url);
           if (!sourceUrl) continue;
           const list = sources.get(row.movement_analysis_id) ?? [];
@@ -389,6 +407,14 @@ export class CalendarReadModelService {
             "This market fact uses a legacy basis and is awaiting normalized refresh.",
           instrumentId: fact.instrument_id,
           effectiveDate: fact.trading_date,
+        });
+        legacyPendingFacts.push({
+          kind: "market_fact",
+          instrumentId: fact.instrument_id,
+          symbol: fact.symbol,
+          date: fact.trading_date,
+          status: "legacy_pending",
+          message: "Normalized market data refresh is pending.",
         });
         continue;
       }
@@ -417,11 +443,26 @@ export class CalendarReadModelService {
         fact.trading_date,
       );
       const currentAnalysis = analyses.get(fact.id);
-      const fallbackAnalysis = lastCompleteAnalyses.get(fact.instrument_id);
-      const analysis =
-        currentAnalysis?.status === "complete"
+      const fallbackAnalysis = completeAnalysesByInstrument
+        .get(fact.instrument_id)
+        ?.filter((candidate) => candidate.trading_date <= fact.trading_date)
+        .at(-1);
+      const currentSources = currentAnalysis
+        ? (sources.get(currentAnalysis.id) ?? [])
+        : [];
+      const fallbackSources = fallbackAnalysis
+        ? (sources.get(fallbackAnalysis.id) ?? [])
+        : [];
+      const summaryAnalysis =
+        currentAnalysis?.summary_zh_cn !== null && currentAnalysis
           ? currentAnalysis
           : (fallbackAnalysis ?? currentAnalysis);
+      const sourceAnalysis =
+        currentSources.length > 0
+          ? currentAnalysis
+          : fallbackSources.length > 0
+            ? fallbackAnalysis
+            : (fallbackAnalysis ?? currentAnalysis);
       const movement = {
         tradingDate: fact.trading_date,
         previousTradingDate: fact.previous_trading_date,
@@ -451,21 +492,21 @@ export class CalendarReadModelService {
         latestTradingDate: fact.trading_date,
         currentRawCloseDecimal: safeDecimal(fact.current_raw_close_decimal),
         movement,
-        summaryZhCn:
-          analysis?.status === "complete" ? analysis.summary_zh_cn : null,
+        summaryZhCn: summaryAnalysis?.summary_zh_cn ?? null,
         analysisStatus:
           currentAnalysis?.status ??
           (fallbackAnalysis ? "complete" : "unavailable"),
-        sources:
-          analysis?.status === "complete"
-            ? (sources.get(analysis.id) ?? [])
-            : [],
+        sources: sourceAnalysis ? (sources.get(sourceAnalysis.id) ?? []) : [],
         freshness:
           fact.status !== "valid"
             ? fact.status
-            : currentAnalysis?.status === "complete" || fallbackAnalysis
+            : currentAnalysis?.status === "complete"
               ? "fresh"
-              : (currentAnalysis?.status ?? "unavailable"),
+              : currentAnalysis
+                ? currentAnalysis.status
+                : fallbackAnalysis
+                  ? "fresh"
+                  : "unavailable",
         conflicts: [
           ...(fact.status !== "valid"
             ? [
@@ -489,15 +530,20 @@ export class CalendarReadModelService {
                 },
               ]
             : []),
-          ...(currentAnalysis && currentAnalysis.status !== "complete"
+          ...(currentAnalysis?.status !== "complete" &&
+          (Boolean(currentAnalysis) || !fallbackAnalysis)
             ? [
                 {
                   code:
-                    currentAnalysis.error_code ??
-                    `movement_analysis_${currentAnalysis.status}`,
+                    currentAnalysis?.error_code ??
+                    (currentAnalysis
+                      ? `movement_analysis_${currentAnalysis.status}`
+                      : "movement_analysis_unavailable"),
                   message:
-                    currentAnalysis.error_message ??
-                    `The movement analysis is ${currentAnalysis.status}.`,
+                    currentAnalysis?.error_message ??
+                    (currentAnalysis
+                      ? `The movement analysis is ${currentAnalysis.status}.`
+                      : "No movement analysis is available."),
                   instrumentId: fact.instrument_id,
                   effectiveDate: fact.trading_date,
                 },
@@ -565,14 +611,26 @@ export class CalendarReadModelService {
       }
     }
 
-    const pending: CalendarPendingDto[] = pendingFacts.results.map((row) => ({
-      kind: "market_fact",
-      instrumentId: row.instrument_id,
-      symbol: row.symbol,
-      date: row.effective_date,
-      status: row.state,
-      message: pendingMessage(row.state),
-    }));
+    const pendingFactRows: CalendarPendingDto[] = [
+      ...pendingFacts.results.map((row) => ({
+        kind: "market_fact" as const,
+        instrumentId: row.instrument_id,
+        symbol: row.symbol,
+        date: row.effective_date,
+        status: row.state,
+        message: pendingMessage(row.state),
+      })),
+      ...legacyPendingFacts,
+    ].filter(
+      (row, index, rows) =>
+        rows.findIndex(
+          (candidate) =>
+            candidate.kind === row.kind &&
+            candidate.instrumentId === row.instrumentId &&
+            candidate.date === row.date,
+        ) === index,
+    );
+    const pending: CalendarPendingDto[] = [...pendingFactRows];
     const splitPending: CalendarPendingDto[] = splitReview.results.map(
       (row) => ({
         kind: "split_review",
@@ -652,14 +710,7 @@ export class CalendarReadModelService {
       dividends: selectedDividends,
       events: selectedEvents,
       pending,
-      pendingFacts: pendingFacts.results.map((row) => ({
-        kind: "market_fact",
-        instrumentId: row.instrument_id,
-        symbol: row.symbol,
-        date: row.effective_date,
-        status: row.state,
-        message: pendingMessage(row.state),
-      })),
+      pendingFacts: pendingFactRows,
       splitReview: splitPending,
       futureDividendStatus,
       conflicts,

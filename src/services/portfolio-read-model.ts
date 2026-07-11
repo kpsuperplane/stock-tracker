@@ -149,6 +149,13 @@ const safeSourceUrl = (value: string | null): string | null => {
   }
 };
 
+const idChunks = (ids: readonly string[], size = 250): string[][] => {
+  const chunks: string[][] = [];
+  for (let index = 0; index < ids.length; index += size)
+    chunks.push(ids.slice(index, index + size));
+  return chunks;
+};
+
 const conflictForAction = (row: ActionRow): PortfolioConflictDto => ({
   code: row.conflict_code ?? `split_${row.status}`,
   message: row.conflict_message ?? `Corporate action is ${row.status}.`,
@@ -281,72 +288,79 @@ export class PortfolioReadModelService {
     const lastCompleteAnalyses = new Map<string, AnalysisRow>();
     const sources = new Map<string, ReadModelSourceDto[]>();
     if (factIds.length > 0) {
-      const placeholders = factIds
-        .map((_id, index) => `?${index + 1}`)
-        .join(", ");
-      const analysisResult = await this.db
-        .prepare(
-          `SELECT daily_market_fact_id, summary_zh_cn, status,
-                  error_code, error_message
-           FROM movement_analyses
-           WHERE daily_market_fact_id IN (${placeholders})`,
-        )
-        .bind(...factIds)
-        .all<AnalysisRow>();
-      for (const row of analysisResult.results)
+      const analysisResults = await Promise.all(
+        idChunks(factIds).map((chunk) =>
+          this.db
+            .prepare(
+              `SELECT daily_market_fact_id, summary_zh_cn, status,
+                      error_code, error_message
+               FROM movement_analyses
+               WHERE daily_market_fact_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})`,
+            )
+            .bind(...chunk)
+            .all<AnalysisRow>(),
+        ),
+      );
+      for (const row of analysisResults.flatMap((result) => result.results))
         analyses.set(row.daily_market_fact_id, row);
       const instrumentIdsWithFacts = [...usableFacts.keys()];
-      const completePlaceholders = instrumentIdsWithFacts
-        .map((_id, index) => `?${index + 1}`)
-        .join(", ");
-      const completeDatePlaceholder = `?${instrumentIdsWithFacts.length + 1}`;
-      const completeResult = await this.db
-        .prepare(
-          `SELECT f.instrument_id, a.daily_market_fact_id,
-                  a.summary_zh_cn, a.status, a.error_code, a.error_message
-           FROM movement_analyses a
-           JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-           WHERE a.status = 'complete'
-             AND f.instrument_id IN (${completePlaceholders})
-             AND f.movement_basis <> 'legacy_migration'
-             AND f.trading_date <= ${completeDatePlaceholder}
-             AND f.trading_date = (
-               SELECT MAX(previous_fact.trading_date)
-               FROM daily_market_facts previous_fact
-               JOIN movement_analyses previous_analysis
-                 ON previous_analysis.daily_market_fact_id = previous_fact.id
-               WHERE previous_fact.instrument_id = f.instrument_id
-                 AND previous_fact.movement_basis <> 'legacy_migration'
-                 AND previous_fact.trading_date <= ${completeDatePlaceholder}
-                 AND previous_analysis.status = 'complete'
-             )`,
-        )
-        .bind(...instrumentIdsWithFacts, input.today)
-        .all<CompleteAnalysisRow>();
-      for (const row of completeResult.results)
+      const completeResults = await Promise.all(
+        idChunks(instrumentIdsWithFacts).map((chunk) => {
+          const datePlaceholder = `?${chunk.length + 1}`;
+          return this.db
+            .prepare(
+              `SELECT f.instrument_id, a.daily_market_fact_id,
+                      a.summary_zh_cn, a.status, a.error_code, a.error_message
+               FROM movement_analyses a
+               JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
+               WHERE a.status = 'complete'
+                 AND f.instrument_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})
+                 AND f.movement_basis <> 'legacy_migration'
+                 AND f.trading_date <= ${datePlaceholder}
+                 AND f.trading_date = (
+                   SELECT MAX(previous_fact.trading_date)
+                   FROM daily_market_facts previous_fact
+                   JOIN movement_analyses previous_analysis
+                     ON previous_analysis.daily_market_fact_id = previous_fact.id
+                   WHERE previous_fact.instrument_id = f.instrument_id
+                     AND previous_fact.movement_basis <> 'legacy_migration'
+                     AND previous_fact.trading_date <= ${datePlaceholder}
+                     AND previous_analysis.status = 'complete'
+                 )`,
+            )
+            .bind(...chunk, input.today)
+            .all<CompleteAnalysisRow>();
+        }),
+      );
+      for (const row of completeResults.flatMap((result) => result.results))
         lastCompleteAnalyses.set(row.instrument_id, row);
       const analysisIds = [
         ...new Set([
-          ...analysisResult.results.map((row) => row.daily_market_fact_id),
-          ...completeResult.results.map((row) => row.daily_market_fact_id),
+          ...analysisResults.flatMap((result) =>
+            result.results.map((row) => row.daily_market_fact_id),
+          ),
+          ...completeResults.flatMap((result) =>
+            result.results.map((row) => row.daily_market_fact_id),
+          ),
         ]),
       ];
       if (analysisIds.length > 0) {
-        const sourcePlaceholders = analysisIds
-          .map((_id, index) => `?${index + 1}`)
-          .join(", ");
-        const sourceResult = await this.db
-          .prepare(
-            `SELECT a.daily_market_fact_id AS movement_analysis_id,
-                    s.title, s.publisher, s.published_at, s.source_url, s.cited
-             FROM movement_analyses a JOIN news_sources s
-               ON s.movement_analysis_id = a.id
-             WHERE a.daily_market_fact_id IN (${sourcePlaceholders})
-             ORDER BY a.daily_market_fact_id, s.source_order`,
-          )
-          .bind(...analysisIds)
-          .all<SourceRow>();
-        for (const row of sourceResult.results) {
+        const sourceResults = await Promise.all(
+          idChunks(analysisIds).map((chunk) =>
+            this.db
+              .prepare(
+                `SELECT a.daily_market_fact_id AS movement_analysis_id,
+                        s.title, s.publisher, s.published_at, s.source_url, s.cited
+                 FROM movement_analyses a JOIN news_sources s
+                   ON s.movement_analysis_id = a.id
+                 WHERE a.daily_market_fact_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})
+                 ORDER BY a.daily_market_fact_id, s.source_order`,
+              )
+              .bind(...chunk)
+              .all<SourceRow>(),
+          ),
+        );
+        for (const row of sourceResults.flatMap((result) => result.results)) {
           const sourceUrl = safeSourceUrl(row.source_url);
           if (!sourceUrl) continue;
           const list = sources.get(row.movement_analysis_id) ?? [];
@@ -447,10 +461,22 @@ export class PortfolioReadModelService {
       const fallbackAnalysis = lastCompleteAnalyses.get(
         instrument.instrument_id,
       );
-      const analysis =
-        currentAnalysis?.status === "complete"
+      const currentSources = currentAnalysis
+        ? (sources.get(currentAnalysis.daily_market_fact_id) ?? [])
+        : [];
+      const fallbackSources = fallbackAnalysis
+        ? (sources.get(fallbackAnalysis.daily_market_fact_id) ?? [])
+        : [];
+      const summaryAnalysis =
+        currentAnalysis?.summary_zh_cn !== null && currentAnalysis
           ? currentAnalysis
           : (fallbackAnalysis ?? currentAnalysis);
+      const sourceAnalysis =
+        currentSources.length > 0
+          ? currentAnalysis
+          : fallbackSources.length > 0
+            ? fallbackAnalysis
+            : (fallbackAnalysis ?? currentAnalysis);
       const analysisStatus = currentAnalysis?.status
         ? currentAnalysis.status
         : fallbackAnalysis
@@ -499,6 +525,17 @@ export class PortfolioReadModelService {
           effectiveDate: latestFact.trading_date,
         });
       }
+      if (
+        latestFact &&
+        safeDecimal(latestFact.current_raw_close_decimal) === null
+      ) {
+        conflicts.push({
+          code: "invalid_close_decimal",
+          message: "The stored close is not a valid decimal.",
+          instrumentId: instrument.instrument_id,
+          effectiveDate: latestFact.trading_date,
+        });
+      }
       if (latestFact?.movement_basis === "legacy_migration") {
         conflicts.push({
           code: "legacy_movement_basis",
@@ -529,8 +566,8 @@ export class PortfolioReadModelService {
         });
       }
       const summary =
-        fact && qualified === true && analysis?.status === "complete"
-          ? analysis.summary_zh_cn
+        fact && qualified === true
+          ? (summaryAnalysis?.summary_zh_cn ?? null)
           : null;
       const valuation =
         fact && fact.movement_basis !== "legacy_migration"
@@ -545,9 +582,13 @@ export class PortfolioReadModelService {
         latestFact?.movement_basis === "legacy_migration"
           ? "pending"
           : marketFreshness === "fresh" && qualified === true
-            ? currentAnalysis?.status === "complete" || fallbackAnalysis
+            ? currentAnalysis?.status === "complete"
               ? "fresh"
-              : (currentAnalysis?.status ?? "unavailable")
+              : currentAnalysis
+                ? currentAnalysis.status
+                : fallbackAnalysis
+                  ? "fresh"
+                  : "unavailable"
             : marketFreshness;
       const position: PortfolioPositionDto = {
         instrumentId: instrument.instrument_id,
@@ -566,8 +607,8 @@ export class PortfolioReadModelService {
         summaryZhCn: summary,
         analysisStatus,
         sources:
-          fact && qualified === true && analysis?.status === "complete"
-            ? (sources.get(fact?.id ?? "") ?? [])
+          fact && qualified === true && sourceAnalysis
+            ? (sources.get(sourceAnalysis.daily_market_fact_id) ?? [])
             : [],
         freshness,
         conflicts,
