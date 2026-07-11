@@ -783,6 +783,50 @@ describe("normalized fact persistence", () => {
     });
   });
 
+  it("marks last-valid dividends on invalid provider values without changing the error class", async () => {
+    await insertInstrument();
+    let current = dividendRange([
+      dividendEvent("0.25", "valid-r1", "2026-06-30"),
+    ]);
+    const provider: DividendProvider = {
+      getDividends: vi.fn(async () => current),
+    };
+    const service = new DividendFactsService({
+      db: env.DB,
+      provider,
+      now: () => new Date(now),
+    });
+    await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    current = dividendRange([
+      dividendEvent("not-a-decimal", "invalid-r1", "2026-06-30"),
+    ]);
+    const result = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(result).toEqual({
+      kind: "provider_invalid",
+      code: "provider_invalid_amount",
+      preserved: true,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT amount_per_share_decimal, status, error_code FROM dividend_events",
+      ).first(),
+    ).toEqual({
+      amount_per_share_decimal: "0.25",
+      status: "error",
+      error_code: "provider_invalid_amount",
+    });
+  });
+
   it("reuses analyses for unchanged dependencies, invalidates on movement changes, and preserves last valid summaries on failure", async () => {
     await insertInstrument();
     const marketService = new MarketFactsPersistenceService(

@@ -546,24 +546,24 @@ export class DividendFactsService {
     } catch (error) {
       const code = error instanceof Error ? error.message : "provider_invalid";
       if (code.startsWith("provider_")) {
-        if (code === "provider_snapshot_mismatch") {
-          const persistenceCode = await this.markProviderRowsError({
-            instrumentId: input.instrumentId,
-            provider: rangeProvider,
-            startDate: input.startDate,
-            endDate: input.endDate,
-            errorCode: code,
-            errorMessage:
-              "Provider response did not match the requested range.",
-            updatedAt: timestamp,
-          });
-          if (persistenceCode) {
-            return {
-              kind: "persistence_error",
-              code: persistenceCode,
-              preserved: true,
-            };
-          }
+        const persistenceCode = await this.markProviderRowsError({
+          instrumentId: input.instrumentId,
+          provider: rangeProvider,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          errorCode: code,
+          errorMessage:
+            code === "provider_snapshot_mismatch"
+              ? "Provider response did not match the requested range."
+              : code,
+          updatedAt: timestamp,
+        });
+        if (persistenceCode) {
+          return {
+            kind: "persistence_error",
+            code: persistenceCode,
+            preserved: true,
+          };
         }
         return { kind: "provider_invalid", code, preserved: true };
       }
