@@ -7,6 +7,7 @@ import { MarketFactRepository } from "../../src/db/market-facts";
 import { PipelineJobRepository } from "../../src/db/pipeline-jobs";
 import { FactRevisionBucketRepository } from "../../src/db/revision-buckets";
 import { WorkItemRepository } from "../../src/db/work-items";
+import { MarketFactsService } from "../../src/services/market-facts";
 
 const now = "2026-07-10T12:00:00.000Z";
 
@@ -175,6 +176,88 @@ describe("normalized facts and reconciliation schema", () => {
         .bind(now)
         .run(),
     ).rejects.toThrow();
+  });
+
+  it("keeps provider errors non-persistable so a last valid fact is not overwritten", async () => {
+    await insertInstrument();
+    await env.DB.batch([
+      new MarketFactRepository(env.DB).upsertStatement({
+        id: "existing-fact",
+        instrumentId: "instrument-1",
+        tradingDate: "2026-07-09",
+        previousTradingDate: "2026-07-08",
+        previousRawCloseDecimal: "100",
+        currentRawCloseDecimal: "105",
+        crossingSplitNumerator: "1",
+        crossingSplitDenominator: "1",
+        splitAdjustedPreviousCloseDecimal: "100",
+        movementAmountDecimal: "5",
+        movementPercentDecimal: "5",
+        rawCloseDifferenceDecimal: "5",
+        movementBasis: "split_adjusted_price_return",
+        provider: "yahoo-chart-v8",
+        providerRevision: "prior-r1",
+        retrievedAt: now,
+        status: "valid",
+        errorCode: null,
+        errorMessage: null,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ]);
+    const result = await new MarketFactsService(
+      {
+        getInstrument: async () => ({
+          metadata: {
+            symbol: "CASE-INSTRUMENT-1",
+            companyName: "Case Corp",
+            exchange: "NYSE",
+            currency: "USD",
+            instrumentType: "EQUITY" as const,
+          },
+          bars: [
+            { date: "2026-07-08", close: 100, adjustedClose: 100 },
+            { date: "2026-07-09", close: null, adjustedClose: null },
+          ],
+          corporateActionDates: new Set<string>(),
+        }),
+      },
+      () => new Date(now),
+    ).normalizeResult({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-07-09",
+      endDate: "2026-07-09",
+      provider: "yahoo-chart-v8",
+      providerRevision: "r1",
+      activeSplits: [],
+    });
+
+    expect(result.facts).toEqual([]);
+    expect(result.errors[0]).toMatchObject({
+      status: "error",
+      persistable: false,
+      errorCode: "invalid_price",
+    });
+    if (result.facts.length > 0) {
+      await env.DB.batch(
+        result.facts.map((fact) =>
+          new MarketFactRepository(env.DB).upsertStatement({
+            ...fact,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        ),
+      );
+    }
+    expect(
+      await env.DB.prepare(
+        "SELECT current_raw_close_decimal, provider_revision FROM daily_market_facts WHERE id = 'existing-fact'",
+      ).first(),
+    ).toEqual({
+      current_raw_close_decimal: "105",
+      provider_revision: "prior-r1",
+    });
   });
 
   it("keeps month and latest revision buckets independent and monotonic", async () => {

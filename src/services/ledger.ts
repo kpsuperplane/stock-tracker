@@ -25,6 +25,7 @@ import type {
   NormalizedSplitEvent,
   SplitEventRange,
 } from "../providers/corporate-actions";
+import { easternMarketDate } from "../shared/dates";
 
 const MAX_CURRENT_POSITIONS = 100;
 const PLANNING_WORK_TYPE = "ledger_reconciliation_plan";
@@ -240,7 +241,7 @@ export class LedgerService {
     }
 
     const timestamp = this.now().toISOString();
-    const today = timestamp.slice(0, 10);
+    const today = easternMarketDate(timestamp);
     const resolved = await this.resolveProposal(input.proposal, timestamp);
     if ("kind" in resolved) return resolved;
 
@@ -419,7 +420,8 @@ export class LedgerService {
     }
 
     const timestamp = this.now().toISOString();
-    if (input.confirmation.requestedEndDate !== timestamp.slice(0, 10)) {
+    const today = easternMarketDate(timestamp);
+    if (input.confirmation.requestedEndDate !== today) {
       return { kind: "validation_error", code: "invalid_confirmation" };
     }
     const instrument = await this.instruments.findById(input.instrumentId);
@@ -475,12 +477,12 @@ export class LedgerService {
     let afterHoldings: ReturnType<typeof deriveHoldings>;
     try {
       beforeHoldings = deriveHoldings({
-        today: timestamp.slice(0, 10),
+        today,
         transactions: transactions.map(toLedgerTransaction),
         activeSplits: activeActions.map(toActiveSplit),
       });
       afterHoldings = deriveHoldings({
-        today: timestamp.slice(0, 10),
+        today,
         transactions: transactions.map(toLedgerTransaction),
         activeSplits: this.proposedSplits(activeActions, snapshot),
       });
@@ -491,7 +493,6 @@ export class LedgerService {
     const jobId = this.newId();
     const workId = this.newId();
     const mutationId = this.newId();
-    const today = timestamp.slice(0, 10);
     const intervals = this.splitPromotionIntervals({
       beforeHoldings,
       afterHoldings,

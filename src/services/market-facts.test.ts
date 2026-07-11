@@ -87,22 +87,24 @@ describe("MarketFactsService", () => {
   });
 
   it("marks the first available bar as missing its previous comparison", async () => {
-    const facts = await new MarketFactsService(
+    const result = await new MarketFactsService(
       {
         getInstrument: async () =>
           series([{ date: "2026-07-09", close: 100, adjustedClose: 100 }]),
       },
       () => now,
-    ).normalize(input({ startDate: "2026-07-09", endDate: "2026-07-09" }));
+    ).normalizeResult(
+      input({ startDate: "2026-07-09", endDate: "2026-07-09" }),
+    );
 
-    expect(facts).toEqual([
+    expect(result.facts).toEqual([]);
+    expect(result.errors).toEqual([
       expect.objectContaining({
         tradingDate: "2026-07-09",
         status: "error",
         errorCode: "no_previous_bar",
         currentRawCloseDecimal: "100",
         previousTradingDate: null,
-        movementAmountDecimal: null,
       }),
     ]);
   });
@@ -167,6 +169,140 @@ describe("MarketFactsService", () => {
       splitAdjustedPreviousCloseDecimal: scenario.adjustedPrevious,
       movementAmountDecimal: scenario.amount,
       movementPercentDecimal: scenario.percent,
+    });
+  });
+
+  it("keeps a non-terminating 3:1 split rational until output", async () => {
+    const facts = await new MarketFactsService(
+      {
+        getInstrument: async () =>
+          series([
+            { date: "2026-07-08", close: 100, adjustedClose: 100 },
+            { date: "2026-07-09", close: 34, adjustedClose: 34 },
+          ]),
+      },
+      () => now,
+    ).normalize(
+      input({
+        startDate: "2026-07-09",
+        endDate: "2026-07-09",
+        activeSplits: [
+          {
+            id: "split-3-for-1",
+            effectiveDate: "2026-07-09",
+            numerator: "3",
+            denominator: "1",
+          },
+        ],
+      }),
+    );
+
+    expect(facts[0]?.splitAdjustedPreviousCloseDecimal).toBe(
+      "33.333333333333333333333333333333333333333333333333333333333333333333333333333333",
+    );
+    expect(facts[0]?.movementAmountDecimal).toBe(
+      "0.66666666666666666666666666666666666666666666666666666666666666666666666666666667",
+    );
+    expect(facts[0]?.movementPercentDecimal).toBe("2");
+  });
+
+  it("keeps a 7:3 split exact at the five-percent movement boundary", async () => {
+    const facts = await new MarketFactsService(
+      {
+        getInstrument: async () =>
+          series([
+            { date: "2026-07-08", close: 100, adjustedClose: 100 },
+            { date: "2026-07-09", close: 45, adjustedClose: 45 },
+          ]),
+      },
+      () => now,
+    ).normalize(
+      input({
+        startDate: "2026-07-09",
+        endDate: "2026-07-09",
+        activeSplits: [
+          {
+            id: "split-7-for-3",
+            effectiveDate: "2026-07-09",
+            numerator: "7",
+            denominator: "3",
+          },
+        ],
+      }),
+    );
+
+    expect(facts[0]).toMatchObject({
+      crossingSplitNumerator: "7",
+      crossingSplitDenominator: "3",
+      movementPercentDecimal: "5",
+    });
+  });
+
+  it("uses exact provider decimal text without binary number artifacts", async () => {
+    const facts = await new MarketFactsService(
+      {
+        getInstrument: async () =>
+          series([
+            {
+              date: "2026-07-08",
+              close: 0.1,
+              closeDecimal: "0.1",
+              adjustedClose: 0.1,
+              adjustedCloseDecimal: "0.1",
+            },
+            {
+              date: "2026-07-09",
+              close: 0.2,
+              closeDecimal: "0.2",
+              adjustedClose: 0.2,
+              adjustedCloseDecimal: "0.2",
+            },
+          ]),
+      },
+      () => now,
+    ).normalize(input({ startDate: "2026-07-09", endDate: "2026-07-09" }));
+
+    expect(facts[0]).toMatchObject({
+      previousRawCloseDecimal: "0.1",
+      currentRawCloseDecimal: "0.2",
+      movementAmountDecimal: "0.1",
+      movementPercentDecimal: "100",
+    });
+  });
+
+  it("does not materialize invalid bars or overwrite a last valid repository fact on provider failure", async () => {
+    const invalid = await new MarketFactsService(
+      {
+        getInstrument: async () =>
+          series([
+            { date: "2026-07-08", close: 100, adjustedClose: 100 },
+            { date: "2026-07-09", close: null, adjustedClose: null },
+          ]),
+      },
+      () => now,
+    ).normalizeResult(
+      input({ startDate: "2026-07-09", endDate: "2026-07-09" }),
+    );
+    expect(invalid.facts).toEqual([]);
+    expect(invalid.errors[0]).toMatchObject({
+      status: "error",
+      persistable: false,
+      errorCode: "invalid_price",
+    });
+
+    const failed = await new MarketFactsService(
+      {
+        getInstrument: async () => {
+          throw new Error("provider_http_503");
+        },
+      },
+      () => now,
+    ).normalizeResult(input());
+    expect(failed.facts).toEqual([]);
+    expect(failed.errors[0]).toMatchObject({
+      status: "error",
+      persistable: false,
+      errorCode: "provider_http_503",
     });
   });
 

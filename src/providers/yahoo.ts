@@ -62,6 +62,14 @@ export class YahooMarketDataProvider implements MarketDataProvider {
       date: isoDate(timestamp),
       close: closes[index] ?? null,
       adjustedClose: adjusted[index] ?? null,
+      closeDecimal:
+        closes[index] === null || closes[index] === undefined
+          ? null
+          : String(closes[index]),
+      adjustedCloseDecimal:
+        adjusted[index] === null || adjusted[index] === undefined
+          ? null
+          : String(adjusted[index]),
     }));
     const corporateActionDates = new Set(
       Object.values(result.events ?? {}).flatMap((group) =>

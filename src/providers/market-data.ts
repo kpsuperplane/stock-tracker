@@ -10,6 +10,9 @@ export interface DailyBar {
   date: string;
   close: number | null;
   adjustedClose: number | null;
+  /** Exact provider decimal text when the adapter can preserve it. */
+  closeDecimal?: string | null;
+  adjustedCloseDecimal?: string | null;
 }
 
 export interface DailySeries {

@@ -1,8 +1,4 @@
-import {
-  canonicalizeDecimal,
-  DecimalValue,
-  RationalValue,
-} from "../domain/decimal";
+import { canonicalizeDecimal, DecimalValue } from "../domain/decimal";
 import type { ActiveSplit } from "../domain/holdings";
 import type {
   DailyBar,
@@ -14,7 +10,7 @@ import { isIsoCalendarDate } from "../providers/provider-http";
 const LOOKBACK_CALENDAR_DAYS = 7;
 const movementBasis = "split_adjusted_price_return" as const;
 
-export type MarketFactStatus = "valid" | "error";
+export type MarketFactStatus = "valid";
 export type MarketFactFreshness = "fresh";
 
 export interface MarketFactsInput {
@@ -34,7 +30,7 @@ export interface NormalizedMarketFact {
   tradingDate: string;
   previousTradingDate: string | null;
   previousRawCloseDecimal: string | null;
-  currentRawCloseDecimal: string | null;
+  currentRawCloseDecimal: string;
   crossingSplitNumerator: string;
   crossingSplitDenominator: string;
   splitAdjustedPreviousCloseDecimal: string | null;
@@ -47,8 +43,35 @@ export interface NormalizedMarketFact {
   retrievedAt: string;
   freshness: MarketFactFreshness;
   status: MarketFactStatus;
-  errorCode: string | null;
-  errorMessage: string | null;
+  errorCode: null;
+  errorMessage: null;
+}
+
+/**
+ * Errors are intentionally not DailyMarketFactRecord values: the D1 schema
+ * requires a current close for every materialized fact. Callers may persist
+ * valid facts and retain this non-persistable error for retry/observability.
+ */
+export interface MarketFactError {
+  id: string;
+  instrumentId: string;
+  tradingDate: string | null;
+  previousTradingDate: string | null;
+  previousRawCloseDecimal: string | null;
+  currentRawCloseDecimal: string | null;
+  provider: string;
+  providerRevision: string;
+  retrievedAt: string;
+  freshness: MarketFactFreshness;
+  status: "error";
+  persistable: false;
+  errorCode: string;
+  errorMessage: string;
+}
+
+export interface MarketFactsResult {
+  facts: NormalizedMarketFact[];
+  errors: MarketFactError[];
 }
 
 interface RationalParts {
@@ -90,11 +113,40 @@ const multiplyRational = (
     left.denominator * right.denominator,
   );
 
-const ratioToDecimal = (ratio: RationalParts): string =>
-  RationalValue.fromRatio(
-    String(ratio.numerator),
-    String(ratio.denominator),
-  ).toString();
+const subtractRational = (
+  left: RationalParts,
+  right: RationalParts,
+): RationalParts =>
+  normalizeRational(
+    left.numerator * right.denominator - right.numerator * left.denominator,
+    left.denominator * right.denominator,
+  );
+
+const divideRational = (
+  left: RationalParts,
+  right: RationalParts,
+): RationalParts =>
+  normalizeRational(
+    left.numerator * right.denominator,
+    left.denominator * right.numerator,
+  );
+
+const decimalToRational = (value: string): RationalParts => {
+  const canonical = canonicalizeDecimal(value);
+  const negative = canonical.startsWith("-");
+  const unsigned = negative ? canonical.slice(1) : canonical;
+  const [integerPart, fractionPart = ""] = unsigned.split(".");
+  const numerator = BigInt(
+    `${negative ? "-" : ""}${integerPart}${fractionPart}`,
+  );
+  return normalizeRational(numerator, 10n ** BigInt(fractionPart.length));
+};
+
+/** Converts a rational to the Decimal boundary only after all arithmetic. */
+const rationalToDecimal = (value: RationalParts): string =>
+  DecimalValue.parse(String(value.numerator))
+    .divide(String(value.denominator))
+    .toString();
 
 const addDays = (date: string, days: number): string =>
   new Date(Date.parse(`${date}T12:00:00Z`) + days * 86_400_000)
@@ -115,12 +167,15 @@ const assertRange = (input: MarketFactsInput): void => {
   }
 };
 
-const canonicalProviderPrice = (value: number | null): string | null => {
-  if (value === null) return null;
-  if (!Number.isFinite(value) || value <= 0) return null;
-  const text = /e/i.test(String(value)) ? value.toFixed(20) : String(value);
+const canonicalProviderPrice = (
+  value: number | null,
+  exactValue?: string | null,
+): string | null => {
+  const source = exactValue ?? (value === null ? null : String(value));
+  if (source === null) return null;
   try {
-    return canonicalizeDecimal(text);
+    const canonical = canonicalizeDecimal(source);
+    return DecimalValue.parse(canonical).isPositive() ? canonical : null;
   } catch {
     return null;
   }
@@ -139,8 +194,8 @@ const validateBars = (bars: readonly DailyBar[]): DailyBar[] => {
   return ordered;
 };
 
-const validateSplits = (splits: readonly ActiveSplit[]): ActiveSplit[] => {
-  return [...splits]
+const validateSplits = (splits: readonly ActiveSplit[]): ActiveSplit[] =>
+  [...splits]
     .map((split) => {
       if (
         !isIsoCalendarDate(split.effectiveDate) ||
@@ -154,48 +209,77 @@ const validateSplits = (splits: readonly ActiveSplit[]): ActiveSplit[] => {
     .sort((left, right) =>
       left.effectiveDate.localeCompare(right.effectiveDate),
     );
+
+const errorCode = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : "market_provider";
+  return message.length > 0 ? message.slice(0, 120) : "market_provider";
 };
 
-const errorFact = (input: {
-  market: MarketFactsInput;
+const errorResult = (
+  input: MarketFactsInput,
+  retrievedAt: string,
+  code: string,
+  message: string,
+  tradingDate: string | null = null,
+): MarketFactsResult => ({
+  facts: [],
+  errors: [
+    {
+      id: `${input.instrumentId}:${tradingDate ?? input.startDate}`,
+      instrumentId: input.instrumentId,
+      tradingDate,
+      previousTradingDate: null,
+      previousRawCloseDecimal: null,
+      currentRawCloseDecimal: null,
+      provider: input.provider,
+      providerRevision: input.providerRevision,
+      retrievedAt,
+      freshness: "fresh",
+      status: "error",
+      persistable: false,
+      errorCode: code,
+      errorMessage: message,
+    },
+  ],
+});
+
+const factError = (input: {
+  market: MarketFactsInput & { retrievedAt: string };
   tradingDate: string;
   previousTradingDate: string | null;
   previousRawCloseDecimal: string | null;
   currentRawCloseDecimal: string | null;
   errorCode: string;
   errorMessage: string;
-}): NormalizedMarketFact => ({
+}): MarketFactError => ({
   id: `${input.market.instrumentId}:${input.tradingDate}`,
   instrumentId: input.market.instrumentId,
   tradingDate: input.tradingDate,
   previousTradingDate: input.previousTradingDate,
   previousRawCloseDecimal: input.previousRawCloseDecimal,
   currentRawCloseDecimal: input.currentRawCloseDecimal,
-  crossingSplitNumerator: "1",
-  crossingSplitDenominator: "1",
-  splitAdjustedPreviousCloseDecimal: null,
-  movementAmountDecimal: null,
-  movementPercentDecimal: null,
-  rawCloseDifferenceDecimal: null,
-  movementBasis,
   provider: input.market.provider,
   providerRevision: input.market.providerRevision,
-  retrievedAt: input.market.retrievedAt ?? "",
+  retrievedAt: input.market.retrievedAt,
   freshness: "fresh",
   status: "error",
+  persistable: false,
   errorCode: input.errorCode,
   errorMessage: input.errorMessage,
 });
 
 const normalizeFact = (
-  market: MarketFactsInput,
+  market: MarketFactsInput & { retrievedAt: string },
   current: DailyBar,
   previous: DailyBar | undefined,
   splits: readonly ActiveSplit[],
-): NormalizedMarketFact => {
-  const currentRawCloseDecimal = canonicalProviderPrice(current.close);
+): NormalizedMarketFact | MarketFactError => {
+  const currentRawCloseDecimal = canonicalProviderPrice(
+    current.close,
+    current.closeDecimal,
+  );
   if (!previous) {
-    return errorFact({
+    return factError({
       market,
       tradingDate: current.date,
       previousTradingDate: null,
@@ -205,9 +289,12 @@ const normalizeFact = (
       errorMessage: "No completed previous trading bar was available.",
     });
   }
-  const previousRawCloseDecimal = canonicalProviderPrice(previous.close);
+  const previousRawCloseDecimal = canonicalProviderPrice(
+    previous.close,
+    previous.closeDecimal,
+  );
   if (!currentRawCloseDecimal || !previousRawCloseDecimal) {
-    return errorFact({
+    return factError({
       market,
       tradingDate: current.date,
       previousTradingDate: previous.date,
@@ -230,16 +317,17 @@ const normalizeFact = (
       );
     }
   }
-  const adjustedPrevious = DecimalValue.parse(previousRawCloseDecimal).multiply(
-    ratioToDecimal({
-      numerator: splitRatio.denominator,
-      denominator: splitRatio.numerator,
-    }),
-  );
-  const currentValue = DecimalValue.parse(currentRawCloseDecimal);
-  const rawPreviousValue = DecimalValue.parse(previousRawCloseDecimal);
-  const amount = currentValue.subtract(adjustedPrevious);
-  const percent = amount.divide(adjustedPrevious).multiply("100");
+  const previousValue = decimalToRational(previousRawCloseDecimal);
+  const currentValue = decimalToRational(currentRawCloseDecimal);
+  const adjustedPrevious = multiplyRational(previousValue, {
+    numerator: splitRatio.denominator,
+    denominator: splitRatio.numerator,
+  });
+  const amount = subtractRational(currentValue, adjustedPrevious);
+  const percent = multiplyRational(divideRational(amount, adjustedPrevious), {
+    numerator: 100n,
+    denominator: 1n,
+  });
   return {
     id: `${market.instrumentId}:${current.date}`,
     instrumentId: market.instrumentId,
@@ -249,16 +337,16 @@ const normalizeFact = (
     currentRawCloseDecimal,
     crossingSplitNumerator: String(splitRatio.numerator),
     crossingSplitDenominator: String(splitRatio.denominator),
-    splitAdjustedPreviousCloseDecimal: adjustedPrevious.toString(),
-    movementAmountDecimal: amount.toString(),
-    movementPercentDecimal: percent.toString(),
-    rawCloseDifferenceDecimal: currentValue
-      .subtract(rawPreviousValue)
-      .toString(),
+    splitAdjustedPreviousCloseDecimal: rationalToDecimal(adjustedPrevious),
+    movementAmountDecimal: rationalToDecimal(amount),
+    movementPercentDecimal: rationalToDecimal(percent),
+    rawCloseDifferenceDecimal: rationalToDecimal(
+      subtractRational(currentValue, previousValue),
+    ),
     movementBasis,
     provider: market.provider,
     providerRevision: market.providerRevision,
-    retrievedAt: market.retrievedAt ?? "",
+    retrievedAt: market.retrievedAt,
     freshness: "fresh",
     status: "valid",
     errorCode: null,
@@ -272,28 +360,64 @@ export class MarketFactsService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async normalize(input: MarketFactsInput): Promise<NormalizedMarketFact[]> {
+  /**
+   * Provider failures and invalid bars are returned as non-persistable errors;
+   * callers retain existing valid D1 facts and retry instead of overwriting
+   * them with a schema-invalid error row.
+   */
+  async normalizeResult(input: MarketFactsInput): Promise<MarketFactsResult> {
     assertRange(input);
     const retrievedAt = input.retrievedAt ?? this.now().toISOString();
     const market = { ...input, retrievedAt };
-    const series: DailySeries = await this.provider.getInstrument(
-      input.symbol,
-      addDays(input.startDate, -LOOKBACK_CALENDAR_DAYS),
-      input.endDate,
-    );
-    if (series.metadata.symbol.toUpperCase() !== input.symbol.toUpperCase()) {
-      throw new Error("market_symbol_mismatch");
-    }
-    const bars = validateBars(series.bars);
     const splits = validateSplits(input.activeSplits);
-    return bars
-      .filter((bar) => bar.date >= input.startDate && bar.date <= input.endDate)
-      .map((bar) => {
-        const index = bars.findIndex(
-          (candidate) => candidate.date === bar.date,
-        );
-        return normalizeFact(market, bar, bars[index - 1], splits);
-      });
+    let series: DailySeries;
+    try {
+      series = await this.provider.getInstrument(
+        input.symbol,
+        addDays(input.startDate, -LOOKBACK_CALENDAR_DAYS),
+        input.endDate,
+      );
+    } catch (error) {
+      return errorResult(
+        input,
+        retrievedAt,
+        errorCode(error),
+        "The market provider did not return a usable range.",
+      );
+    }
+    if (series.metadata.symbol.toUpperCase() !== input.symbol.toUpperCase()) {
+      return errorResult(
+        input,
+        retrievedAt,
+        "market_symbol_mismatch",
+        "The market provider returned a different symbol.",
+      );
+    }
+    let bars: DailyBar[];
+    try {
+      bars = validateBars(series.bars);
+    } catch (error) {
+      return errorResult(
+        input,
+        retrievedAt,
+        errorCode(error),
+        "The market provider returned invalid bars.",
+      );
+    }
+    const facts: NormalizedMarketFact[] = [];
+    const errors: MarketFactError[] = [];
+    for (const bar of bars) {
+      if (bar.date < input.startDate || bar.date > input.endDate) continue;
+      const index = bars.findIndex((candidate) => candidate.date === bar.date);
+      const normalized = normalizeFact(market, bar, bars[index - 1], splits);
+      if (normalized.status === "error") errors.push(normalized);
+      else facts.push(normalized);
+    }
+    return { facts, errors };
+  }
+
+  async normalize(input: MarketFactsInput): Promise<NormalizedMarketFact[]> {
+    return (await this.normalizeResult(input)).facts;
   }
 }
 
@@ -301,4 +425,4 @@ export const normalizeMarketFacts = (
   provider: MarketDataProvider,
   input: MarketFactsInput,
   now?: () => Date,
-) => new MarketFactsService(provider, now).normalize(input);
+) => new MarketFactsService(provider, now).normalizeResult(input);
