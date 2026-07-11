@@ -48,7 +48,8 @@ export const calendarLoadMoreDisabled = (
   loading: boolean,
   refreshing: boolean,
   loadingMore: boolean,
-): boolean => loading || refreshing || loadingMore;
+  hasError = false,
+): boolean => loading || refreshing || loadingMore || hasError;
 
 const mergeUnique = <T,>(
   first: T[],
@@ -186,10 +187,13 @@ export const CalendarPage = ({
 
   const loadMore = useCallback(() => {
     const cursor = calendarRef.current?.nextCursor;
-    if (!cursor || calendarLoadMoreDisabled(loading, refreshing, loadingMore))
+    if (
+      !cursor ||
+      calendarLoadMoreDisabled(loading, refreshing, loadingMore, error !== null)
+    )
       return;
     void load(cursor);
-  }, [load, loading, loadingMore, refreshing]);
+  }, [error, load, loading, loadingMore, refreshing]);
 
   const retry = useCallback(() => {
     void load(failedCursor ?? undefined);
@@ -302,6 +306,7 @@ export const CalendarPage = ({
                   loading,
                   refreshing,
                   loadingMore,
+                  error !== null,
                 )}
                 onClick={loadMore}
               />

@@ -248,6 +248,7 @@ describe("CalendarPage", () => {
     expect(calendarLoadMoreDisabled(true, false, false)).toBe(true);
     expect(calendarLoadMoreDisabled(false, true, false)).toBe(true);
     expect(calendarLoadMoreDisabled(false, false, true)).toBe(true);
+    expect(calendarLoadMoreDisabled(false, false, false, true)).toBe(true);
   });
 
   it("uses error severity for failed facts and conflict codes", () => {
