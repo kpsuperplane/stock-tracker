@@ -106,6 +106,19 @@ describe("portfolio and calendar read models", () => {
     ).toBe("read_model_disabled");
   });
 
+  it("uses the staged read flag when legacy preview aliases are absent", async () => {
+    const mutable = env as unknown as Record<string, unknown>;
+    delete mutable.READ_MODELS_ENABLED;
+    mutable.PORTFOLIO_NEW_READS_ENABLED = "true";
+    const response = await exports.default.fetch(
+      new Request("http://local/api/portfolio", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(response.status).toBe(200);
+    mutable.PORTFOLIO_NEW_READS_ENABLED = "false";
+  });
+
   it("installs date-leading range indexes for calendar reads", async () => {
     const indexes = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'index'",

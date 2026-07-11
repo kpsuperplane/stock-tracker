@@ -7,6 +7,7 @@ import {
 } from "../services/backfill-pipeline";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
+import { LegacyFactMigrator } from "../services/legacy-fact-migrator";
 import { RetentionCleanupService } from "../services/retention-cleanup";
 import {
   NORMALIZED_DISPATCH_CRON,
@@ -15,6 +16,7 @@ import {
 } from "../services/scheduled-reconciliation";
 import { WorkDispatcherService } from "../services/work-dispatcher";
 import type { Env } from "./env";
+import { safeErrorMessage } from "./errors";
 import { logEvent } from "./log";
 
 export const LEGACY_SCREENING_CRON = "0 22 * * MON-FRI";
@@ -75,6 +77,29 @@ export const handleScheduled = async (
   // is disabled (and available as the rollback path after enabling it).
   if (controller.cron !== LEGACY_SCREENING_CRON) return;
   const now = new Date(controller.scheduledTime).toISOString();
+  let migrationResult: string | null = null;
+  if (portfolioFlags.migrator) {
+    try {
+      const migration = await new LegacyFactMigrator(env.DB, {
+        enabled: true,
+        now: () => new Date(now),
+      }).runPage({ now, pageSize: 100 });
+      migrationResult = JSON.stringify(migration);
+      logEvent("portfolio_migration_scheduled", {
+        scheduledTime: now,
+        result: migrationResult,
+      });
+    } catch (error) {
+      migrationResult = JSON.stringify({
+        status: "failed",
+        message: safeErrorMessage(error),
+      });
+      logEvent("portfolio_migration_failed", {
+        scheduledTime: now,
+        message: safeErrorMessage(error),
+      });
+    }
+  }
   const dualWrite = new LegacyDualWriteService(env.DB, {
     enabled: portfolioFlags.dualWrite,
   });
@@ -125,5 +150,6 @@ export const handleScheduled = async (
     dispatched,
     compatibilitySeeded,
     compatibilityRetried,
+    migration: migrationResult,
   });
 };

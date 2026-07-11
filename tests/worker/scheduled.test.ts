@@ -45,6 +45,30 @@ describe("scheduled handler", () => {
     ).toEqual({ count: 1 });
   });
 
+  it("runs one bounded migration page only when the migrator flag is enabled", async () => {
+    const now = "2031-01-06T22:00:00.000Z";
+    const enabledEnv = new Proxy(env, {
+      get(target, property) {
+        if (property === "PORTFOLIO_MIGRATOR_ENABLED") return "true";
+        return Reflect.get(target, property);
+      },
+    });
+    await handleScheduled(
+      {
+        scheduledTime: Date.parse(now),
+        cron: "0 22 * * MON-FRI",
+        noRetry() {},
+      } as ScheduledController,
+      enabledEnv,
+    );
+    expect(
+      await env.DB.prepare(
+        `SELECT status, examined_count
+         FROM portfolio_migration_state WHERE id = 'legacy-published'`,
+      ).first(),
+    ).toEqual({ status: "complete", examined_count: 0 });
+  });
+
   it("does not run the legacy scheduler for new planner or dispatcher triggers", async () => {
     const before = await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM report_runs WHERE origin = 'scheduled'",

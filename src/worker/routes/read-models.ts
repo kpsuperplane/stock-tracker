@@ -31,7 +31,15 @@ const isEnabled = (
         : (env.JOB_READ_MODELS_ENABLED ??
           env.JOB_READ_MODEL_ENABLED ??
           env.ENABLE_JOB_READ_MODEL);
-  const value = specific ?? env.READ_MODELS_ENABLED ?? env.READ_MODEL_ENABLED;
+  // The cutover flag is a fallback for production, while the existing
+  // READ_MODELS aliases remain usable for local previews and compatibility
+  // tests. Production has no legacy alias configured, so toggling
+  // PORTFOLIO_NEW_READS_ENABLED is the reversible read gate there.
+  const value =
+    specific ??
+    env.READ_MODELS_ENABLED ??
+    env.READ_MODEL_ENABLED ??
+    env.PORTFOLIO_NEW_READS_ENABLED;
   return (
     value !== undefined &&
     ["1", "true", "on", "enabled"].includes(value.toLowerCase())
