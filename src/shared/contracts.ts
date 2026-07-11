@@ -4,6 +4,11 @@ export interface ScreeningJobMessage {
   tickerId: string;
 }
 
+/** The normalized pipeline queue deliberately carries only the outbox batch ID. */
+export interface PipelineDispatchMessage {
+  dispatchBatchId: string;
+}
+
 export type RunStatus =
   | "pending"
   | "running"

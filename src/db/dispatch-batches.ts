@@ -79,6 +79,32 @@ interface DispatchableWorkRow {
   effective_date: string | null;
 }
 
+interface DispatchWorkItemRow {
+  id: string;
+  scope: WorkItemRecord["scope"];
+  pipeline_job_id: string | null;
+  work_type: string;
+  instrument_id: string | null;
+  effective_date: string | null;
+  dependency_revision: string | null;
+  forced_refresh_generation: number | null;
+  deterministic_key: string;
+  state: WorkItemRecord["state"];
+  priority: number;
+  attempt_count: number;
+  max_attempts: number;
+  dispatch_lease_until: string | null;
+  processing_lease_until: string | null;
+  result_revision: string | null;
+  terminal_error_code: string | null;
+  terminal_error_message: string | null;
+  available_at: string | null;
+  retention_until: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
 const transitions: Readonly<
   Record<DispatchBatchState, readonly DispatchBatchState[]>
 > = {
@@ -184,6 +210,105 @@ export class DispatchBatchRepository {
     return row ? mapBatch(row) : null;
   }
 
+  async listWork(batchId: string): Promise<WorkItemRecord[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT work.*
+         FROM dispatch_batch_items item
+         JOIN work_items work ON work.id = item.work_item_id
+         WHERE item.dispatch_batch_id = ?1
+         ORDER BY work.effective_date, work.id`,
+      )
+      .bind(batchId)
+      .all<DispatchWorkItemRow>();
+    return rows.results.map((row) => ({
+      id: row.id,
+      scope: row.scope,
+      pipelineJobId: row.pipeline_job_id,
+      workType: row.work_type,
+      instrumentId: row.instrument_id,
+      effectiveDate: row.effective_date,
+      dependencyRevision: row.dependency_revision,
+      forcedRefreshGeneration: row.forced_refresh_generation,
+      deterministicKey: row.deterministic_key,
+      state: row.state,
+      priority: row.priority,
+      attemptCount: row.attempt_count,
+      maxAttempts: row.max_attempts,
+      dispatchLeaseUntil: row.dispatch_lease_until,
+      processingLeaseUntil: row.processing_lease_until,
+      resultRevision: row.result_revision,
+      terminalErrorCode: row.terminal_error_code,
+      terminalErrorMessage: row.terminal_error_message,
+      availableAt: row.available_at,
+      retentionUntil: row.retention_until,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      completedAt: row.completed_at,
+    }));
+  }
+
+  async claimForProcessing(input: {
+    id: string;
+    now: string;
+    leaseUntil: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+         SET state = 'processing', processing_lease_until = ?1,
+             dispatch_lease_until = NULL, attempt_count = attempt_count + 1,
+             updated_at = ?2
+         WHERE id = ?3
+           AND attempt_count < max_attempts
+           AND (
+             (state = 'dispatching' AND dispatch_lease_until IS NOT NULL
+              AND dispatch_lease_until > ?2)
+             OR state = 'queued'
+           )`,
+      )
+      .bind(input.leaseUntil, input.now, input.id)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async reclaimExpiredProcessing(input: {
+    id: string;
+    expectedLeaseUntil: string;
+    now: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+         SET state = 'queued', processing_lease_until = NULL,
+             updated_at = ?1
+         WHERE id = ?2 AND state = 'processing'
+           AND processing_lease_until IS ?3
+           AND processing_lease_until <= ?1`,
+      )
+      .bind(input.now, input.id, input.expectedLeaseUntil)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async requeueProcessing(input: {
+    id: string;
+    expectedLeaseUntil: string;
+    now: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+         SET state = 'queued', processing_lease_until = NULL,
+             updated_at = ?1
+         WHERE id = ?2 AND state = 'processing'
+           AND processing_lease_until IS ?3`,
+      )
+      .bind(input.now, input.id, input.expectedLeaseUntil)
+      .run();
+    return result.meta.changes === 1;
+  }
+
   async transition(input: {
     id: string;
     from: DispatchBatchState;
@@ -221,7 +346,8 @@ export class DispatchBatchRepository {
           : "";
     const statement = this.db.prepare(
       `UPDATE dispatch_batches
-         SET state = ?1, processing_lease_until = ?2,
+         SET state = ?1, dispatch_lease_until = NULL,
+             processing_lease_until = ?2,
              terminal_error_code = ?3, terminal_error_message = ?4,
              completed_at = ?5, retention_until = ?6, updated_at = ?7
          WHERE id = ?8 AND state = ?9${leasePredicate}`,

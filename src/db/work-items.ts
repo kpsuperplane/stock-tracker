@@ -513,4 +513,152 @@ export class WorkItemRepository {
       .run();
     return result.meta.changes === 1;
   }
+
+  async releaseDispatchClaim(input: {
+    id: string;
+    expectedLeaseUntil: string;
+    now: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
+         WHERE id = ?2 AND scope = 'global_fact' AND state = 'dispatching'
+           AND dispatch_lease_until IS ?3`,
+      )
+      .bind(input.now, input.id, input.expectedLeaseUntil)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async claimForBatchProcessing(input: {
+    dispatchBatchId: string;
+    now: string;
+    leaseUntil: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'processing', processing_lease_until = ?1,
+             dispatch_lease_until = NULL, updated_at = ?2
+         WHERE scope = 'global_fact'
+           AND state IN ('dispatching', 'queued')
+           AND id IN (
+             SELECT work_item_id FROM dispatch_batch_items
+             WHERE dispatch_batch_id = ?3
+           )`,
+      )
+      .bind(input.leaseUntil, input.now, input.dispatchBatchId)
+      .run();
+    return result.meta.changes;
+  }
+
+  async queueBatchItems(input: {
+    dispatchBatchId: string;
+    now: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'queued', dispatch_lease_until = NULL,
+             updated_at = ?1
+         WHERE scope = 'global_fact' AND state = 'dispatching'
+           AND id IN (
+             SELECT work_item_id FROM dispatch_batch_items
+             WHERE dispatch_batch_id = ?2
+           )`,
+      )
+      .bind(input.now, input.dispatchBatchId)
+      .run();
+    return result.meta.changes;
+  }
+
+  async requeueBatchItems(input: {
+    dispatchBatchId: string;
+    now: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'queued', processing_lease_until = NULL,
+             updated_at = ?1
+         WHERE scope = 'global_fact' AND state = 'processing'
+           AND id IN (
+             SELECT work_item_id FROM dispatch_batch_items
+             WHERE dispatch_batch_id = ?2
+           )`,
+      )
+      .bind(input.now, input.dispatchBatchId)
+      .run();
+    return result.meta.changes;
+  }
+
+  async recoverExpiredProcessing(input: {
+    now: string;
+    expectedLeaseUntil?: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'queued', processing_lease_until = NULL,
+             updated_at = ?1
+         WHERE scope = 'global_fact' AND state = 'processing'
+           AND processing_lease_until IS NOT NULL
+           AND processing_lease_until <= ?1
+           AND (?2 IS NULL OR processing_lease_until IS ?2)`,
+      )
+      .bind(input.now, input.expectedLeaseUntil ?? null)
+      .run();
+    return result.meta.changes;
+  }
+
+  async terminalizeBatchItems(input: {
+    dispatchBatchId: string;
+    now: string;
+    errorCode: string;
+    errorMessage: string;
+    expectedLeaseUntil?: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'terminal', processing_lease_until = NULL,
+             terminal_error_code = ?1, terminal_error_message = ?2,
+             completed_at = ?3, updated_at = ?3
+         WHERE scope = 'global_fact' AND state IN ('processing', 'queued', 'dispatching')
+           AND id IN (
+             SELECT work_item_id FROM dispatch_batch_items
+             WHERE dispatch_batch_id = ?4
+           )
+           AND (?5 IS NULL OR processing_lease_until IS ?5)`,
+      )
+      .bind(
+        input.errorCode,
+        input.errorMessage,
+        input.now,
+        input.dispatchBatchId,
+        input.expectedLeaseUntil ?? null,
+      )
+      .run();
+    return result.meta.changes;
+  }
+
+  async markJobLinksForBatch(input: {
+    dispatchBatchId: string;
+    outcome: "processed" | "failed";
+    now: string;
+  }): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE job_work_items
+         SET outcome = ?1, updated_at = ?2
+         WHERE work_item_id IN (
+           SELECT work_item_id FROM dispatch_batch_items
+           WHERE dispatch_batch_id = ?3
+         ) AND outcome = 'pending'`,
+      )
+      .bind(input.outcome, input.now, input.dispatchBatchId)
+      .run();
+    return result.meta.changes;
+  }
 }
