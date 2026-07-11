@@ -1,6 +1,7 @@
 import type {
   CalendarReadModelDto,
   EventsTimelineDto,
+  JobReadModelDto,
   PortfolioReadModelDto,
   ReportDto,
   ReportSummaryDto,
@@ -94,6 +95,16 @@ export type Ticker = {
 
 export type BackfillJob = {
   id: string;
+  triggerType?: string;
+  requestedStartDate?: string | null;
+  requestedEndDate?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string | null;
+  reprocess_existing?: boolean;
+  reprocessExisting?: boolean;
   pipeline_job_id?: string | null;
   status: string;
   dates_total: number;
@@ -101,6 +112,18 @@ export type BackfillJob = {
   ticker_jobs_total: number;
   ticker_jobs_processed: number;
   ticker_jobs_failed: number;
+  work_reused?: number;
+  work_skipped?: number;
+  work_fetched?: number;
+  work_analyzed?: number;
+  work_processed?: number;
+  work_failed?: number;
+  progress?: JobReadModelDto["progress"];
+  pipeline?: {
+    triggerType?: string;
+    status?: string;
+    progress?: JobReadModelDto["progress"];
+  };
   runs: Array<{
     tradingDate: string;
     status: string;
@@ -115,6 +138,7 @@ export type BackfillJob = {
     errorMessage: string | null;
     retryable: boolean;
   }>;
+  nextCursor?: string | null;
 };
 
 export type EventFilters = {
@@ -505,6 +529,15 @@ export const api = {
     }),
   backfill: (id: string) =>
     request<{ job: BackfillJob }>(`/api/backfills/${id}`),
+  job: (id: string, cursor?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (cursor) params.set("cursor", cursor);
+    if (limit !== undefined) params.set("limit", String(limit));
+    const query = params.toString();
+    return request<{ job: JobReadModelDto }>(
+      `/api/jobs/${encodeURIComponent(id)}${query ? `?${query}` : ""}`,
+    );
+  },
   retryBackfill: (pipelineJobId: string, workItemId: string) =>
     request<{ queued: true }>(`/api/backfills/${pipelineJobId}/retry`, {
       method: "POST",

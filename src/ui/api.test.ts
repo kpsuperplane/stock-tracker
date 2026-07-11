@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ApiClientError,
+  api,
   calendarApi,
   eventImportsApi,
   eventsApi,
@@ -257,6 +258,47 @@ describe("product event API clients", () => {
     const secondInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
     expect(new Headers(secondInit.headers).get("If-None-Match")).toBe(
       '"calendar-1"',
+    );
+  });
+
+  it("reads normalized pipeline job progress with cursor parameters", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          job: {
+            id: "pipeline-1",
+            triggerType: "ledger_reconciliation",
+            requestedStartDate: null,
+            requestedEndDate: null,
+            priority: 100,
+            status: "running",
+            createdAt: "2026-07-11T00:00:00.000Z",
+            updatedAt: "2026-07-11T00:00:00.000Z",
+            progress: {
+              workTotal: 1,
+              workReused: 1,
+              workSkipped: 0,
+              workFetched: 0,
+              workAnalyzed: 0,
+              workProcessed: 1,
+              workFailed: 0,
+            },
+            work: [],
+            errors: [],
+            nextCursor: null,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.job("pipeline-1", "cursor-2", 25);
+
+    expect(result.job.triggerType).toBe("ledger_reconciliation");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/jobs/pipeline-1?cursor=cursor-2&limit=25",
+      expect.objectContaining({ headers: expect.any(Headers) }),
     );
   });
 });

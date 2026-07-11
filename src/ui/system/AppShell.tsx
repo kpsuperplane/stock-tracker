@@ -13,6 +13,7 @@ import {
 import type { ReactNode } from "react";
 import type { Locale } from "../i18n/catalog";
 import { I18nProvider, useI18n } from "../i18n/I18nProvider";
+import { BackfillPage } from "../pages/BackfillPage";
 import { CalendarPage } from "../pages/CalendarPage";
 import { EventsPage } from "../pages/EventsPage";
 import { PortfolioPage } from "../pages/PortfolioPage";
@@ -187,6 +188,8 @@ export const ProductApp = ({
             <PortfolioPage />
           ) : router.route === "calendar" ? (
             <CalendarPage />
+          ) : router.route === "backfill" ? (
+            <BackfillPage />
           ) : (
             <ProductPage route={router.route} />
           ))}

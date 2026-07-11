@@ -24,7 +24,7 @@ const LegacyApp = () => (
           id="backfill"
           className="dashboard-section dashboard-section--operation"
         >
-          <BackfillPage />
+          <BackfillPage legacy />
         </section>
       </div>
     </main>
