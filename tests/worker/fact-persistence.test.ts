@@ -60,16 +60,19 @@ const marketFact = (
 const dividendRange = (
   events: DividendEventRange["events"],
   revision = "dividend-r1",
+  requestedStartDate = "2026-01-01",
+  requestedEndDate = "2026-12-31",
+  provider = "alpha-vantage-dividends",
 ): DividendEventRange => ({
   symbol: "CASE-INSTRUMENT-1",
   range: {
-    requestedStartDate: "2026-01-01",
-    requestedEndDate: "2026-12-31",
+    requestedStartDate,
+    requestedEndDate,
     coverageStartDate: null,
     coverageEndDate: null,
     isComplete: false,
     basis: "source-reported",
-    provider: "alpha-vantage-dividends",
+    provider,
     observedAt: now,
     providerRevision: revision,
   },
@@ -80,14 +83,16 @@ const dividendEvent = (
   amount: string,
   revision: string,
   exDate = "2026-08-01",
+  declarationDate = "2026-07-01",
+  provider = "alpha-vantage-dividends",
 ) => ({
   type: "dividend" as const,
   symbol: "CASE-INSTRUMENT-1",
   exDate,
   amount,
   currency: "USD",
-  provider: "alpha-vantage-dividends",
-  providerEventId: `alpha-vantage-dividends:CASE-INSTRUMENT-1:dividend:${exDate}:2026-07-01`,
+  provider,
+  providerEventId: `${provider}:CASE-INSTRUMENT-1:dividend:${exDate}:${declarationDate}`,
   providerRevision: revision,
 });
 
@@ -445,6 +450,335 @@ describe("normalized fact persistence", () => {
           status: "error",
           error_code: "provider_identity_changed",
         },
+      ],
+    });
+    current = dividendRange([
+      dividendEvent("0.25", "event-r2", "2026-08-01"),
+      dividendEvent("0.4", "event-r3", "2026-08-01", "2026-07-02"),
+    ]);
+    const legitimateNewIdentity = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(legitimateNewIdentity).toMatchObject({
+      kind: "refreshed",
+      correctionConflict: true,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT provider_event_id, status, error_code FROM dividend_events ORDER BY provider_event_id, provider_revision",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        {
+          provider_event_id:
+            "alpha-vantage-dividends:CASE-INSTRUMENT-1:dividend:2026-06-30:2026-07-01",
+          status: "superseded",
+          error_code: null,
+        },
+        {
+          provider_event_id:
+            "alpha-vantage-dividends:CASE-INSTRUMENT-1:dividend:2026-08-01:2026-07-01",
+          status: "error",
+          error_code: "provider_identity_changed",
+        },
+        {
+          provider_event_id:
+            "alpha-vantage-dividends:CASE-INSTRUMENT-1:dividend:2026-08-01:2026-07-02",
+          status: "active",
+          error_code: null,
+        },
+      ],
+    });
+  });
+
+  it("does not infer missing future dividends from a wholly historical range", async () => {
+    await insertInstrument();
+    const provider: DividendProvider = {
+      getDividends: vi.fn(async () =>
+        dividendRange([], "historical-r1", "2026-01-01", "2026-06-30"),
+      ),
+    };
+    const service = new DividendFactsService({
+      db: env.DB,
+      provider,
+      now: () => new Date(now),
+    });
+    const result = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-06-30",
+    });
+    expect(result).toMatchObject({
+      kind: "refreshed",
+      noAnnouncedEventCurrentlyKnown: false,
+    });
+  });
+
+  it("keeps same-ex-date dividends with distinct declaration identities active", async () => {
+    await insertInstrument();
+    const firstEvent = dividendEvent(
+      "0.25",
+      "event-a-r1",
+      "2026-08-01",
+      "2026-07-01",
+    );
+    let current = dividendRange([firstEvent]);
+    const provider: DividendProvider = {
+      getDividends: vi.fn(async () => current),
+    };
+    const service = new DividendFactsService({
+      db: env.DB,
+      provider,
+      now: () => new Date(now),
+    });
+    await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    current = dividendRange([
+      firstEvent,
+      dividendEvent("0.3", "event-b-r1", "2026-08-01", "2026-07-02"),
+    ]);
+    const result = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(result).toMatchObject({
+      kind: "refreshed",
+      correctionConflict: false,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT provider_event_id, status FROM dividend_events ORDER BY provider_event_id",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        {
+          provider_event_id:
+            "alpha-vantage-dividends:CASE-INSTRUMENT-1:dividend:2026-08-01:2026-07-01",
+          status: "active",
+        },
+        {
+          provider_event_id:
+            "alpha-vantage-dividends:CASE-INSTRUMENT-1:dividend:2026-08-01:2026-07-02",
+          status: "active",
+        },
+      ],
+    });
+  });
+
+  it("marks affected rows on an invalid provider snapshot without touching another provider", async () => {
+    await insertInstrument();
+    let alphaCurrent = dividendRange([
+      dividendEvent("0.25", "alpha-r1", "2026-06-30"),
+    ]);
+    const alphaProvider: DividendProvider = {
+      getDividends: vi.fn(async () => alphaCurrent),
+    };
+    const alphaService = new DividendFactsService({
+      db: env.DB,
+      provider: alphaProvider,
+      now: () => new Date(now),
+    });
+    await alphaService.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+
+    const betaProvider: DividendProvider = {
+      getDividends: vi.fn(async () =>
+        dividendRange(
+          [
+            dividendEvent(
+              "0.2",
+              "beta-r1",
+              "2026-07-20",
+              "2026-07-01",
+              "beta-dividends",
+            ),
+          ],
+          "beta-r1",
+          "2026-01-01",
+          "2026-12-31",
+          "beta-dividends",
+        ),
+      ),
+    };
+    const betaService = new DividendFactsService({
+      db: env.DB,
+      provider: betaProvider,
+      now: () => new Date(now),
+    });
+    await betaService.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+
+    alphaCurrent = dividendRange(
+      [dividendEvent("0.25", "alpha-r1", "2026-06-30")],
+      "alpha-invalid",
+      "2026-01-01",
+      "2026-06-30",
+    );
+    const invalid = await alphaService.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(invalid).toEqual({
+      kind: "provider_invalid",
+      code: "provider_snapshot_mismatch",
+      preserved: true,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT provider, status, error_code FROM dividend_events ORDER BY provider",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        {
+          provider: "alpha-vantage-dividends",
+          status: "error",
+          error_code: "provider_snapshot_mismatch",
+        },
+        { provider: "beta-dividends", status: "active", error_code: null },
+      ],
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT bucket_key, revision FROM fact_revision_buckets ORDER BY bucket_key",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        { bucket_key: "2026-06", revision: 2 },
+        { bucket_key: "2026-07", revision: 1 },
+      ],
+    });
+  });
+
+  it("does not quarantine unmatched future dividends from an incomplete source range", async () => {
+    await insertInstrument();
+    let current = dividendRange([
+      dividendEvent("0.25", "future-r1", "2026-08-01", "2026-07-01"),
+    ]);
+    const provider: DividendProvider = {
+      getDividends: vi.fn(async () => current),
+    };
+    const service = new DividendFactsService({
+      db: env.DB,
+      provider,
+      now: () => new Date(now),
+    });
+    await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    current = dividendRange([
+      dividendEvent("0.3", "future-r2", "2026-09-01", "2026-08-01"),
+    ]);
+    const result = await service.refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(result).toMatchObject({
+      kind: "refreshed",
+      correctionConflict: false,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM dividend_events WHERE status = 'active'",
+      ).first(),
+    ).toEqual({ count: 2 });
+  });
+
+  it("does not mark every provider when a refresh fails before provider identity is known", async () => {
+    await insertInstrument();
+    const seed = async (
+      provider: string,
+      eventDate: string,
+      eventRevision: string,
+    ) => {
+      const event = dividendEvent(
+        "0.25",
+        eventRevision,
+        eventDate,
+        "2026-07-01",
+        provider,
+      );
+      const seededProvider: DividendProvider = {
+        getDividends: vi.fn(async () =>
+          dividendRange(
+            [event],
+            `${provider}-range-r1`,
+            "2026-01-01",
+            "2026-12-31",
+            provider,
+          ),
+        ),
+      };
+      await new DividendFactsService({
+        db: env.DB,
+        provider: seededProvider,
+        now: () => new Date(now),
+      }).refresh({
+        instrumentId: "instrument-1",
+        symbol: "CASE-INSTRUMENT-1",
+        startDate: "2026-01-01",
+        endDate: "2026-12-31",
+      });
+    };
+    await seed("alpha-vantage-dividends", "2026-06-30", "alpha-r1");
+    await seed("beta-dividends", "2026-07-20", "beta-r1");
+
+    const failingProvider: DividendProvider = {
+      getDividends: vi.fn(async () => {
+        throw new Error("provider_http_503");
+      }),
+    };
+    const result = await new DividendFactsService({
+      db: env.DB,
+      provider: failingProvider,
+      now: () => new Date(now),
+    }).refresh({
+      instrumentId: "instrument-1",
+      symbol: "CASE-INSTRUMENT-1",
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    });
+    expect(result).toEqual({
+      kind: "provider_unavailable",
+      code: "provider_http_503",
+      preserved: true,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT provider, status, error_code FROM dividend_events ORDER BY provider",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        {
+          provider: "alpha-vantage-dividends",
+          status: "active",
+          error_code: null,
+        },
+        { provider: "beta-dividends", status: "active", error_code: null },
       ],
     });
   });

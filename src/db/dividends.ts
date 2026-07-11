@@ -159,6 +159,34 @@ export class DividendRepository {
       );
   }
 
+  markProviderErrorRangeStatement(input: {
+    instrumentId: string;
+    provider: string;
+    startDate: string;
+    endDate: string;
+    errorCode: string;
+    errorMessage: string;
+    updatedAt: string;
+  }): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE dividend_events
+         SET status = 'error', error_code = ?1, error_message = ?2,
+             updated_at = ?3
+         WHERE instrument_id = ?4 AND provider = ?5
+           AND ex_date >= ?6 AND ex_date <= ?7 AND status = 'active'`,
+      )
+      .bind(
+        input.errorCode,
+        input.errorMessage,
+        input.updatedAt,
+        input.instrumentId,
+        input.provider,
+        input.startDate,
+        input.endDate,
+      );
+  }
+
   markErrorStatement(input: {
     id: string;
     errorCode: string;

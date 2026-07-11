@@ -221,12 +221,68 @@ export class DividendFactsService {
   private readonly buckets: FactRevisionBucketRepository;
   private readonly now: () => Date;
   private readonly newId: () => string;
+  private readonly knownProviderByInstrument = new Map<string, string>();
 
   constructor(private readonly dependencies: DividendFactsServiceDependencies) {
     this.dividends = new DividendRepository(dependencies.db);
     this.buckets = new FactRevisionBucketRepository(dependencies.db);
     this.now = dependencies.now ?? (() => new Date());
     this.newId = dependencies.newId ?? (() => crypto.randomUUID());
+  }
+
+  private async markProviderRowsError(input: {
+    instrumentId: string;
+    provider?: string;
+    startDate?: string;
+    endDate?: string;
+    errorCode: string;
+    errorMessage: string;
+    updatedAt: string;
+  }): Promise<string | null> {
+    if (!input.provider) return null;
+    try {
+      const rows = await this.dividends.listForProvider({
+        instrumentId: input.instrumentId,
+        provider: input.provider,
+      });
+      const affectedRows = rows.filter(
+        (row) =>
+          row.status === "active" &&
+          (input.startDate === undefined || row.exDate >= input.startDate) &&
+          (input.endDate === undefined || row.exDate <= input.endDate),
+      );
+      if (affectedRows.length === 0) return null;
+      const statement =
+        input.startDate !== undefined && input.endDate !== undefined
+          ? this.dividends.markProviderErrorRangeStatement({
+              instrumentId: input.instrumentId,
+              provider: input.provider,
+              startDate: input.startDate,
+              endDate: input.endDate,
+              errorCode: input.errorCode,
+              errorMessage: input.errorMessage,
+              updatedAt: input.updatedAt,
+            })
+          : this.dividends.markProviderErrorStatement({
+              instrumentId: input.instrumentId,
+              provider: input.provider,
+              errorCode: input.errorCode,
+              errorMessage: input.errorMessage,
+              updatedAt: input.updatedAt,
+            });
+      const buckets = new Set(
+        affectedRows.map((row) => row.exDate.slice(0, 7)),
+      );
+      await this.dependencies.db.batch([
+        statement,
+        ...[...buckets].map((bucket) =>
+          this.buckets.bumpStatement(bucket, input.updatedAt),
+        ),
+      ]);
+      return null;
+    } catch (error) {
+      return persistenceErrorCode(error);
+    }
   }
 
   async refresh(input: {
@@ -243,32 +299,21 @@ export class DividendFactsService {
         input.endDate,
       );
     } catch (error) {
-      try {
-        const existing = await this.dividends.listForInstrument(
-          input.instrumentId,
-        );
-        const providers = new Set(existing.map((row) => row.provider));
-        const buckets = new Set(existing.map((row) => row.exDate.slice(0, 7)));
-        const timestamp = this.now().toISOString();
-        const statements = [
-          ...[...providers].map((provider) =>
-            this.dividends.markProviderErrorStatement({
-              instrumentId: input.instrumentId,
-              provider,
-              errorCode: providerErrorCode(error),
-              errorMessage: providerErrorCode(error),
-              updatedAt: timestamp,
-            }),
-          ),
-          ...[...buckets].map((bucket) =>
-            this.buckets.bumpStatement(bucket, timestamp),
-          ),
-        ];
-        if (statements.length > 0) await this.dependencies.db.batch(statements);
-      } catch (persistenceError) {
+      const timestamp = this.now().toISOString();
+      const knownProvider = this.knownProviderByInstrument.get(
+        input.instrumentId,
+      );
+      const persistenceCode = await this.markProviderRowsError({
+        instrumentId: input.instrumentId,
+        errorCode: providerErrorCode(error),
+        errorMessage: providerErrorCode(error),
+        updatedAt: timestamp,
+        ...(knownProvider === undefined ? {} : { provider: knownProvider }),
+      });
+      if (persistenceCode) {
         return {
           kind: "persistence_error",
-          code: persistenceErrorCode(persistenceError),
+          code: persistenceCode,
           preserved: true,
         };
       }
@@ -278,6 +323,8 @@ export class DividendFactsService {
         preserved: true,
       };
     }
+    const timestamp = this.now().toISOString();
+    const rangeProvider = range.range.provider;
     if (
       range.symbol.toUpperCase() !== input.symbol.toUpperCase() ||
       range.range.requestedStartDate !== input.startDate ||
@@ -285,6 +332,23 @@ export class DividendFactsService {
       range.range.basis !== "source-reported" ||
       range.range.isComplete
     ) {
+      this.knownProviderByInstrument.set(input.instrumentId, rangeProvider);
+      const persistenceCode = await this.markProviderRowsError({
+        instrumentId: input.instrumentId,
+        provider: rangeProvider,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        errorCode: "provider_snapshot_mismatch",
+        errorMessage: "Provider response did not match the requested range.",
+        updatedAt: timestamp,
+      });
+      if (persistenceCode) {
+        return {
+          kind: "persistence_error",
+          code: persistenceCode,
+          preserved: true,
+        };
+      }
       return {
         kind: "provider_invalid",
         code: "provider_snapshot_mismatch",
@@ -292,7 +356,8 @@ export class DividendFactsService {
       };
     }
 
-    const timestamp = this.now().toISOString();
+    this.knownProviderByInstrument.set(input.instrumentId, rangeProvider);
+    const today = easternMarketDate(timestamp);
     const statements: D1PreparedStatement[] = [];
     const buckets = new Set<string>();
     let correctionConflict = false;
@@ -312,9 +377,8 @@ export class DividendFactsService {
         return activeProviderRows.find(
           (row) =>
             row.providerEventId !== event.providerEventId &&
-            ((declarationKey !== null &&
-              dividendDeclarationKey(row.providerEventId) === declarationKey) ||
-              row.exDate === event.exDate),
+            declarationKey !== null &&
+            dividendDeclarationKey(row.providerEventId) === declarationKey,
         );
       };
       const identityMatchedOldIds = new Set(
@@ -330,12 +394,13 @@ export class DividendFactsService {
         (row) =>
           row.exDate >= input.startDate &&
           row.exDate <= input.endDate &&
+          row.exDate <= today &&
           !seenProviderEventIds.has(row.providerEventId) &&
           !identityMatchedOldIds.has(row.providerEventId),
       );
-      // A source-reported range cannot prove whether an unreturned row was
-      // deleted or merely omitted. Keep the conflict visible and prevent two
-      // active rows until a later refresh supplies a stable identity.
+      // A source-reported range cannot prove whether an unreturned historical
+      // row was deleted or merely omitted. Keep historical conflicts visible
+      // while leaving future rows active unless identity evidence is explicit.
       const quarantineUnmatchedEvents =
         unmatchedActiveRows.length > 0 && range.events.length > 0;
       if (quarantineUnmatchedEvents) correctionConflict = true;
@@ -481,6 +546,25 @@ export class DividendFactsService {
     } catch (error) {
       const code = error instanceof Error ? error.message : "provider_invalid";
       if (code.startsWith("provider_")) {
+        if (code === "provider_snapshot_mismatch") {
+          const persistenceCode = await this.markProviderRowsError({
+            instrumentId: input.instrumentId,
+            provider: rangeProvider,
+            startDate: input.startDate,
+            endDate: input.endDate,
+            errorCode: code,
+            errorMessage:
+              "Provider response did not match the requested range.",
+            updatedAt: timestamp,
+          });
+          if (persistenceCode) {
+            return {
+              kind: "persistence_error",
+              code: persistenceCode,
+              preserved: true,
+            };
+          }
+        }
         return { kind: "provider_invalid", code, preserved: true };
       }
       return {
@@ -490,14 +574,13 @@ export class DividendFactsService {
       };
     }
 
-    const today = easternMarketDate(timestamp);
     return {
       kind: "refreshed",
       events: range.events,
       incompleteHistoryWarning: true,
-      noAnnouncedEventCurrentlyKnown: !range.events.some(
-        (event) => event.exDate > today,
-      ),
+      noAnnouncedEventCurrentlyKnown:
+        input.endDate >= today &&
+        !range.events.some((event) => event.exDate > today),
       correctionConflict,
     };
   }
