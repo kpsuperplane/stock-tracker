@@ -72,6 +72,7 @@ export const createApp = () => {
   app.route("/api/portfolio", portfolioRoutes);
   app.route("/api/calendar", calendarRoutes);
   app.route("/api/jobs", jobRoutes);
+  app.route("/api/pipeline-jobs", jobRoutes);
   app.route("/api/screenings", retryRoutes);
   app.route("/api/tickers", tickerRoutes);
 

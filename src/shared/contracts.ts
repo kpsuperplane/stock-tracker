@@ -183,7 +183,7 @@ export interface CalendarDividendDto {
   currency: "USD" | "CAD";
   exDate: string;
   paymentDate: string | null;
-  amountPerShareDecimal: string;
+  amountPerShareDecimal: string | null;
   heldQuantityDecimal: string;
   expectedTotalValueDecimal: string | null;
   eligible: boolean;
@@ -255,4 +255,5 @@ export interface JobReadModelDto {
     message: string | null;
     effectiveDate: string | null;
   }>;
+  nextCursor: string | null;
 }

@@ -56,6 +56,10 @@ interface AnalysisRow {
   error_message: string | null;
 }
 
+interface CompleteAnalysisRow extends AnalysisRow {
+  instrument_id: string;
+}
+
 interface SourceRow {
   movement_analysis_id: string;
   title: string;
@@ -75,6 +79,8 @@ interface DividendRow {
   payment_date: string | null;
   amount_per_share_decimal: string;
   status: "active" | "stale" | "error" | "superseded";
+  error_code: string | null;
+  error_message: string | null;
   source_url: string | null;
   provider: string;
 }
@@ -189,10 +195,12 @@ export class CalendarReadModelService {
         .prepare(
           `SELECT d.id, d.instrument_id, i.symbol, i.company_name,
                     i.currency, d.ex_date, d.payment_date,
-                    d.amount_per_share_decimal, d.status, d.source_url,
+                    d.amount_per_share_decimal, d.status,
+                    d.error_code, d.error_message, d.source_url,
                     d.provider
              FROM dividend_events d JOIN instruments i ON i.id = d.instrument_id
              WHERE d.ex_date >= ?1 AND d.ex_date <= ?2
+               AND d.status <> 'superseded'
              ORDER BY d.ex_date, i.symbol, d.id`,
         )
         .bind(input.startDate, input.endDate)
@@ -293,6 +301,7 @@ export class CalendarReadModelService {
 
     const factIds = factResult.results.map((row) => row.id);
     const analyses = new Map<string, AnalysisRow>();
+    const lastCompleteAnalyses = new Map<string, AnalysisRow>();
     const sources = new Map<string, ReadModelSourceDto[]>();
     if (factIds.length > 0) {
       const placeholders = rangePlaceholders(factIds);
@@ -306,7 +315,44 @@ export class CalendarReadModelService {
         .all<AnalysisRow>();
       for (const row of result.results)
         analyses.set(row.daily_market_fact_id, row);
-      const analysisIds = result.results.map((row) => row.id);
+      const instrumentIdsWithFacts = [
+        ...new Set(factResult.results.map((row) => row.instrument_id)),
+      ];
+      const completePlaceholders = instrumentIdsWithFacts
+        .map((_id, index) => `?${index + 1}`)
+        .join(", ");
+      const completeDatePlaceholder = `?${instrumentIdsWithFacts.length + 1}`;
+      const completeResult = await this.db
+        .prepare(
+          `SELECT f.instrument_id, a.id, a.daily_market_fact_id,
+                  a.summary_zh_cn, a.status, a.error_code, a.error_message
+           FROM movement_analyses a
+           JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
+           WHERE a.status = 'complete'
+             AND f.instrument_id IN (${completePlaceholders})
+             AND f.movement_basis <> 'legacy_migration'
+             AND f.trading_date <= ${completeDatePlaceholder}
+             AND f.trading_date = (
+               SELECT MAX(previous_fact.trading_date)
+               FROM daily_market_facts previous_fact
+               JOIN movement_analyses previous_analysis
+                 ON previous_analysis.daily_market_fact_id = previous_fact.id
+               WHERE previous_fact.instrument_id = f.instrument_id
+                 AND previous_fact.movement_basis <> 'legacy_migration'
+                 AND previous_fact.trading_date <= ${completeDatePlaceholder}
+                 AND previous_analysis.status = 'complete'
+             )`,
+        )
+        .bind(...instrumentIdsWithFacts, input.endDate)
+        .all<CompleteAnalysisRow>();
+      for (const row of completeResult.results)
+        lastCompleteAnalyses.set(row.instrument_id, row);
+      const analysisIds = [
+        ...new Set([
+          ...result.results.map((row) => row.id),
+          ...completeResult.results.map((row) => row.id),
+        ]),
+      ];
       if (analysisIds.length > 0) {
         const sourceResult = await this.db
           .prepare(
@@ -336,11 +382,29 @@ export class CalendarReadModelService {
 
     const movers: CalendarMoverDto[] = [];
     for (const fact of factResult.results) {
+      if (fact.movement_basis === "legacy_migration") {
+        conflicts.push({
+          code: "legacy_movement_basis",
+          message:
+            "This market fact uses a legacy basis and is awaiting normalized refresh.",
+          instrumentId: fact.instrument_id,
+          effectiveDate: fact.trading_date,
+        });
+        continue;
+      }
       if (fact.status !== "valid") {
         conflicts.push({
           code: fact.error_code ?? `market_fact_${fact.status}`,
           message:
             fact.error_message ?? `The daily market fact is ${fact.status}.`,
+          instrumentId: fact.instrument_id,
+          effectiveDate: fact.trading_date,
+        });
+      }
+      if (safeDecimal(fact.movement_percent_decimal) === null) {
+        conflicts.push({
+          code: "invalid_movement_decimal",
+          message: "The stored movement percentage is not a valid decimal.",
           instrumentId: fact.instrument_id,
           effectiveDate: fact.trading_date,
         });
@@ -352,7 +416,12 @@ export class CalendarReadModelService {
       const heldQuantityDecimal = holdings.quantityAtStartOfDay(
         fact.trading_date,
       );
-      const analysis = analyses.get(fact.id);
+      const currentAnalysis = analyses.get(fact.id);
+      const fallbackAnalysis = lastCompleteAnalyses.get(fact.instrument_id);
+      const analysis =
+        currentAnalysis?.status === "complete"
+          ? currentAnalysis
+          : (fallbackAnalysis ?? currentAnalysis);
       const movement = {
         tradingDate: fact.trading_date,
         previousTradingDate: fact.previous_trading_date,
@@ -384,21 +453,27 @@ export class CalendarReadModelService {
         movement,
         summaryZhCn:
           analysis?.status === "complete" ? analysis.summary_zh_cn : null,
-        analysisStatus: analysis?.status ?? "unavailable",
+        analysisStatus:
+          currentAnalysis?.status ??
+          (fallbackAnalysis ? "complete" : "unavailable"),
         sources:
           analysis?.status === "complete"
             ? (sources.get(analysis.id) ?? [])
             : [],
         freshness:
-          analysis?.status === "complete"
-            ? "fresh"
-            : (analysis?.status ?? "unavailable"),
+          fact.status !== "valid"
+            ? fact.status
+            : currentAnalysis?.status === "complete" || fallbackAnalysis
+              ? "fresh"
+              : (currentAnalysis?.status ?? "unavailable"),
         conflicts: [
-          ...(fact.movement_basis === "legacy_migration"
+          ...(fact.status !== "valid"
             ? [
                 {
-                  code: "legacy_movement_basis",
-                  message: "This movement uses a legacy close basis.",
+                  code: fact.error_code ?? `market_fact_${fact.status}`,
+                  message:
+                    fact.error_message ??
+                    `The market fact is ${fact.status}; values may be stale.`,
                   instrumentId: fact.instrument_id,
                   effectiveDate: fact.trading_date,
                 },
@@ -414,15 +489,15 @@ export class CalendarReadModelService {
                 },
               ]
             : []),
-          ...(analysis && analysis.status !== "complete"
+          ...(currentAnalysis && currentAnalysis.status !== "complete"
             ? [
                 {
                   code:
-                    analysis.error_code ??
-                    `movement_analysis_${analysis.status}`,
+                    currentAnalysis.error_code ??
+                    `movement_analysis_${currentAnalysis.status}`,
                   message:
-                    analysis.error_message ??
-                    `The movement analysis is ${analysis.status}.`,
+                    currentAnalysis.error_message ??
+                    `The movement analysis is ${currentAnalysis.status}.`,
                   instrumentId: fact.instrument_id,
                   effectiveDate: fact.trading_date,
                 },
@@ -451,6 +526,7 @@ export class CalendarReadModelService {
           });
         }
       }
+      const normalizedAmount = safeDecimal(event.amount_per_share_decimal);
       dividends.push({
         id: event.id,
         instrumentId: event.instrument_id,
@@ -459,13 +535,12 @@ export class CalendarReadModelService {
         currency: event.currency,
         exDate: event.ex_date,
         paymentDate: event.payment_date,
-        amountPerShareDecimal:
-          safeDecimal(event.amount_per_share_decimal) ??
-          event.amount_per_share_decimal,
+        amountPerShareDecimal: normalizedAmount,
         heldQuantityDecimal,
-        expectedTotalValueDecimal: eligible
-          ? multiplyDecimal(heldQuantityDecimal, event.amount_per_share_decimal)
-          : null,
+        expectedTotalValueDecimal:
+          eligible && normalizedAmount !== null
+            ? multiplyDecimal(heldQuantityDecimal, normalizedAmount)
+            : null,
         eligible,
         status: event.status,
         sourceUrl: safeSourceUrl(event.source_url),
@@ -473,8 +548,9 @@ export class CalendarReadModelService {
       });
       if (event.status !== "active") {
         conflicts.push({
-          code: `dividend_event_${event.status}`,
-          message: `The dividend event is ${event.status}.`,
+          code: event.error_code ?? `dividend_event_${event.status}`,
+          message:
+            event.error_message ?? `The dividend event is ${event.status}.`,
           instrumentId: event.instrument_id,
           effectiveDate: event.ex_date,
         });

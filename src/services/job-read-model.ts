@@ -29,10 +29,20 @@ interface WorkRow {
   terminal_error_message: string | null;
 }
 
+export interface JobReadModelInput {
+  limit?: number;
+  cursor?: string | null;
+}
+
+const MAX_WORK_DETAIL = 100;
+
 export class JobReadModelService {
   constructor(private readonly db: D1Database) {}
 
-  async find(id: string): Promise<JobReadModelDto | null> {
+  async find(
+    id: string,
+    input: JobReadModelInput = {},
+  ): Promise<JobReadModelDto | null> {
     const job = await this.db
       .prepare(
         `SELECT id, trigger_type, requested_start_date, requested_end_date,
@@ -44,6 +54,7 @@ export class JobReadModelService {
       .bind(id)
       .first<JobRow>();
     if (!job) return null;
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), MAX_WORK_DETAIL);
     const work = await this.db
       .prepare(
         `SELECT work.id, work.work_type, work.instrument_id,
@@ -52,11 +63,14 @@ export class JobReadModelService {
          FROM job_work_items link JOIN work_items work
            ON work.id = link.work_item_id
          WHERE link.pipeline_job_id = ?1
-         ORDER BY work.effective_date, work.work_type, work.id`,
+           AND (?2 IS NULL OR work.id > ?2)
+         ORDER BY work.id
+         LIMIT ?3`,
       )
-      .bind(id)
+      .bind(id, input.cursor ?? null, limit + 1)
       .all<WorkRow>();
-    const mappedWork = work.results.map((row) => ({
+    const hasMore = work.results.length > limit;
+    const mappedWork = work.results.slice(0, limit).map((row) => ({
       id: row.id,
       workType: row.work_type,
       instrumentId: row.instrument_id,
@@ -93,6 +107,10 @@ export class JobReadModelService {
           message: row.terminalErrorMessage,
           effectiveDate: row.effectiveDate,
         })),
+      nextCursor:
+        hasMore && mappedWork.length > 0
+          ? btoa(JSON.stringify({ id: mappedWork.at(-1)?.id }))
+          : null,
     };
   }
 }

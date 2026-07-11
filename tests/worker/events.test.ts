@@ -5,6 +5,7 @@ import { PositionBasisRepository } from "../../src/db/position-basis";
 import { TransactionRepository } from "../../src/db/transactions";
 import { WorkItemRepository } from "../../src/db/work-items";
 import { YahooCorporateActionProvider } from "../../src/providers/yahoo-corporate-actions";
+import { easternMarketDate } from "../../src/shared/dates";
 
 const now = "2026-07-10T12:00:00.000Z";
 
@@ -796,6 +797,7 @@ describe("portfolio event routes", () => {
   });
 
   it("schedules only the held interval affected by a confirmed split", async () => {
+    const marketDate = easternMarketDate(new Date());
     await insertInstrument();
     await env.DB.batch([
       env.DB.prepare(
@@ -808,9 +810,9 @@ describe("portfolio event routes", () => {
         `INSERT INTO corporate_action_coverage
          (instrument_id, provider, requested_start_date, requested_end_date,
           snapshot_provider_revision, retrieved_at, status, updated_at)
-         VALUES ('instrument-1', 'yahoo-chart-v8', '2024-01-01', '2026-07-10',
+         VALUES ('instrument-1', 'yahoo-chart-v8', '2024-01-01', ?2,
                  'split-r1', ?1, 'review_required', ?1)`,
-      ).bind(now),
+      ).bind(now, marketDate),
     ]);
     const split = {
       type: "split" as const,
@@ -837,7 +839,7 @@ describe("portfolio event routes", () => {
           instrumentId: "instrument-1",
           confirmation: {
             requestedStartDate: "2024-01-01",
-            requestedEndDate: "2026-07-10",
+            requestedEndDate: marketDate,
             providerRevision: "split-r1",
           },
         }),
@@ -851,7 +853,7 @@ describe("portfolio event routes", () => {
       .bind(payload.pipelineJobId)
       .first<{ eligibility_intervals_json: string }>();
     expect(JSON.parse(job?.eligibility_intervals_json ?? "[]")).toEqual([
-      { startDate: "2025-01-02", endDate: "2026-07-10" },
+      { startDate: "2025-01-02", endDate: marketDate },
     ]);
   });
 

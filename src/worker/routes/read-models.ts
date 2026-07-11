@@ -33,7 +33,8 @@ const isEnabled = (
           env.ENABLE_JOB_READ_MODEL);
   const value = specific ?? env.READ_MODELS_ENABLED ?? env.READ_MODEL_ENABLED;
   return (
-    !value || !["0", "false", "off", "disabled"].includes(value.toLowerCase())
+    value !== undefined &&
+    ["1", "true", "on", "enabled"].includes(value.toLowerCase())
   );
 };
 
@@ -99,20 +100,6 @@ const basisRevision = async (db: D1Database): Promise<number> =>
       .first<{ revision: number }>()
   )?.revision ?? 0;
 
-const latestFactMonth = async (
-  db: D1Database,
-  asOfDate: string,
-): Promise<string | null> =>
-  (
-    await db
-      .prepare(
-        `SELECT substr(MAX(trading_date), 1, 7) AS month
-         FROM daily_market_facts WHERE trading_date <= ?1`,
-      )
-      .bind(asOfDate)
-      .first<{ month: string | null }>()
-  )?.month ?? null;
-
 const setTagHeaders = (
   context: Context<{ Bindings: Env }>,
   tag: string,
@@ -166,17 +153,12 @@ portfolioRoutes.get("/", async (context) => {
       .strict(),
   );
   const positionRevision = await basisRevision(context.env.DB);
-  const latestMonth = await latestFactMonth(context.env.DB, today);
   const tag = await readModelTag(context.env.DB, {
     model: "portfolio",
     locale,
     positionBasisRevision: positionRevision,
     representationKey: JSON.stringify({ today, limit, cursor }),
-    bucketKeys: [
-      "latest",
-      today.slice(0, 7),
-      ...(latestMonth ? [latestMonth] : []),
-    ],
+    bucketKeys: ["latest"],
   });
   setTagHeaders(context, tag.etag, positionRevision);
   if (matchesIfNoneMatch(context.req.header("If-None-Match"), tag.etag)) {
@@ -293,9 +275,19 @@ jobRoutes.get("/:id", async (context) => {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(id)) {
     throw new ApiError(422, "job_id", "The job identifier is invalid.");
   }
-  const job = await new JobReadModelService(context.env.DB).find(id);
+  const query = context.req.query();
+  const limit = parseLimit(query.limit, 50, 100);
+  const cursor = decodeCursor(
+    query.cursor,
+    "cursor",
+    z.object({ id: z.string().min(1).max(128) }).strict(),
+  );
+  const job = await new JobReadModelService(context.env.DB).find(id, {
+    limit,
+    cursor: cursor?.id ?? null,
+  });
   if (!job) throw new ApiError(404, "job_not_found", "Job not found.");
-  const etag = `"job-${job.id}-${job.updatedAt}"`;
+  const etag = `"job-${job.id}-${job.updatedAt}-${limit}-${cursor?.id ?? ""}"`;
   context.header("ETag", etag);
   if (matchesIfNoneMatch(context.req.header("If-None-Match"), etag)) {
     return context.body(null, 304);

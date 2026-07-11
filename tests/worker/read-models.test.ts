@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Env } from "../../src/worker/env";
 
 const now = "2026-07-10T12:00:00.000Z";
 const authorization = `Basic ${btoa("owner:password")}`;
@@ -83,6 +84,27 @@ const insertFact = async (input: {
 };
 
 describe("portfolio and calendar read models", () => {
+  beforeEach(() => {
+    (env as unknown as Env).READ_MODELS_ENABLED = "true";
+  });
+
+  afterEach(() => {
+    delete (env as unknown as Record<string, unknown>).READ_MODELS_ENABLED;
+  });
+
+  it("keeps new read models disabled until explicitly enabled", async () => {
+    delete (env as unknown as Record<string, unknown>).READ_MODELS_ENABLED;
+    const response = await exports.default.fetch(
+      new Request("http://local/api/portfolio", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(response.status).toBe(404);
+    expect(
+      (await response.json<{ error: { code: string } }>()).error.code,
+    ).toBe("read_model_disabled");
+  });
+
   it("derives quantities, raw-close valuation, movement, Chinese summary, and native totals", async () => {
     await insertInstrument({ id: "cad-1", symbol: "CAD.ONE", currency: "CAD" });
     await insertInstrument({ id: "usd-1", symbol: "USD.ONE", currency: "USD" });
@@ -174,6 +196,132 @@ describe("portfolio and calendar read models", () => {
     expect(second.status).toBe(304);
   });
 
+  it("shows last-valid values for stale facts and blocks legacy-basis values", async () => {
+    await insertInstrument({
+      id: "stale-1",
+      symbol: "STALE.ONE",
+      currency: "CAD",
+    });
+    await insertInstrument({
+      id: "legacy-1",
+      symbol: "LEGACY.ONE",
+      currency: "CAD",
+    });
+    await insertTransaction({
+      id: "stale-buy",
+      instrumentId: "stale-1",
+      quantity: "10",
+    });
+    await insertTransaction({
+      id: "legacy-buy",
+      instrumentId: "legacy-1",
+      quantity: "10",
+    });
+    await insertFact({
+      id: "stale-valid",
+      instrumentId: "stale-1",
+      date: "2026-07-08",
+      previous: "9",
+      current: "10",
+      pct: "11.1111111111",
+    });
+    await insertFact({
+      id: "stale-latest",
+      instrumentId: "stale-1",
+      date: "2026-07-09",
+      previous: "10",
+      current: "99",
+      pct: "890",
+    });
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE daily_market_facts SET status = 'stale' WHERE id = 'stale-latest'",
+      ),
+      env.DB.prepare(
+        `INSERT INTO daily_market_facts
+         (id, instrument_id, trading_date, previous_trading_date,
+          previous_raw_close_decimal, current_raw_close_decimal,
+          crossing_split_numerator, crossing_split_denominator,
+          split_adjusted_previous_close_decimal, movement_amount_decimal,
+          movement_percent_decimal, raw_close_difference_decimal, movement_basis,
+          provider, provider_revision, retrieved_at, status, created_at, updated_at)
+         VALUES ('legacy-latest', 'legacy-1', '2026-07-09', '2026-07-08',
+                 '10', '20', '1', '1', '10', '10', '100', '10',
+                 'legacy_migration', 'yahoo', 'legacy-r1', ?1, 'valid', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO movement_analyses
+         (id, daily_market_fact_id, dependency_fingerprint, summary_zh_cn,
+          model, status, created_at, updated_at)
+         VALUES ('stale-analysis-valid', 'stale-valid', 'fp', '旧摘要',
+                 'test', 'complete', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO movement_analyses
+         (id, daily_market_fact_id, dependency_fingerprint, model, status,
+          error_code, error_message, created_at, updated_at)
+         VALUES ('stale-analysis-error', 'stale-latest', 'fp', 'test', 'error',
+                 'analysis_bad', 'Analysis refresh failed', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO news_sources
+         (id, movement_analysis_id, source_order, title, publisher,
+          published_at, source_url, cited, created_at)
+         VALUES ('stale-source', 'stale-analysis-valid', 0, 'Old story',
+                 'Example', ?1, 'https://example.com/old-story', 1, ?1)`,
+      ).bind(now),
+    ]);
+    const response = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-07-10", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(response.status).toBe(200);
+    const payload = await response.json<{
+      portfolio: {
+        positions: Array<Record<string, unknown>>;
+      };
+    }>();
+    const stale = payload.portfolio.positions.find(
+      (row) => row.symbol === "STALE.ONE",
+    );
+    expect(stale).toEqual(
+      expect.objectContaining({
+        valuationDecimal: "100",
+        latestTradingDate: "2026-07-09",
+        freshness: "stale",
+        summaryZhCn: "旧摘要",
+        analysisStatus: "error",
+      }),
+    );
+    expect(stale?.movement).toEqual(
+      expect.objectContaining({ tradingDate: "2026-07-08" }),
+    );
+    expect(stale?.sources).toEqual([
+      expect.objectContaining({ title: "Old story" }),
+    ]);
+    expect(stale?.conflicts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "analysis_bad" }),
+      ]),
+    );
+    const legacy = payload.portfolio.positions.find(
+      (row) => row.symbol === "LEGACY.ONE",
+    );
+    expect(legacy).toEqual(
+      expect.objectContaining({
+        valuationDecimal: null,
+        movement: null,
+        freshness: "pending",
+      }),
+    );
+    expect(legacy?.conflicts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "legacy_movement_basis" }),
+      ]),
+    );
+  });
+
   it("shows held movers, ex-dividend value, actual trading dates, and pending state", async () => {
     await insertInstrument({
       id: "calendar-1",
@@ -193,6 +341,22 @@ describe("portfolio and calendar read models", () => {
       current: "11",
       pct: "10",
     });
+    await insertFact({
+      id: "calendar-stale-fact",
+      instrumentId: "calendar-1",
+      date: "2026-07-10",
+      previous: "11",
+      current: "12",
+      pct: "9.0909090909",
+    });
+    await insertFact({
+      id: "calendar-legacy-fact",
+      instrumentId: "calendar-1",
+      date: "2026-07-08",
+      previous: "10",
+      current: "12",
+      pct: "20",
+    });
     await env.DB.prepare(
       `INSERT INTO dividend_events
        (id, instrument_id, ex_date, payment_date, amount_per_share_decimal,
@@ -204,6 +368,64 @@ describe("portfolio and calendar read models", () => {
     )
       .bind(now)
       .run();
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE daily_market_facts SET status = 'stale' WHERE id = 'calendar-stale-fact'",
+      ),
+      env.DB.prepare(
+        "UPDATE daily_market_facts SET movement_basis = 'legacy_migration' WHERE id = 'calendar-legacy-fact'",
+      ),
+      env.DB.prepare(
+        `INSERT INTO movement_analyses
+         (id, daily_market_fact_id, dependency_fingerprint, summary_zh_cn,
+          model, status, created_at, updated_at)
+         VALUES ('calendar-analysis', 'calendar-fact', 'fp', '历史摘要',
+                 'test', 'complete', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO movement_analyses
+         (id, daily_market_fact_id, dependency_fingerprint, model, status,
+          error_code, error_message, created_at, updated_at)
+         VALUES ('calendar-stale-analysis', 'calendar-stale-fact', 'fp',
+                 'test', 'error', 'calendar_analysis_bad', 'Refresh failed', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO news_sources
+         (id, movement_analysis_id, source_order, title, publisher,
+          published_at, source_url, cited, created_at)
+         VALUES ('calendar-source', 'calendar-analysis', 0, 'Calendar story',
+                 'Example', ?1, 'https://example.com/calendar-story', 1, ?1)`,
+      ).bind(now),
+    ]);
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO dividend_events
+         (id, instrument_id, ex_date, payment_date, amount_per_share_decimal,
+          currency, provider, provider_event_id, provider_revision, source_url,
+          retrieved_at, status, created_at, updated_at)
+         VALUES ('div-superseded', 'calendar-1', '2026-07-09', '2026-07-30', '9',
+                 'CAD', 'yahoo', 'div-1-old', 'r0', 'https://example.com/old',
+                 ?1, 'superseded', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO dividend_events
+         (id, instrument_id, ex_date, payment_date, amount_per_share_decimal,
+          currency, provider, provider_event_id, provider_revision, source_url,
+          retrieved_at, status, created_at, updated_at)
+         VALUES ('div-stale', 'calendar-1', '2026-07-15', '2026-07-30', '0.25',
+                 'CAD', 'yahoo', 'div-stale', 'r1', 'https://example.com/stale',
+                 ?1, 'stale', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO dividend_events
+         (id, instrument_id, ex_date, payment_date, amount_per_share_decimal,
+          currency, provider, provider_event_id, provider_revision, source_url,
+          retrieved_at, status, error_code, error_message, created_at, updated_at)
+         VALUES ('div-error', 'calendar-1', '2026-07-16', '2026-07-30', 'not-decimal',
+                 'CAD', 'yahoo', 'div-error', 'r1', 'https://example.com/error',
+                 ?1, 'error', 'div_bad', 'Provider returned an invalid amount', ?1, ?1)`,
+      ).bind(now),
+    ]);
     await env.DB.prepare(
       `INSERT INTO work_items
        (id, scope, work_type, instrument_id, effective_date, dependency_revision,
@@ -226,20 +448,68 @@ describe("portfolio and calendar read models", () => {
         movers: Array<Record<string, unknown>>;
         dividends: Array<Record<string, unknown>>;
         pendingFacts: Array<Record<string, unknown>>;
+        conflicts: Array<Record<string, unknown>>;
       };
     }>();
-    expect(payload.calendar.actualTradingDates).toEqual(["2026-07-09"]);
+    expect(payload.calendar.actualTradingDates).toEqual([
+      "2026-07-08",
+      "2026-07-09",
+      "2026-07-10",
+    ]);
     expect(payload.calendar.movers[0]).toEqual(
       expect.objectContaining({
         symbol: "CAL.ONE",
         heldQuantityDecimal: "10",
       }),
     );
+    expect(
+      payload.calendar.movers.find((row) => row.id === "calendar-stale-fact"),
+    ).toEqual(
+      expect.objectContaining({
+        freshness: "stale",
+        summaryZhCn: "历史摘要",
+        analysisStatus: "error",
+      }),
+    );
+    expect(
+      payload.calendar.movers.find((row) => row.id === "calendar-stale-fact")
+        ?.sources,
+    ).toEqual([expect.objectContaining({ title: "Calendar story" })]);
+    expect(
+      payload.calendar.movers.find((row) => row.id === "calendar-legacy-fact"),
+    ).toBeUndefined();
+    expect(payload.calendar.conflicts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "legacy_movement_basis",
+          effectiveDate: "2026-07-08",
+        }),
+      ]),
+    );
     expect(payload.calendar.dividends[0]).toEqual(
       expect.objectContaining({
         expectedTotalValueDecimal: "15",
         eligible: true,
       }),
+    );
+    expect(payload.calendar.dividends).toHaveLength(3);
+    expect(
+      payload.calendar.dividends.find((row) => row.id === "div-superseded"),
+    ).toBeUndefined();
+    expect(
+      payload.calendar.dividends.find((row) => row.id === "div-stale"),
+    ).toEqual(expect.objectContaining({ status: "stale" }));
+    expect(
+      payload.calendar.dividends.find((row) => row.id === "div-error"),
+    ).toEqual(
+      expect.objectContaining({
+        status: "error",
+        amountPerShareDecimal: null,
+        expectedTotalValueDecimal: null,
+      }),
+    );
+    expect(payload.calendar.conflicts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "div_bad" })]),
     );
     expect(payload.calendar.pendingFacts).toEqual([
       expect.objectContaining({ date: "2026-07-08", status: "queued" }),
@@ -256,16 +526,63 @@ describe("portfolio and calendar read models", () => {
     )
       .bind(now)
       .run();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO work_items
+         (id, scope, work_type, effective_date, dependency_revision,
+          deterministic_key, state, priority, max_attempts, created_at, updated_at)
+         VALUES ('job-work-a', 'global_fact', 'market_fact', '2026-07-01', 'r1',
+                 'job-work-a', 'complete', 1, 3, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO work_items
+         (id, scope, work_type, effective_date, dependency_revision,
+          deterministic_key, state, priority, max_attempts, created_at, updated_at)
+         VALUES ('job-work-b', 'global_fact', 'market_fact', '2026-07-02', 'r1',
+                 'job-work-b', 'terminal', 1, 3, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO work_items
+         (id, scope, work_type, effective_date, dependency_revision,
+          deterministic_key, state, priority, max_attempts, created_at, updated_at)
+         VALUES ('job-work-c', 'global_fact', 'market_fact', '2026-07-03', 'r1',
+                 'job-work-c', 'complete', 1, 3, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+         (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+         VALUES ('read-job', 'job-work-a', 'required', 'processed', ?1),
+                ('read-job', 'job-work-b', 'required', 'failed', ?1),
+                ('read-job', 'job-work-c', 'required', 'processed', ?1)`,
+      ).bind(now),
+    ]);
     const response = await exports.default.fetch(
-      new Request("http://local/api/jobs/read-job", {
+      new Request("http://local/api/pipeline-jobs/read-job?limit=2", {
         headers: { Authorization: authorization },
       }),
     );
     expect(response.status).toBe(200);
-    expect(
-      (await response.json<{ job: { progress: { workTotal: number } } }>()).job
-        .progress.workTotal,
-    ).toBe(2);
+    const jobPayload = await response.json<{
+      job: {
+        progress: { workTotal: number };
+        work: Array<{ id: string }>;
+        nextCursor: string | null;
+      };
+    }>();
+    expect(jobPayload.job.progress.workTotal).toBe(2);
+    expect(jobPayload.job.work).toHaveLength(2);
+    expect(jobPayload.job.nextCursor).not.toBeNull();
+    const nextJobResponse = await exports.default.fetch(
+      new Request(
+        `http://local/api/pipeline-jobs/read-job?limit=2&cursor=${encodeURIComponent(jobPayload.job.nextCursor ?? "")}`,
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(nextJobResponse.status).toBe(200);
+    const nextJobPayload = await nextJobResponse.json<{
+      job: { work: Array<{ id: string }> };
+    }>();
+    expect(nextJobPayload.job.work).toHaveLength(1);
     const invalidCursor = await exports.default.fetch(
       new Request("http://local/api/portfolio?cursor=bad", {
         headers: { Authorization: authorization },

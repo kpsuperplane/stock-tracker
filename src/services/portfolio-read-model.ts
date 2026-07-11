@@ -59,6 +59,10 @@ interface AnalysisRow {
   error_message: string | null;
 }
 
+interface CompleteAnalysisRow extends AnalysisRow {
+  instrument_id: string;
+}
+
 interface SourceRow {
   movement_analysis_id: string;
   title: string;
@@ -145,22 +149,6 @@ const safeSourceUrl = (value: string | null): string | null => {
   }
 };
 
-const analysisStatus = (
-  fact: FactRow | undefined,
-  analysis: AnalysisRow | undefined,
-): PortfolioPositionDto["analysisStatus"] => {
-  if (!fact) return null;
-  if (!analysis) return "unavailable";
-  return analysis.status;
-};
-
-const factFreshness = (
-  fact: FactRow | undefined,
-): PortfolioPositionDto["freshness"] => {
-  if (!fact) return "unavailable";
-  return fact.status === "valid" ? "fresh" : fact.status;
-};
-
 const conflictForAction = (row: ActionRow): PortfolioConflictDto => ({
   code: row.conflict_code ?? `split_${row.status}`,
   message: row.conflict_message ?? `Corporate action is ${row.status}.`,
@@ -177,46 +165,75 @@ const conflictForCoverage = (row: CoverageRow): PortfolioConflictDto => ({
 export class PortfolioReadModelService {
   constructor(private readonly db: D1Database) {}
 
+  private latestFactsQuery(
+    asOfDate: string,
+    validOnly: boolean,
+  ): Promise<D1Result<FactRow>> {
+    const validFilter = validOnly
+      ? "AND f.status = 'valid' AND f.movement_basis <> 'legacy_migration'"
+      : "";
+    const candidateFilter = validOnly
+      ? "AND candidate.status = 'valid' AND candidate.movement_basis <> 'legacy_migration'"
+      : "";
+    return this.db
+      .prepare(
+        `SELECT f.id, f.instrument_id, f.trading_date, f.previous_trading_date,
+                f.previous_raw_close_decimal, f.current_raw_close_decimal,
+                f.split_adjusted_previous_close_decimal,
+                f.movement_amount_decimal, f.movement_percent_decimal,
+                f.raw_close_difference_decimal, f.movement_basis, f.status,
+                f.error_code, f.error_message
+         FROM daily_market_facts f
+         WHERE f.trading_date <= ?1
+           AND f.instrument_id IN (SELECT DISTINCT instrument_id FROM transactions)
+           ${validFilter}
+           AND f.trading_date = (
+             SELECT MAX(candidate.trading_date)
+             FROM daily_market_facts candidate
+             WHERE candidate.instrument_id = f.instrument_id
+               AND candidate.trading_date <= ?1
+               ${candidateFilter}
+           )
+         ORDER BY f.instrument_id`,
+      )
+      .bind(asOfDate)
+      .all<FactRow>();
+  }
+
   async read(input: PortfolioReadModelInput): Promise<PortfolioReadModelDto> {
-    const [transactionResult, instrumentResult, splitResult, factResult] =
-      await Promise.all([
-        this.db
-          .prepare(
-            `SELECT id, instrument_id, trade_date, side,
+    const [
+      transactionResult,
+      instrumentResult,
+      splitResult,
+      latestFactResult,
+      validFactResult,
+    ] = await Promise.all([
+      this.db
+        .prepare(
+          `SELECT id, instrument_id, trade_date, side,
                     quantity_decimal, price_decimal
              FROM transactions ORDER BY instrument_id, trade_date, id`,
-          )
-          .all<TransactionRow>(),
-        this.db
-          .prepare(
-            `SELECT DISTINCT i.id AS instrument_id, i.symbol, i.company_name,
+        )
+        .all<TransactionRow>(),
+      this.db
+        .prepare(
+          `SELECT DISTINCT i.id AS instrument_id, i.symbol, i.company_name,
                     i.exchange, i.currency
              FROM instruments i JOIN transactions t ON t.instrument_id = i.id
              ORDER BY i.symbol, i.id`,
-          )
-          .all<InstrumentRow>(),
-        this.db
-          .prepare(
-            `SELECT id, instrument_id, effective_date,
+        )
+        .all<InstrumentRow>(),
+      this.db
+        .prepare(
+          `SELECT id, instrument_id, effective_date,
                     split_numerator, split_denominator
              FROM corporate_actions WHERE status = 'active'
              ORDER BY instrument_id, effective_date, id`,
-          )
-          .all<SplitRow>(),
-        this.db
-          .prepare(
-            `SELECT id, instrument_id, trading_date, previous_trading_date,
-                    previous_raw_close_decimal, current_raw_close_decimal,
-                    split_adjusted_previous_close_decimal,
-                    movement_amount_decimal, movement_percent_decimal,
-                    raw_close_difference_decimal, movement_basis, status,
-                    error_code, error_message
-             FROM daily_market_facts WHERE trading_date <= ?1
-             ORDER BY instrument_id, trading_date DESC`,
-          )
-          .bind(input.today)
-          .all<FactRow>(),
-      ]);
+        )
+        .all<SplitRow>(),
+      this.latestFactsQuery(input.today, false),
+      this.latestFactsQuery(input.today, true),
+    ]);
 
     const transactionsByInstrument = new Map<string, TransactionRow[]>();
     for (const row of transactionResult.results) {
@@ -231,13 +248,37 @@ export class PortfolioReadModelService {
       splitsByInstrument.set(row.instrument_id, rows);
     }
 
-    const latestFacts = new Map<string, FactRow>();
-    for (const row of factResult.results) {
-      if (!latestFacts.has(row.instrument_id))
-        latestFacts.set(row.instrument_id, row);
+    const latestFacts = new Map(
+      latestFactResult.results.map((row) => [row.instrument_id, row]),
+    );
+    const validFacts = new Map(
+      validFactResult.results.map((row) => [row.instrument_id, row]),
+    );
+    const usableFacts = new Map<string, FactRow>();
+    for (const [instrumentId, latest] of latestFacts) {
+      if (latest.movement_basis === "legacy_migration") {
+        continue;
+      }
+      if (latest.status === "valid") {
+        usableFacts.set(instrumentId, latest);
+      } else {
+        const valid = validFacts.get(instrumentId);
+        if (valid) {
+          usableFacts.set(instrumentId, valid);
+        } else {
+          usableFacts.set(instrumentId, latest);
+        }
+      }
     }
-    const factIds = [...latestFacts.values()].map((fact) => fact.id);
+    const factIds = [
+      ...new Set(
+        [...latestFacts.values(), ...usableFacts.values()].map(
+          (fact) => fact.id,
+        ),
+      ),
+    ];
     const analyses = new Map<string, AnalysisRow>();
+    const lastCompleteAnalyses = new Map<string, AnalysisRow>();
     const sources = new Map<string, ReadModelSourceDto[]>();
     if (factIds.length > 0) {
       const placeholders = factIds
@@ -254,9 +295,42 @@ export class PortfolioReadModelService {
         .all<AnalysisRow>();
       for (const row of analysisResult.results)
         analyses.set(row.daily_market_fact_id, row);
-      const analysisIds = analysisResult.results.map(
-        (row) => row.daily_market_fact_id,
-      );
+      const instrumentIdsWithFacts = [...usableFacts.keys()];
+      const completePlaceholders = instrumentIdsWithFacts
+        .map((_id, index) => `?${index + 1}`)
+        .join(", ");
+      const completeDatePlaceholder = `?${instrumentIdsWithFacts.length + 1}`;
+      const completeResult = await this.db
+        .prepare(
+          `SELECT f.instrument_id, a.daily_market_fact_id,
+                  a.summary_zh_cn, a.status, a.error_code, a.error_message
+           FROM movement_analyses a
+           JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
+           WHERE a.status = 'complete'
+             AND f.instrument_id IN (${completePlaceholders})
+             AND f.movement_basis <> 'legacy_migration'
+             AND f.trading_date <= ${completeDatePlaceholder}
+             AND f.trading_date = (
+               SELECT MAX(previous_fact.trading_date)
+               FROM daily_market_facts previous_fact
+               JOIN movement_analyses previous_analysis
+                 ON previous_analysis.daily_market_fact_id = previous_fact.id
+               WHERE previous_fact.instrument_id = f.instrument_id
+                 AND previous_fact.movement_basis <> 'legacy_migration'
+                 AND previous_fact.trading_date <= ${completeDatePlaceholder}
+                 AND previous_analysis.status = 'complete'
+             )`,
+        )
+        .bind(...instrumentIdsWithFacts, input.today)
+        .all<CompleteAnalysisRow>();
+      for (const row of completeResult.results)
+        lastCompleteAnalyses.set(row.instrument_id, row);
+      const analysisIds = [
+        ...new Set([
+          ...analysisResult.results.map((row) => row.daily_market_fact_id),
+          ...completeResult.results.map((row) => row.daily_market_fact_id),
+        ]),
+      ];
       if (analysisIds.length > 0) {
         const sourcePlaceholders = analysisIds
           .map((_id, index) => `?${index + 1}`)
@@ -365,13 +439,27 @@ export class PortfolioReadModelService {
         orphanConflicts.push(conflict);
       }
       if (safeDecimal(quantityDecimal) === "0") continue;
-      const fact = latestFacts.get(instrument.instrument_id);
-      const analysis = fact ? analyses.get(fact.id) : undefined;
+      const latestFact = latestFacts.get(instrument.instrument_id);
+      const fact = usableFacts.get(instrument.instrument_id);
+      const currentAnalysis = latestFact
+        ? analyses.get(latestFact.id)
+        : undefined;
+      const fallbackAnalysis = lastCompleteAnalyses.get(
+        instrument.instrument_id,
+      );
+      const analysis =
+        currentAnalysis?.status === "complete"
+          ? currentAnalysis
+          : (fallbackAnalysis ?? currentAnalysis);
+      const analysisStatus = currentAnalysis?.status
+        ? currentAnalysis.status
+        : fallbackAnalysis
+          ? "complete"
+          : null;
       const movementPercent = fact
         ? safeDecimal(fact.movement_percent_decimal)
         : null;
-      const qualified =
-        fact?.status === "valid" ? qualifies(movementPercent) : null;
+      const qualified = fact ? qualifies(movementPercent) : null;
       const movement: PortfolioMovementDto | null = fact
         ? {
             tradingDate: fact.trading_date,
@@ -389,64 +477,78 @@ export class PortfolioReadModelService {
             qualified,
           }
         : null;
-      if (fact && fact.status !== "valid") {
+      if (latestFact && latestFact.status !== "valid") {
         conflicts.push({
-          code: fact.error_code ?? `market_fact_${fact.status}`,
+          code: latestFact.error_code ?? `market_fact_${latestFact.status}`,
           message:
-            fact.error_message ?? `The daily market fact is ${fact.status}.`,
+            latestFact.error_message ??
+            "The latest market fact is not valid; showing the last valid value.",
           instrumentId: instrument.instrument_id,
-          effectiveDate: fact.trading_date,
+          effectiveDate: latestFact.trading_date,
         });
       }
-      if (fact && fact.status === "valid" && movementPercent === null) {
+      if (
+        latestFact &&
+        latestFact.status === "valid" &&
+        movementPercent === null
+      ) {
         conflicts.push({
           code: "invalid_movement_decimal",
           message: "The stored movement percentage is not a valid decimal.",
           instrumentId: instrument.instrument_id,
-          effectiveDate: fact.trading_date,
+          effectiveDate: latestFact.trading_date,
         });
       }
-      if (fact?.movement_basis === "legacy_migration") {
+      if (latestFact?.movement_basis === "legacy_migration") {
         conflicts.push({
           code: "legacy_movement_basis",
           message:
-            "This movement was migrated before split-adjusted facts were available.",
+            "The latest market fact uses a legacy basis and is awaiting normalized refresh.",
           instrumentId: instrument.instrument_id,
-          effectiveDate: fact.trading_date,
+          effectiveDate: latestFact.trading_date,
         });
       }
-      if (fact && qualified === true && analysis?.status !== "complete") {
+      if (
+        fact &&
+        qualified === true &&
+        currentAnalysis?.status !== "complete"
+      ) {
         conflicts.push({
           code:
-            analysis?.error_code ??
-            (analysis
-              ? `movement_analysis_${analysis.status}`
+            currentAnalysis?.error_code ??
+            (currentAnalysis
+              ? `movement_analysis_${currentAnalysis.status}`
               : "movement_analysis_unavailable"),
           message:
-            analysis?.error_message ??
-            (analysis
-              ? `The movement analysis is ${analysis.status}.`
+            currentAnalysis?.error_message ??
+            (currentAnalysis
+              ? `The movement analysis is ${currentAnalysis.status}.`
               : "No movement analysis is available."),
           instrumentId: instrument.instrument_id,
           effectiveDate: fact.trading_date,
         });
       }
       const summary =
-        fact?.status === "valid" &&
-        qualified === true &&
-        analysis?.status === "complete"
+        fact && qualified === true && analysis?.status === "complete"
           ? analysis.summary_zh_cn
           : null;
       const valuation =
-        fact?.status === "valid"
+        fact && fact.movement_basis !== "legacy_migration"
           ? multiplyDecimal(quantityDecimal, fact.current_raw_close_decimal)
           : null;
+      const marketFreshness = latestFact
+        ? latestFact.status === "valid"
+          ? "fresh"
+          : latestFact.status
+        : "unavailable";
       const freshness =
-        factFreshness(fact) === "fresh" && qualified === true
-          ? analysis?.status === "complete"
-            ? "fresh"
-            : (analysis?.status ?? "unavailable")
-          : factFreshness(fact);
+        latestFact?.movement_basis === "legacy_migration"
+          ? "pending"
+          : marketFreshness === "fresh" && qualified === true
+            ? currentAnalysis?.status === "complete" || fallbackAnalysis
+              ? "fresh"
+              : (currentAnalysis?.status ?? "unavailable")
+            : marketFreshness;
       const position: PortfolioPositionDto = {
         instrumentId: instrument.instrument_id,
         symbol: instrument.symbol,
@@ -455,18 +557,16 @@ export class PortfolioReadModelService {
         currency: instrument.currency,
         quantityDecimal,
         valuationDecimal: valuation,
-        latestTradingDate: fact?.trading_date ?? null,
+        latestTradingDate: latestFact?.trading_date ?? null,
         currentRawCloseDecimal:
-          fact?.status === "valid"
+          fact && fact.movement_basis !== "legacy_migration"
             ? safeDecimal(fact.current_raw_close_decimal)
             : null,
         movement,
         summaryZhCn: summary,
-        analysisStatus: analysisStatus(fact, analysis),
+        analysisStatus,
         sources:
-          fact?.status === "valid" &&
-          qualified === true &&
-          analysis?.status === "complete"
+          fact && qualified === true && analysis?.status === "complete"
             ? (sources.get(fact?.id ?? "") ?? [])
             : [],
         freshness,
@@ -516,7 +616,7 @@ export class PortfolioReadModelService {
       ...positions.flatMap((position) => position.conflicts),
     ];
     const actualTradingDates = [
-      ...new Set(factResult.results.map((row) => row.trading_date)),
+      ...new Set(latestFactResult.results.map((row) => row.trading_date)),
     ].sort();
     const freshness = positions.some(
       (position) => position.freshness === "error",

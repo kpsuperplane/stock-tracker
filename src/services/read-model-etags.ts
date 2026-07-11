@@ -81,7 +81,7 @@ export const monthKeysForRange = (
   startDate: string,
   endDate: string,
 ): string[] => {
-  const keys = new Set<string>(["latest"]);
+  const keys = new Set<string>();
   let cursor = startDate.slice(0, 7);
   const end = endDate.slice(0, 7);
   while (cursor <= end) {
