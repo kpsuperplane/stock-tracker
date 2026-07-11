@@ -132,15 +132,17 @@ export class PipelineQueueConsumer {
       batch.processingLeaseUntil !== null &&
       batch.processingLeaseUntil <= timestamp
     ) {
-      await this.batches.reclaimExpiredProcessing({
+      const recovered = await this.batches.reclaimExpiredProcessing({
         id: batch.id,
         expectedLeaseUntil: batch.processingLeaseUntil,
         now: timestamp,
       });
-      await this.workItems.requeueBatchItems({
-        dispatchBatchId: batch.id,
-        now: timestamp,
-      });
+      if (recovered) {
+        await this.workItems.requeueBatchItems({
+          dispatchBatchId: batch.id,
+          now: timestamp,
+        });
+      }
     }
     const current = await this.batches.findById(batch.id);
     if (
