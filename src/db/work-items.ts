@@ -1,3 +1,5 @@
+import { FactRevisionBucketRepository } from "./revision-buckets";
+
 export interface PlanningWorkRecord {
   id: string;
   pipelineJobId: string;
@@ -123,7 +125,11 @@ const allowedTransitions: Readonly<
 };
 
 export class WorkItemRepository {
-  constructor(private readonly db: D1Database) {}
+  private readonly revisions: FactRevisionBucketRepository;
+
+  constructor(private readonly db: D1Database) {
+    this.revisions = new FactRevisionBucketRepository(db);
+  }
 
   createPlanningStatement(work: PlanningWorkRecord): D1PreparedStatement {
     if (!work.deterministicKey.startsWith(`job:${work.pipelineJobId}:`)) {
@@ -202,7 +208,11 @@ export class WorkItemRepository {
   }
 
   async ensureGlobal(work: GlobalFactWorkRecord): Promise<WorkItemRecord> {
-    await this.createGlobalStatement(work).run();
+    await this.db.batch([
+      this.createGlobalStatement(work),
+      this.revisions.bumpWorkItemStatement(work.id, work.updatedAt),
+      this.revisions.bumpLatestForWorkItemStatement(work.id, work.updatedAt),
+    ]);
     const existing = await this.findByDeterministicKey(work.deterministicKey);
     if (!existing) throw new Error("global_work_missing_after_insert");
     return existing;
@@ -469,13 +479,18 @@ export class WorkItemRepository {
       input.id,
       input.from,
     ];
-    const result = await (input.from === "dispatching"
-      ? statement.bind(...bindings, input.expectedDispatchLeaseUntil)
-      : input.from === "processing"
-        ? statement.bind(...bindings, input.expectedProcessingLeaseUntil)
-        : statement.bind(...bindings)
-    ).run();
-    return result.meta.changes === 1;
+    const statementWithBindings =
+      input.from === "dispatching"
+        ? statement.bind(...bindings, input.expectedDispatchLeaseUntil)
+        : input.from === "processing"
+          ? statement.bind(...bindings, input.expectedProcessingLeaseUntil)
+          : statement.bind(...bindings);
+    const results = await this.db.batch([
+      statementWithBindings,
+      this.revisions.bumpWorkItemStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemStatement(input.id, input.now),
+    ]);
+    return results[0]?.meta.changes === 1;
   }
 
   async claimForDispatch(input: {
@@ -483,18 +498,21 @@ export class WorkItemRepository {
     now: string;
     leaseUntil: string;
   }): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'dispatching', dispatch_lease_until = ?1,
-             attempt_count = attempt_count + 1, updated_at = ?2
-         WHERE id = ?3 AND scope = 'global_fact' AND state = 'pending'
-           AND attempt_count < max_attempts
-           AND (available_at IS NULL OR available_at <= ?2)`,
-      )
-      .bind(input.leaseUntil, input.now, input.id)
-      .run();
-    return result.meta.changes === 1;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'dispatching', dispatch_lease_until = ?1,
+               attempt_count = attempt_count + 1, updated_at = ?2
+           WHERE id = ?3 AND scope = 'global_fact' AND state = 'pending'
+             AND attempt_count < max_attempts
+             AND (available_at IS NULL OR available_at <= ?2)`,
+        )
+        .bind(input.leaseUntil, input.now, input.id),
+      this.revisions.bumpWorkItemStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemStatement(input.id, input.now),
+    ]);
+    return results[0]?.meta.changes === 1;
   }
 
   async recoverExpiredDispatch(input: {
@@ -502,16 +520,19 @@ export class WorkItemRepository {
     expectedLeaseUntil: string;
     now: string;
   }): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
-         WHERE id = ?2 AND state = 'dispatching'
-           AND dispatch_lease_until IS ?3 AND dispatch_lease_until <= ?1`,
-      )
-      .bind(input.now, input.id, input.expectedLeaseUntil)
-      .run();
-    return result.meta.changes === 1;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
+           WHERE id = ?2 AND state = 'dispatching'
+             AND dispatch_lease_until IS ?3 AND dispatch_lease_until <= ?1`,
+        )
+        .bind(input.now, input.id, input.expectedLeaseUntil),
+      this.revisions.bumpWorkItemStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemStatement(input.id, input.now),
+    ]);
+    return results[0]?.meta.changes === 1;
   }
 
   async recoverOrphanedDispatches(now: string): Promise<number> {
@@ -559,7 +580,13 @@ export class WorkItemRepository {
            )`,
       )
       .bind(now);
-    const results = await this.db.batch([terminalize, failLinks, reclaim]);
+    const results = await this.db.batch([
+      terminalize,
+      failLinks,
+      reclaim,
+      this.revisions.bumpWorkItemsUpdatedAtStatement(now),
+      this.revisions.bumpLatestForWorkItemsUpdatedAtStatement(now),
+    ]);
     return (results[0]?.meta.changes ?? 0) + (results[2]?.meta.changes ?? 0);
   }
 
@@ -568,16 +595,19 @@ export class WorkItemRepository {
     expectedLeaseUntil: string;
     now: string;
   }): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
-         WHERE id = ?2 AND scope = 'global_fact' AND state = 'dispatching'
-           AND dispatch_lease_until IS ?3`,
-      )
-      .bind(input.now, input.id, input.expectedLeaseUntil)
-      .run();
-    return result.meta.changes === 1;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
+           WHERE id = ?2 AND scope = 'global_fact' AND state = 'dispatching'
+             AND dispatch_lease_until IS ?3`,
+        )
+        .bind(input.now, input.id, input.expectedLeaseUntil),
+      this.revisions.bumpWorkItemStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemStatement(input.id, input.now),
+    ]);
+    return results[0]?.meta.changes === 1;
   }
 
   async claimForBatchProcessing(input: {
@@ -585,41 +615,59 @@ export class WorkItemRepository {
     now: string;
     leaseUntil: string;
   }): Promise<number> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'processing', processing_lease_until = ?1,
-             dispatch_lease_until = NULL, updated_at = ?2
-         WHERE scope = 'global_fact'
-           AND state IN ('dispatching', 'queued')
-           AND id IN (
-             SELECT work_item_id FROM dispatch_batch_items
-             WHERE dispatch_batch_id = ?3
-           )`,
-      )
-      .bind(input.leaseUntil, input.now, input.dispatchBatchId)
-      .run();
-    return result.meta.changes;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'processing', processing_lease_until = ?1,
+               dispatch_lease_until = NULL, updated_at = ?2
+           WHERE scope = 'global_fact'
+             AND state IN ('dispatching', 'queued')
+             AND id IN (
+               SELECT work_item_id FROM dispatch_batch_items
+               WHERE dispatch_batch_id = ?3
+             )`,
+        )
+        .bind(input.leaseUntil, input.now, input.dispatchBatchId),
+      this.revisions.bumpWorkItemsForBatchStatement(
+        input.dispatchBatchId,
+        input.now,
+      ),
+      this.revisions.bumpLatestForWorkItemsForBatchStatement(
+        input.dispatchBatchId,
+        input.now,
+      ),
+    ]);
+    return results[0]?.meta.changes ?? 0;
   }
 
   async queueBatchItems(input: {
     dispatchBatchId: string;
     now: string;
   }): Promise<number> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'queued', dispatch_lease_until = NULL,
-             updated_at = ?1
-         WHERE scope = 'global_fact' AND state = 'dispatching'
-           AND id IN (
-             SELECT work_item_id FROM dispatch_batch_items
-             WHERE dispatch_batch_id = ?2
-           )`,
-      )
-      .bind(input.now, input.dispatchBatchId)
-      .run();
-    return result.meta.changes;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'queued', dispatch_lease_until = NULL,
+               updated_at = ?1
+           WHERE scope = 'global_fact' AND state = 'dispatching'
+             AND id IN (
+               SELECT work_item_id FROM dispatch_batch_items
+               WHERE dispatch_batch_id = ?2
+             )`,
+        )
+        .bind(input.now, input.dispatchBatchId),
+      this.revisions.bumpWorkItemsForBatchStatement(
+        input.dispatchBatchId,
+        input.now,
+      ),
+      this.revisions.bumpLatestForWorkItemsForBatchStatement(
+        input.dispatchBatchId,
+        input.now,
+      ),
+    ]);
+    return results[0]?.meta.changes ?? 0;
   }
 
   async requeueBatchItems(input: {
@@ -627,40 +675,56 @@ export class WorkItemRepository {
     now: string;
     expectedLeaseUntil?: string;
   }): Promise<number> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'queued', processing_lease_until = NULL,
-             updated_at = ?1
-         WHERE scope = 'global_fact' AND state = 'processing'
-           AND id IN (
-             SELECT work_item_id FROM dispatch_batch_items
-             WHERE dispatch_batch_id = ?2
-           )
-           AND (?3 IS NULL OR processing_lease_until IS ?3)`,
-      )
-      .bind(input.now, input.dispatchBatchId, input.expectedLeaseUntil ?? null)
-      .run();
-    return result.meta.changes;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'queued', processing_lease_until = NULL,
+               updated_at = ?1
+           WHERE scope = 'global_fact' AND state = 'processing'
+             AND id IN (
+               SELECT work_item_id FROM dispatch_batch_items
+               WHERE dispatch_batch_id = ?2
+             )
+             AND (?3 IS NULL OR processing_lease_until IS ?3)`,
+        )
+        .bind(
+          input.now,
+          input.dispatchBatchId,
+          input.expectedLeaseUntil ?? null,
+        ),
+      this.revisions.bumpWorkItemsForBatchStatement(
+        input.dispatchBatchId,
+        input.now,
+      ),
+      this.revisions.bumpLatestForWorkItemsForBatchStatement(
+        input.dispatchBatchId,
+        input.now,
+      ),
+    ]);
+    return results[0]?.meta.changes ?? 0;
   }
 
   async recoverExpiredProcessing(input: {
     now: string;
     expectedLeaseUntil?: string;
   }): Promise<number> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'queued', processing_lease_until = NULL,
-             updated_at = ?1
-         WHERE scope = 'global_fact' AND state = 'processing'
-           AND processing_lease_until IS NOT NULL
-           AND processing_lease_until <= ?1
-           AND (?2 IS NULL OR processing_lease_until IS ?2)`,
-      )
-      .bind(input.now, input.expectedLeaseUntil ?? null)
-      .run();
-    return result.meta.changes;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'queued', processing_lease_until = NULL,
+               updated_at = ?1
+           WHERE scope = 'global_fact' AND state = 'processing'
+             AND processing_lease_until IS NOT NULL
+             AND processing_lease_until <= ?1
+             AND (?2 IS NULL OR processing_lease_until IS ?2)`,
+        )
+        .bind(input.now, input.expectedLeaseUntil ?? null),
+      this.revisions.bumpWorkItemsUpdatedAtStatement(input.now),
+      this.revisions.bumpLatestForWorkItemsUpdatedAtStatement(input.now),
+    ]);
+    return results[0]?.meta.changes ?? 0;
   }
 
   async terminalizeBatchItems(input: {
@@ -671,55 +735,64 @@ export class WorkItemRepository {
     expectedLeaseUntil?: string;
     expectedDispatchLeaseUntil?: string;
   }): Promise<number> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'terminal', processing_lease_until = NULL,
-             terminal_error_code = ?1, terminal_error_message = ?2,
-             completed_at = ?3, updated_at = ?3
-         WHERE scope = 'global_fact' AND state IN ('processing', 'queued', 'dispatching')
-           AND id IN (
-             SELECT work_item_id FROM dispatch_batch_items
-             WHERE dispatch_batch_id = ?4
-           )
-           AND (
-             (
-               ?5 IS NULL AND ?6 IS NULL
-               AND EXISTS (
-                 SELECT 1 FROM dispatch_batches batch
-                 WHERE batch.id = ?4 AND batch.state = 'queued'
-               )
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'terminal', processing_lease_until = NULL,
+               terminal_error_code = ?1, terminal_error_message = ?2,
+               completed_at = ?3, updated_at = ?3
+           WHERE scope = 'global_fact' AND state IN ('processing', 'queued', 'dispatching')
+             AND id IN (
+               SELECT work_item_id FROM dispatch_batch_items
+               WHERE dispatch_batch_id = ?4
              )
-             OR (
-               ?5 IS NOT NULL
-               AND processing_lease_until IS ?5
-               AND EXISTS (
-                 SELECT 1 FROM dispatch_batches batch
-                 WHERE batch.id = ?4 AND batch.state = 'processing'
-                   AND batch.processing_lease_until IS ?5
+             AND (
+               (
+                 ?5 IS NULL AND ?6 IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM dispatch_batches batch
+                   WHERE batch.id = ?4 AND batch.state = 'queued'
+                 )
                )
-             )
-             OR (
-               ?6 IS NOT NULL
-               AND (dispatch_lease_until IS ?6 OR state = 'queued')
-               AND EXISTS (
-                 SELECT 1 FROM dispatch_batches batch
-                 WHERE batch.id = ?4 AND batch.state = 'dispatching'
-                   AND batch.dispatch_lease_until IS ?6
+               OR (
+                 ?5 IS NOT NULL
+                 AND processing_lease_until IS ?5
+                 AND EXISTS (
+                   SELECT 1 FROM dispatch_batches batch
+                   WHERE batch.id = ?4 AND batch.state = 'processing'
+                     AND batch.processing_lease_until IS ?5
+                 )
                )
-             )
-           )`,
-      )
-      .bind(
-        input.errorCode,
-        input.errorMessage,
-        input.now,
+               OR (
+                 ?6 IS NOT NULL
+                 AND (dispatch_lease_until IS ?6 OR state = 'queued')
+                 AND EXISTS (
+                   SELECT 1 FROM dispatch_batches batch
+                   WHERE batch.id = ?4 AND batch.state = 'dispatching'
+                     AND batch.dispatch_lease_until IS ?6
+                 )
+               )
+             )`,
+        )
+        .bind(
+          input.errorCode,
+          input.errorMessage,
+          input.now,
+          input.dispatchBatchId,
+          input.expectedLeaseUntil ?? null,
+          input.expectedDispatchLeaseUntil ?? null,
+        ),
+      this.revisions.bumpWorkItemsForBatchStatement(
         input.dispatchBatchId,
-        input.expectedLeaseUntil ?? null,
-        input.expectedDispatchLeaseUntil ?? null,
-      )
-      .run();
-    return result.meta.changes;
+        input.now,
+      ),
+      this.revisions.bumpLatestForWorkItemsForBatchStatement(
+        input.dispatchBatchId,
+        input.now,
+      ),
+    ]);
+    return results[0]?.meta.changes ?? 0;
   }
 
   async terminalizeUnsettledBatchItems(input: {
@@ -728,27 +801,36 @@ export class WorkItemRepository {
     errorCode: string;
     errorMessage: string;
   }): Promise<number> {
-    const result = await this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'terminal', dispatch_lease_until = NULL,
-             processing_lease_until = NULL, terminal_error_code = ?1,
-             terminal_error_message = ?2, completed_at = ?3, updated_at = ?3
-         WHERE scope = 'global_fact'
-           AND state IN ('dispatching', 'queued', 'processing')
-           AND id IN (
-             SELECT work_item_id FROM dispatch_batch_items
-             WHERE dispatch_batch_id = ?4
-           )`,
-      )
-      .bind(
-        input.errorCode,
-        input.errorMessage,
-        input.now,
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE work_items
+           SET state = 'terminal', dispatch_lease_until = NULL,
+               processing_lease_until = NULL, terminal_error_code = ?1,
+               terminal_error_message = ?2, completed_at = ?3, updated_at = ?3
+           WHERE scope = 'global_fact'
+             AND state IN ('dispatching', 'queued', 'processing')
+             AND id IN (
+               SELECT work_item_id FROM dispatch_batch_items
+               WHERE dispatch_batch_id = ?4
+             )`,
+        )
+        .bind(
+          input.errorCode,
+          input.errorMessage,
+          input.now,
+          input.dispatchBatchId,
+        ),
+      this.revisions.bumpWorkItemsForBatchStatement(
         input.dispatchBatchId,
-      )
-      .run();
-    return result.meta.changes;
+        input.now,
+      ),
+      this.revisions.bumpLatestForWorkItemsForBatchStatement(
+        input.dispatchBatchId,
+        input.now,
+      ),
+    ]);
+    return results[0]?.meta.changes ?? 0;
   }
 
   async markJobLinksForBatch(input: {

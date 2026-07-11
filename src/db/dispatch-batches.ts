@@ -1,3 +1,4 @@
+import { FactRevisionBucketRepository } from "./revision-buckets";
 import type { WorkItemRecord } from "./work-items";
 
 export type DispatchBatchState =
@@ -137,7 +138,11 @@ const transitions: Readonly<
 };
 
 export class DispatchBatchRepository {
-  constructor(private readonly db: D1Database) {}
+  private readonly revisions: FactRevisionBucketRepository;
+
+  constructor(private readonly db: D1Database) {
+    this.revisions = new FactRevisionBucketRepository(db);
+  }
 
   async createForWork(input: {
     batch: DispatchBatchRecord;
@@ -241,6 +246,14 @@ export class DispatchBatchRepository {
              VALUES (?1, ?2, ?3)`,
           )
           .bind(input.batch.id, item.id, input.batch.createdAt),
+      ),
+      this.revisions.bumpWorkItemsForBatchStatement(
+        input.batch.id,
+        input.batch.createdAt,
+      ),
+      this.revisions.bumpLatestForWorkItemsForBatchStatement(
+        input.batch.id,
+        input.batch.createdAt,
       ),
     ]);
   }
@@ -694,6 +707,11 @@ export class DispatchBatchRepository {
       batchStatement.bind(...batchBindings),
       itemStatement,
       linkStatement,
+      this.revisions.bumpWorkItemsForBatchStatement(input.id, input.now),
+      this.revisions.bumpLatestForWorkItemsForBatchStatement(
+        input.id,
+        input.now,
+      ),
     ]);
     return results[0]?.meta.changes === 1;
   }

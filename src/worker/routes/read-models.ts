@@ -100,6 +100,20 @@ const basisRevision = async (db: D1Database): Promise<number> =>
       .first<{ revision: number }>()
   )?.revision ?? 0;
 
+const latestFactDate = async (
+  db: D1Database,
+  asOfDate: string,
+): Promise<string | null> =>
+  (
+    await db
+      .prepare(
+        `SELECT MAX(trading_date) AS trading_date
+         FROM daily_market_facts WHERE trading_date <= ?1`,
+      )
+      .bind(asOfDate)
+      .first<{ trading_date: string | null }>()
+  )?.trading_date ?? null;
+
 const setTagHeaders = (
   context: Context<{ Bindings: Env }>,
   tag: string,
@@ -130,54 +144,6 @@ const monthRange = (date: string): { start: string; end: string } => {
   return { start, end };
 };
 
-const calendarStateFingerprint = async (
-  db: D1Database,
-  startDate: string,
-  endDate: string,
-): Promise<string> => {
-  const [pendingFacts, pendingSplits, pendingCoverage] = await Promise.all([
-    db
-      .prepare(
-        `SELECT COUNT(*) AS count, MAX(updated_at) AS updated_at,
-                SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END) AS pending_count,
-                SUM(CASE WHEN state = 'dispatching' THEN 1 ELSE 0 END) AS dispatching_count,
-                SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END) AS queued_count,
-                SUM(CASE WHEN state = 'processing' THEN 1 ELSE 0 END) AS processing_count
-         FROM work_items
-         WHERE scope = 'global_fact' AND work_type = 'market_fact'
-           AND effective_date >= ?1 AND effective_date <= ?2
-           AND state NOT IN ('complete', 'terminal')`,
-      )
-      .bind(startDate, endDate)
-      .first<Record<string, number | string | null>>(),
-    db
-      .prepare(
-        `SELECT COUNT(*) AS count, MAX(updated_at) AS updated_at,
-                SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END) AS candidate_count,
-                SUM(CASE WHEN status = 'quarantined' THEN 1 ELSE 0 END) AS quarantined_count
-         FROM corporate_actions
-         WHERE status IN ('candidate', 'quarantined')
-           AND effective_date >= ?1 AND effective_date <= ?2`,
-      )
-      .bind(startDate, endDate)
-      .first<Record<string, number | string | null>>(),
-    db
-      .prepare(
-        `SELECT COUNT(*) AS count, MAX(updated_at) AS updated_at,
-                SUM(CASE WHEN status = 'review_required' THEN 1 ELSE 0 END) AS review_required_count,
-                SUM(CASE WHEN status = 'conflict' THEN 1 ELSE 0 END) AS conflict_count,
-                SUM(CASE WHEN status = 'refreshing' THEN 1 ELSE 0 END) AS refreshing_count,
-                SUM(CASE WHEN status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable_count
-         FROM corporate_action_coverage
-         WHERE status IN ('review_required', 'conflict', 'refreshing', 'unavailable')
-           AND requested_start_date <= ?2 AND requested_end_date >= ?1`,
-      )
-      .bind(startDate, endDate)
-      .first<Record<string, number | string | null>>(),
-  ]);
-  return JSON.stringify({ pendingFacts, pendingSplits, pendingCoverage });
-};
-
 export const portfolioRoutes = new Hono<{ Bindings: Env }>();
 export const calendarRoutes = new Hono<{ Bindings: Env }>();
 export const jobRoutes = new Hono<{ Bindings: Env }>();
@@ -201,12 +167,21 @@ portfolioRoutes.get("/", async (context) => {
       .strict(),
   );
   const positionRevision = await basisRevision(context.env.DB);
+  const currentDate = easternMarketDate(new Date());
+  const currentLatestDate = await latestFactDate(context.env.DB, currentDate);
+  const currentLatestMonth =
+    currentLatestDate?.slice(0, 7) ?? currentDate.slice(0, 7);
+  const includeLatestBucket =
+    !query.today || today.slice(0, 7) >= currentLatestMonth;
   const tag = await readModelTag(context.env.DB, {
     model: "portfolio",
     locale,
     positionBasisRevision: positionRevision,
     representationKey: JSON.stringify({ today, limit, cursor }),
-    bucketKeys: ["latest"],
+    bucketKeys: [
+      ...(includeLatestBucket ? ["latest"] : []),
+      ...(query.today ? [today.slice(0, 7)] : []),
+    ],
   });
   setTagHeaders(context, tag.etag, positionRevision);
   if (matchesIfNoneMatch(context.req.header("If-None-Match"), tag.etag)) {
@@ -287,11 +262,10 @@ calendarRoutes.get("/", async (context) => {
   );
   const limit = parseLimit(query.limit, 500, 500);
   const positionRevision = await basisRevision(context.env.DB);
-  const stateFingerprint = await calendarStateFingerprint(
-    context.env.DB,
-    startDate,
-    endDate,
-  );
+  const latestDate = await latestFactDate(context.env.DB, asOfDate);
+  const latestIntersectsRange =
+    (asOfDate >= startDate && asOfDate <= endDate) ||
+    (latestDate !== null && latestDate >= startDate && latestDate <= endDate);
   const tag = await readModelTag(context.env.DB, {
     model: "calendar",
     locale,
@@ -303,9 +277,11 @@ calendarRoutes.get("/", async (context) => {
       view,
       limit,
       cursor,
-      stateFingerprint,
     }),
-    bucketKeys: ["latest", ...monthKeysForRange(startDate, endDate)],
+    bucketKeys: [
+      ...(latestIntersectsRange ? ["latest"] : []),
+      ...monthKeysForRange(startDate, endDate),
+    ],
   });
   setTagHeaders(context, tag.etag, positionRevision);
   if (matchesIfNoneMatch(context.req.header("If-None-Match"), tag.etag)) {

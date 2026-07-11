@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { WorkItemRepository } from "../../src/db/work-items";
 import type { Env } from "../../src/worker/env";
 
 const now = "2026-07-10T12:00:00.000Z";
@@ -118,6 +119,79 @@ describe("portfolio and calendar read models", () => {
     );
   });
 
+  it("chunks read-model queries when more than one hundred instruments are held", async () => {
+    const statements: D1PreparedStatement[] = [];
+    const flush = async () => {
+      if (statements.length === 0) return;
+      await env.DB.batch(statements.splice(0, statements.length));
+    };
+    for (let index = 0; index < 101; index += 1) {
+      const suffix = String(index).padStart(3, "0");
+      const instrumentId = `bulk-${suffix}`;
+      const symbol = `BULK${suffix}`;
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO instruments
+           (id, symbol, company_name, exchange, currency, instrument_type,
+            provider, provider_symbol, created_at, updated_at)
+           VALUES (?1, ?2, ?3, 'NYSE', 'USD', 'stock', 'yahoo', ?2, ?4, ?4)`,
+        ).bind(instrumentId, symbol, `${symbol} Corp`, now),
+        env.DB.prepare(
+          `INSERT INTO transactions
+           (id, instrument_id, trade_date, side, quantity_decimal,
+            price_decimal, revision, created_at, updated_at)
+           VALUES (?1, ?2, '2026-01-02', 'buy', '1', '10', 1, ?3, ?3)`,
+        ).bind(`bulk-buy-${suffix}`, instrumentId, now),
+        env.DB.prepare(
+          `INSERT INTO daily_market_facts
+           (id, instrument_id, trading_date, previous_trading_date,
+            previous_raw_close_decimal, current_raw_close_decimal,
+            crossing_split_numerator, crossing_split_denominator,
+            split_adjusted_previous_close_decimal, movement_amount_decimal,
+            movement_percent_decimal, raw_close_difference_decimal,
+            movement_basis, provider, provider_revision, retrieved_at, status,
+            created_at, updated_at)
+           VALUES (?1, ?2, '2026-07-09', '2026-07-08', '10', '11', '1', '1',
+                   '10', '1', '10', '1', 'split_adjusted_price_return',
+                   'yahoo', 'r1', ?3, 'valid', ?3, ?3)`,
+        ).bind(`bulk-fact-${suffix}`, instrumentId, now),
+      );
+      if (statements.length >= 60) await flush();
+    }
+    await flush();
+
+    const portfolioResponse = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-07-10&limit=100", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(portfolioResponse.status).toBe(200);
+    const portfolioPayload = await portfolioResponse.json<{
+      portfolio: {
+        positions: Array<Record<string, unknown>>;
+        nextCursor: string | null;
+      };
+    }>();
+    expect(portfolioPayload.portfolio.positions).toHaveLength(100);
+    expect(portfolioPayload.portfolio.nextCursor).not.toBeNull();
+
+    const calendarResponse = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10&limit=100",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(calendarResponse.status).toBe(200);
+    const calendarPayload = await calendarResponse.json<{
+      calendar: {
+        movers: Array<Record<string, unknown>>;
+        nextCursor: string | null;
+      };
+    }>();
+    expect(calendarPayload.calendar.movers).toHaveLength(100);
+    expect(calendarPayload.calendar.nextCursor).not.toBeNull();
+  });
+
   it("isolates read-model ETags to the buckets each representation reads", async () => {
     const portfolioResponse = await exports.default.fetch(
       new Request("http://local/api/portfolio?today=2026-07-10", {
@@ -156,6 +230,53 @@ describe("portfolio and calendar read models", () => {
       }),
     );
     expect(portfolioLatest.status).toBe(200);
+
+    const historicalPortfolio = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-01-10", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    const historicalPortfolioTag =
+      historicalPortfolio.headers.get("ETag") ?? "";
+    await env.DB.prepare(
+      `UPDATE fact_revision_buckets
+       SET revision = revision + 1, updated_at = ?1
+       WHERE bucket_key = 'latest'`,
+    )
+      .bind(now)
+      .run();
+    const historicalUnrelated = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-01-10", {
+        headers: {
+          Authorization: authorization,
+          "If-None-Match": historicalPortfolioTag,
+        },
+      }),
+    );
+    expect(historicalUnrelated.status).toBe(304);
+
+    const futurePortfolio = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-08-10", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    const futurePortfolioTag = futurePortfolio.headers.get("ETag") ?? "";
+    await env.DB.prepare(
+      `UPDATE fact_revision_buckets
+       SET revision = revision + 1, updated_at = ?1
+       WHERE bucket_key = 'latest'`,
+    )
+      .bind(now)
+      .run();
+    const futureLatest = await exports.default.fetch(
+      new Request("http://local/api/portfolio?today=2026-08-10", {
+        headers: {
+          Authorization: authorization,
+          "If-None-Match": futurePortfolioTag,
+        },
+      }),
+    );
+    expect(futureLatest.status).toBe(200);
 
     const calendarResponse = await exports.default.fetch(
       new Request(
@@ -201,6 +322,72 @@ describe("portfolio and calendar read models", () => {
       ),
     );
     expect(calendarLatest.status).toBe(200);
+
+    await insertInstrument({
+      id: "etag-state-1",
+      symbol: "ETAG.STATE",
+      currency: "CAD",
+    });
+    await env.DB.prepare(
+      `INSERT INTO work_items
+       (id, scope, work_type, instrument_id, effective_date,
+        dependency_revision, deterministic_key, state, priority, max_attempts,
+        created_at, updated_at)
+       VALUES ('etag-june', 'global_fact', 'market_fact', 'etag-state-1',
+               '2026-06-10', 'r1', 'etag-june', 'queued', 1, 3, ?1, ?1),
+              ('etag-july', 'global_fact', 'market_fact', 'etag-state-1',
+               '2026-07-10', 'r1', 'etag-july', 'queued', 1, 3, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    const isolatedCalendar = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    const isolatedTag = isolatedCalendar.headers.get("ETag") ?? "";
+    const workItems = new WorkItemRepository(env.DB);
+    expect(
+      await workItems.transition({
+        id: "etag-june",
+        from: "queued",
+        to: "pending",
+        now,
+      }),
+    ).toBe(true);
+    const unrelatedState = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+        {
+          headers: {
+            Authorization: authorization,
+            "If-None-Match": isolatedTag,
+          },
+        },
+      ),
+    );
+    expect(unrelatedState.status).toBe(304);
+    expect(
+      await workItems.transition({
+        id: "etag-july",
+        from: "queued",
+        to: "pending",
+        now,
+      }),
+    ).toBe(true);
+    const relatedState = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+        {
+          headers: {
+            Authorization: authorization,
+            "If-None-Match": isolatedTag,
+          },
+        },
+      ),
+    );
+    expect(relatedState.status).toBe(200);
   });
 
   it("derives quantities, raw-close valuation, movement, Chinese summary, and native totals", async () => {
@@ -646,9 +833,20 @@ describe("portfolio and calendar read models", () => {
         }),
       ]),
     );
-    await env.DB.prepare(
-      "UPDATE work_items SET state = 'complete' WHERE id = 'pending-fact'",
-    ).run();
+    const workItems = new WorkItemRepository(env.DB);
+    await workItems.transition({
+      id: "pending-fact",
+      from: "queued",
+      to: "pending",
+      now,
+    });
+    const transitioned = await workItems.transition({
+      id: "pending-fact",
+      from: "pending",
+      to: "complete",
+      now,
+    });
+    expect(transitioned).toBe(true);
     const pendingChanged = await exports.default.fetch(
       new Request(
         "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10&view=month",

@@ -9,6 +9,7 @@ import {
   type LedgerMutationKind,
   PositionBasisRepository,
 } from "../db/position-basis";
+import { FactRevisionBucketRepository } from "../db/revision-buckets";
 import {
   type TransactionRecord,
   TransactionRepository,
@@ -213,6 +214,7 @@ export class LedgerService {
   private readonly instruments: InstrumentRepository;
   private readonly jobs: PipelineJobRepository;
   private readonly positionBasis: PositionBasisRepository;
+  private readonly revisions: FactRevisionBucketRepository;
   private readonly transactions: TransactionRepository;
   private readonly workItems: WorkItemRepository;
   private readonly now: () => Date;
@@ -223,6 +225,7 @@ export class LedgerService {
     this.instruments = new InstrumentRepository(dependencies.db);
     this.jobs = new PipelineJobRepository(dependencies.db);
     this.positionBasis = new PositionBasisRepository(dependencies.db);
+    this.revisions = new FactRevisionBucketRepository(dependencies.db);
     this.transactions = new TransactionRepository(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
     this.now = dependencies.now ?? (() => new Date());
@@ -386,6 +389,16 @@ export class LedgerService {
         intervals,
         timestamp,
       }),
+      this.revisions.bumpRangeStatement(
+        resolved.changedStartDate,
+        today,
+        timestamp,
+      ),
+      this.revisions.bumpLatestForRangeStatement(
+        resolved.changedStartDate,
+        today,
+        timestamp,
+      ),
     ];
     try {
       await this.dependencies.db.batch(statements);
@@ -532,6 +545,16 @@ export class LedgerService {
         intervals,
         timestamp,
       }),
+      this.revisions.bumpRangeStatement(
+        snapshot.range.requestedStartDate,
+        snapshot.range.requestedEndDate,
+        timestamp,
+      ),
+      this.revisions.bumpLatestForRangeStatement(
+        snapshot.range.requestedStartDate,
+        snapshot.range.requestedEndDate,
+        timestamp,
+      ),
     ];
     try {
       await this.dependencies.db.batch(statements);
@@ -1179,6 +1202,16 @@ export class LedgerService {
         intervals: [],
         timestamp: input.timestamp,
       }),
+      this.revisions.bumpRangeStatement(
+        input.changedStartDate,
+        input.snapshot.range.requestedEndDate,
+        input.timestamp,
+      ),
+      this.revisions.bumpLatestForRangeStatement(
+        input.changedStartDate,
+        input.snapshot.range.requestedEndDate,
+        input.timestamp,
+      ),
     ];
     try {
       await this.dependencies.db.batch(statements);
@@ -1228,6 +1261,16 @@ export class LedgerService {
         intervals: [],
         timestamp: input.timestamp,
       }),
+      this.revisions.bumpRangeStatement(
+        input.snapshot.range.requestedStartDate,
+        input.snapshot.range.requestedEndDate,
+        input.timestamp,
+      ),
+      this.revisions.bumpLatestForRangeStatement(
+        input.snapshot.range.requestedStartDate,
+        input.snapshot.range.requestedEndDate,
+        input.timestamp,
+      ),
     ];
     try {
       await this.dependencies.db.batch(statements);

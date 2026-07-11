@@ -149,11 +149,21 @@ const safeSourceUrl = (value: string | null): string | null => {
   }
 };
 
-const idChunks = (ids: readonly string[], size = 250): string[][] => {
+const idChunks = (ids: readonly string[], size = 99): string[][] => {
   const chunks: string[][] = [];
   for (let index = 0; index < ids.length; index += size)
     chunks.push(ids.slice(index, index + size));
   return chunks;
+};
+
+const collectIdChunks = async <T>(
+  ids: readonly string[],
+  read: (chunk: string[]) => Promise<readonly T[]>,
+  size = 99,
+): Promise<T[]> => {
+  const rows: T[] = [];
+  for (const chunk of idChunks(ids, size)) rows.push(...(await read(chunk)));
+  return rows;
 };
 
 const conflictForAction = (row: ActionRow): PortfolioConflictDto => ({
@@ -288,79 +298,82 @@ export class PortfolioReadModelService {
     const lastCompleteAnalyses = new Map<string, AnalysisRow>();
     const sources = new Map<string, ReadModelSourceDto[]>();
     if (factIds.length > 0) {
-      const analysisResults = await Promise.all(
-        idChunks(factIds).map((chunk) =>
-          this.db
-            .prepare(
-              `SELECT daily_market_fact_id, summary_zh_cn, status,
+      const analysisRows = await collectIdChunks(
+        factIds,
+        async (chunk) =>
+          (
+            await this.db
+              .prepare(
+                `SELECT daily_market_fact_id, summary_zh_cn, status,
                       error_code, error_message
                FROM movement_analyses
                WHERE daily_market_fact_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})`,
-            )
-            .bind(...chunk)
-            .all<AnalysisRow>(),
-        ),
+              )
+              .bind(...chunk)
+              .all<AnalysisRow>()
+          ).results,
       );
-      for (const row of analysisResults.flatMap((result) => result.results))
+      for (const row of analysisRows)
         analyses.set(row.daily_market_fact_id, row);
       const instrumentIdsWithFacts = [...usableFacts.keys()];
-      const completeResults = await Promise.all(
-        idChunks(instrumentIdsWithFacts).map((chunk) => {
+      const completeRows = await collectIdChunks(
+        instrumentIdsWithFacts,
+        async (chunk) => {
           const datePlaceholder = `?${chunk.length + 1}`;
-          return this.db
-            .prepare(
-              `SELECT f.instrument_id, a.daily_market_fact_id,
-                      a.summary_zh_cn, a.status, a.error_code, a.error_message
-               FROM movement_analyses a
-               JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-               WHERE a.status = 'complete'
-                 AND f.instrument_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})
-                 AND f.movement_basis <> 'legacy_migration'
-                 AND f.trading_date <= ${datePlaceholder}
-                 AND f.trading_date = (
-                   SELECT MAX(previous_fact.trading_date)
-                   FROM daily_market_facts previous_fact
-                   JOIN movement_analyses previous_analysis
-                     ON previous_analysis.daily_market_fact_id = previous_fact.id
-                   WHERE previous_fact.instrument_id = f.instrument_id
-                     AND previous_fact.movement_basis <> 'legacy_migration'
-                     AND previous_fact.trading_date <= ${datePlaceholder}
-                     AND previous_analysis.status = 'complete'
-                 )`,
-            )
-            .bind(...chunk, input.today)
-            .all<CompleteAnalysisRow>();
-        }),
+          return (
+            await this.db
+              .prepare(
+                `SELECT f.instrument_id, a.daily_market_fact_id,
+                        a.summary_zh_cn, a.status, a.error_code, a.error_message
+                 FROM movement_analyses a
+                 JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
+                 WHERE a.status = 'complete'
+                   AND f.instrument_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})
+                   AND f.movement_basis <> 'legacy_migration'
+                   AND f.trading_date <= ${datePlaceholder}
+                   AND f.trading_date = (
+                     SELECT MAX(previous_fact.trading_date)
+                     FROM daily_market_facts previous_fact
+                     JOIN movement_analyses previous_analysis
+                       ON previous_analysis.daily_market_fact_id = previous_fact.id
+                     WHERE previous_fact.instrument_id = f.instrument_id
+                       AND previous_fact.movement_basis <> 'legacy_migration'
+                       AND previous_fact.trading_date <= ${datePlaceholder}
+                       AND previous_analysis.status = 'complete'
+                   )`,
+              )
+              .bind(...chunk, input.today)
+              .all<CompleteAnalysisRow>()
+          ).results;
+        },
       );
-      for (const row of completeResults.flatMap((result) => result.results))
+      for (const row of completeRows)
         lastCompleteAnalyses.set(row.instrument_id, row);
       const analysisIds = [
         ...new Set([
-          ...analysisResults.flatMap((result) =>
-            result.results.map((row) => row.daily_market_fact_id),
-          ),
-          ...completeResults.flatMap((result) =>
-            result.results.map((row) => row.daily_market_fact_id),
-          ),
+          ...analysisRows.map((row) => row.daily_market_fact_id),
+          ...completeRows.map((row) => row.daily_market_fact_id),
         ]),
       ];
       if (analysisIds.length > 0) {
-        const sourceResults = await Promise.all(
-          idChunks(analysisIds).map((chunk) =>
-            this.db
-              .prepare(
-                `SELECT a.daily_market_fact_id AS movement_analysis_id,
+        const sourceRows = await collectIdChunks(
+          analysisIds,
+          async (chunk) =>
+            (
+              await this.db
+                .prepare(
+                  `SELECT a.daily_market_fact_id AS movement_analysis_id,
                         s.title, s.publisher, s.published_at, s.source_url, s.cited
                  FROM movement_analyses a JOIN news_sources s
                    ON s.movement_analysis_id = a.id
                  WHERE a.daily_market_fact_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})
                  ORDER BY a.daily_market_fact_id, s.source_order`,
-              )
-              .bind(...chunk)
-              .all<SourceRow>(),
-          ),
+                )
+                .bind(...chunk)
+                .all<SourceRow>()
+            ).results,
         );
-        for (const row of sourceResults.flatMap((result) => result.results)) {
+        for (const row of sourceRows) {
           const sourceUrl = safeSourceUrl(row.source_url);
           if (!sourceUrl) continue;
           const list = sources.get(row.movement_analysis_id) ?? [];
@@ -379,38 +392,44 @@ export class PortfolioReadModelService {
     const instrumentIds = instrumentResult.results.map(
       (row) => row.instrument_id,
     );
-    const [coverageResult, actionResult] = await Promise.all([
-      instrumentIds.length === 0
-        ? Promise.resolve({ results: [] as CoverageRow[] })
-        : this.db
+    const coverageRows = await collectIdChunks(
+      instrumentIds,
+      async (chunk) =>
+        (
+          await this.db
             .prepare(
               `SELECT instrument_id, provider, status, error_code, error_message
-               FROM corporate_action_coverage
-               WHERE instrument_id IN (${instrumentIds.map((_id, index) => `?${index + 1}`).join(", ")})
-                 AND status <> 'confirmed'`,
+             FROM corporate_action_coverage
+             WHERE instrument_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})
+               AND status <> 'confirmed'`,
             )
-            .bind(...instrumentIds)
-            .all<CoverageRow>(),
-      instrumentIds.length === 0
-        ? Promise.resolve({ results: [] as ActionRow[] })
-        : this.db
+            .bind(...chunk)
+            .all<CoverageRow>()
+        ).results,
+    );
+    const actionRows = await collectIdChunks(
+      instrumentIds,
+      async (chunk) =>
+        (
+          await this.db
             .prepare(
               `SELECT instrument_id, effective_date, status,
-                      conflict_code, conflict_message
-               FROM corporate_actions
-               WHERE instrument_id IN (${instrumentIds.map((_id, index) => `?${index + 1}`).join(", ")})
-                 AND status IN ('candidate', 'quarantined')`,
+                    conflict_code, conflict_message
+             FROM corporate_actions
+             WHERE instrument_id IN (${chunk.map((_id, index) => `?${index + 1}`).join(", ")})
+               AND status IN ('candidate', 'quarantined')`,
             )
-            .bind(...instrumentIds)
-            .all<ActionRow>(),
-    ]);
+            .bind(...chunk)
+            .all<ActionRow>()
+        ).results,
+    );
     const conflictsByInstrument = new Map<string, PortfolioConflictDto[]>();
-    for (const row of coverageResult.results) {
+    for (const row of coverageRows) {
       const list = conflictsByInstrument.get(row.instrument_id) ?? [];
       list.push(conflictForCoverage(row));
       conflictsByInstrument.set(row.instrument_id, list);
     }
-    for (const row of actionResult.results) {
+    for (const row of actionRows) {
       const list = conflictsByInstrument.get(row.instrument_id) ?? [];
       list.push(conflictForAction(row));
       conflictsByInstrument.set(row.instrument_id, list);
@@ -472,15 +491,17 @@ export class PortfolioReadModelService {
           ? currentAnalysis
           : (fallbackAnalysis ?? currentAnalysis);
       const sourceAnalysis =
-        currentSources.length > 0
+        currentAnalysis?.status === "complete"
           ? currentAnalysis
-          : fallbackSources.length > 0
-            ? fallbackAnalysis
-            : (fallbackAnalysis ?? currentAnalysis);
+          : currentSources.length > 0
+            ? currentAnalysis
+            : fallbackSources.length > 0
+              ? fallbackAnalysis
+              : (fallbackAnalysis ?? currentAnalysis);
       const analysisStatus = currentAnalysis?.status
         ? currentAnalysis.status
-        : fallbackAnalysis
-          ? "complete"
+        : fact
+          ? "unavailable"
           : null;
       const movementPercent = fact
         ? safeDecimal(fact.movement_percent_decimal)
@@ -587,7 +608,7 @@ export class PortfolioReadModelService {
               : currentAnalysis
                 ? currentAnalysis.status
                 : fallbackAnalysis
-                  ? "fresh"
+                  ? "stale"
                   : "unavailable"
             : marketFreshness;
       const position: PortfolioPositionDto = {

@@ -10,6 +10,7 @@ import {
 import type { InstrumentRecord } from "../db/instruments";
 import { PipelineJobRepository } from "../db/pipeline-jobs";
 import { PositionBasisRepository } from "../db/position-basis";
+import { FactRevisionBucketRepository } from "../db/revision-buckets";
 import { WorkItemRepository } from "../db/work-items";
 import { canonicalizeDecimal, INPUT_DECIMAL_BOUNDS } from "../domain/decimal";
 import {
@@ -281,6 +282,7 @@ export class EventImportsService {
   private readonly imports: ImportRepository;
   private readonly jobs: PipelineJobRepository;
   private readonly positionBasis: PositionBasisRepository;
+  private readonly revisions: FactRevisionBucketRepository;
   private readonly workItems: WorkItemRepository;
   private readonly now: () => Date;
   private readonly newId: () => string;
@@ -289,6 +291,7 @@ export class EventImportsService {
     this.imports = new ImportRepository(dependencies.db);
     this.jobs = new PipelineJobRepository(dependencies.db);
     this.positionBasis = new PositionBasisRepository(dependencies.db);
+    this.revisions = new FactRevisionBucketRepository(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
     this.now = dependencies.now ?? (() => new Date());
     this.newId = dependencies.newId ?? (() => crypto.randomUUID());
@@ -496,6 +499,24 @@ export class EventImportsService {
         this.imports.createBatchStatement(batch),
         ...this.stagingRowStatements(batchId, rows),
         ...this.blockingSnapshotStatements(blockingSnapshots, timestamp),
+        ...(blockingSnapshots.length > 0
+          ? [
+              this.revisions.bumpRangesStatement(
+                blockingSnapshots.map(({ snapshot }) => ({
+                  startDate: snapshot.range.requestedStartDate,
+                  endDate: snapshot.range.requestedEndDate,
+                })),
+                timestamp,
+              ),
+              this.revisions.bumpLatestForRangesStatement(
+                blockingSnapshots.map(({ snapshot }) => ({
+                  startDate: snapshot.range.requestedStartDate,
+                  endDate: snapshot.range.requestedEndDate,
+                })),
+                timestamp,
+              ),
+            ]
+          : []),
       ]);
     } catch (error) {
       if (
@@ -765,6 +786,8 @@ export class EventImportsService {
            AND expires_at > ?3`,
         )
         .bind(batch.id, jobId, timestamp, input.expectedPositionBasisRevision),
+      this.revisions.bumpRangesStatement(allIntervals, timestamp),
+      this.revisions.bumpLatestForRangesStatement(allIntervals, timestamp),
     ];
     try {
       await this.dependencies.db.batch(statements);
