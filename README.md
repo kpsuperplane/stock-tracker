@@ -146,13 +146,17 @@ npx wrangler login
 npx wrangler d1 create stock-tracker --binding DB --update-config --location enam
 npx wrangler queues create stock-tracker-screenings --message-retention-period-secs 86400
 npx wrangler queues create stock-tracker-normalized-work --message-retention-period-secs 86400
-npx wrangler queues create stock-tracker-normalized-work-dlq --message-retention-period-secs 31536000
+npx wrangler queues create stock-tracker-normalized-work-dlq --message-retention-period-secs 1209600
 npm run types:worker
 npx wrangler d1 migrations apply DB --remote
 npx wrangler secret put BASIC_AUTH_USERNAME
 npx wrangler secret put BASIC_AUTH_PASSWORD
 npm run deploy:production
 ```
+
+Queue retention is intentionally bounded by Cloudflare's 14-day maximum;
+unfinished work and one-year terminal/DLQ audit records remain authoritative
+in D1 rather than depending on Queue retention.
 
 Commit the real D1 identifier and regenerated `worker-configuration.d.ts` written after bootstrap. Secrets are entered interactively and must never be stored in Git or shell history.
 
