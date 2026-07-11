@@ -8,10 +8,14 @@ import { MarketFactRepository } from "../db/market-facts";
 import { FactRevisionBucketRepository } from "../db/revision-buckets";
 import { canonicalizeDecimal, DecimalValue } from "../domain/decimal";
 import { logEvent } from "../worker/log";
+import {
+  LEGACY_ANALYSIS_PREFIX,
+  LEGACY_PROVIDER,
+  legacyAnalysisFingerprint,
+  legacyProviderRevision,
+} from "./legacy-mapping";
 
-const LEGACY_PROVIDER = "legacy-report";
 const LEGACY_INSTRUMENT_PREFIX = "legacy-ticker:";
-const LEGACY_ANALYSIS_PREFIX = "legacy-analysis:";
 const LEGACY_REPAIR_PREFIX = "legacy-dual-write:";
 const REPAIR_LEASE_MS = 10 * 60 * 1000;
 
@@ -110,14 +114,6 @@ const legacyNumberToDecimal = (
   } catch {
     return null;
   }
-};
-
-const digest = async (value: string): Promise<string> => {
-  const bytes = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(hash))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 };
 
 const bucketForDate = async (
@@ -598,7 +594,7 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         .first<ExistingFactRow>();
       const factId =
         existingFact?.id ?? `${instrumentId}:${screening.tradingDate}`;
-      const providerRevision = `${LEGACY_PROVIDER}:${screening.runId}:${screening.generation}:${screening.screeningId}`;
+      const providerRevision = legacyProviderRevision(screening);
       const fact = {
         id: factId,
         instrumentId,
@@ -654,22 +650,13 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
         ...this.analysisRecord(screening, factId, now, validSources),
         id: analysisId,
       };
-      const dependencyFingerprint = await digest(
-        JSON.stringify({
-          providerRevision,
-          status: analysis.status,
-          summary: analysis.summaryZhCn,
-          model: analysis.model,
-          sources: validSources.map((source) => [
-            source.sourceOrder,
-            source.title,
-            source.publisher,
-            source.publishedAt,
-            source.cited,
-            source.sourceUrl,
-          ]),
-        }),
-      );
+      const dependencyFingerprint = await legacyAnalysisFingerprint({
+        providerRevision,
+        status: analysis.status,
+        summary: analysis.summaryZhCn,
+        model: analysis.model,
+        sources: validSources,
+      });
       const analysisWithFingerprint: MovementAnalysisRecord = {
         ...analysis,
         dependencyFingerprint,

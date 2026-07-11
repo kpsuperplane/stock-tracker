@@ -13,10 +13,14 @@ import {
 } from "../db/migration-state";
 import { FactRevisionBucketRepository } from "../db/revision-buckets";
 import { canonicalizeDecimal, DecimalValue } from "../domain/decimal";
+import {
+  LEGACY_ANALYSIS_PREFIX,
+  LEGACY_PROVIDER,
+  legacyAnalysisFingerprint,
+  legacyProviderRevision,
+} from "./legacy-mapping";
 
-const LEGACY_PROVIDER = "legacy-report";
 const LEGACY_INSTRUMENT_PREFIX = "legacy-ticker:";
-const LEGACY_ANALYSIS_PREFIX = "legacy-analysis:";
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const LEASE_MS = 2 * 60 * 1000;
@@ -610,7 +614,7 @@ export class LegacyFactMigrator {
         row.tradingDate,
       );
       const factId = existingFact?.id ?? `${instrumentId}:${row.tradingDate}`;
-      const providerRevision = `legacy-migrator:${row.runId}:${row.generation}:${row.screeningId}`;
+      const providerRevision = legacyProviderRevision(row);
       const fact = {
         id: factId,
         instrumentId,
@@ -655,22 +659,29 @@ export class LegacyFactMigrator {
           } satisfies NewsSourceRecord;
         })
         .filter((source): source is NewsSourceRecord => source !== null);
+      const analysisStatus =
+        row.analysisStatus === "complete" && row.analysisSummary
+          ? "complete"
+          : row.screeningStatus === "failed" ||
+              row.analysisStatus === "unavailable"
+            ? "error"
+            : "pending";
+      const analysisSummary =
+        analysisStatus === "complete" ? row.analysisSummary : null;
+      const dependencyFingerprint = await legacyAnalysisFingerprint({
+        providerRevision,
+        status: analysisStatus,
+        summary: analysisSummary,
+        model: row.analysisModel,
+        sources: validSources,
+      });
       const analysis: MovementAnalysisRecord = {
         id: analysisId,
         dailyMarketFactId: factId,
-        dependencyFingerprint: contentHash,
-        summaryZhCn:
-          row.analysisStatus === "complete" && row.analysisSummary
-            ? row.analysisSummary
-            : null,
+        dependencyFingerprint,
+        summaryZhCn: analysisSummary,
         model: row.analysisModel,
-        status:
-          row.analysisStatus === "complete" && row.analysisSummary
-            ? "complete"
-            : row.screeningStatus === "failed" ||
-                row.analysisStatus === "unavailable"
-              ? "error"
-              : "pending",
+        status: analysisStatus,
         errorCode:
           row.screeningStatus === "failed" ||
           row.analysisStatus === "unavailable"
@@ -694,7 +705,7 @@ export class LegacyFactMigrator {
         existingFact.rawDifference !== fact.rawCloseDifferenceDecimal;
       const analysisChanged =
         !existingAnalysis ||
-        existingAnalysis.dependencyFingerprint !== contentHash;
+        existingAnalysis.dependencyFingerprint !== dependencyFingerprint;
       const guard = {
         tradingDate: row.tradingDate,
         generation: row.generation,

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MigrationStateRepository } from "../../src/db/migration-state";
 import { RunRepository } from "../../src/db/runs";
 import { TickerRepository } from "../../src/db/tickers";
+import { LegacyDualWriteService } from "../../src/services/legacy-dual-write";
 import { LegacyFactMigrator } from "../../src/services/legacy-fact-migrator";
 
 const now = "2026-07-10T22:00:00.000Z";
@@ -201,7 +202,7 @@ describe("legacy published-generation migrator", () => {
       ).first(),
     ).toEqual({
       current_raw_close_decimal: "120",
-      provider_revision: `legacy-migrator:${replacement.runId}:2:${replacement.screeningIds[0]}`,
+      provider_revision: `legacy-report:${replacement.runId}:2:${replacement.screeningIds[0]}`,
       movement_basis: "legacy_migration",
       raw_close_difference_decimal: "20",
     });
@@ -218,6 +219,48 @@ describe("legacy published-generation migrator", () => {
       legacy_run_id: replacement.runId,
       legacy_generation: 2,
       outcome: "inserted",
+    });
+  });
+
+  it("matches dual-write provenance and fingerprint without ETag churn", async () => {
+    const ticker = await insertTicker("migrator-dual", "MDUAL");
+    const dualWrite = new LegacyDualWriteService(env.DB, {
+      enabled: true,
+      now: () => new Date(now),
+    });
+    const repository = new RunRepository(env.DB, dualWrite);
+    const run = await prepareRun({
+      date: "2026-07-07",
+      ticker,
+      repository,
+      price: {
+        previousDate: "2026-07-06",
+        previousPrice: 100,
+        currentPrice: 110,
+        changeAmount: 10,
+        changePct: 10,
+      },
+    });
+    const before = await env.DB.prepare(
+      "SELECT revision FROM fact_revision_buckets WHERE bucket_key = '2026-07'",
+    ).first();
+    const result = await migrator().runPage({ now });
+    const after = await env.DB.prepare(
+      "SELECT revision FROM fact_revision_buckets WHERE bucket_key = '2026-07'",
+    ).first();
+    expect(result).toMatchObject({
+      status: "complete",
+      inserted: 0,
+      updated: 0,
+      unchanged: 1,
+    });
+    expect(after).toEqual(before);
+    expect(
+      await env.DB.prepare(
+        "SELECT provider_revision FROM daily_market_facts",
+      ).first(),
+    ).toEqual({
+      provider_revision: `legacy-report:${run.runId}:1:${run.screeningIds[0]}`,
     });
   });
 
