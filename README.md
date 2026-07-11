@@ -15,6 +15,10 @@ npm run dev
 
 Open <http://127.0.0.1:5173> and use the credentials from `.dev.vars`. Never commit `.dev.vars`.
 
+The new Portfolio/Events/Calendar/Backfill shell is opt-in while the migration
+is in progress. Preview it locally with `VITE_NEW_PRODUCT_UI=true npm run dev`;
+leaving that variable unset keeps the legacy dashboard as the default.
+
 Whenever bindings change in `wrangler.jsonc`, regenerate and commit the binding-aware Worker types:
 
 ```bash

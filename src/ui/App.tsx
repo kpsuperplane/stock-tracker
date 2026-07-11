@@ -1,8 +1,10 @@
+import { isNewProductUiEnabled } from "./featureFlags";
 import { BackfillPage } from "./pages/BackfillPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { WatchlistPage } from "./pages/WatchlistPage";
+import { ProductApp } from "./system/AppShell";
 
-export const App = () => (
+const LegacyApp = () => (
   <>
     <a className="skip-link" href="#main-content">
       跳至报告
@@ -28,3 +30,6 @@ export const App = () => (
     </main>
   </>
 );
+
+export const App = () =>
+  isNewProductUiEnabled() ? <ProductApp /> : <LegacyApp />;
