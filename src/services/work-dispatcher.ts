@@ -384,39 +384,21 @@ export class WorkDispatcherService {
     if (batch.state !== "dispatching" && batch.state !== "queued") {
       return batch.state === "terminal";
     }
-    if (batch.state === "dispatching" && batch.dispatchLeaseUntil) {
-      await this.workItems.terminalizeBatchItems({
-        dispatchBatchId: batch.id,
-        now: timestamp,
-        errorCode: "dispatch_attempts_exhausted",
-        errorMessage: "Queue dispatch attempt ceiling exhausted.",
-        expectedDispatchLeaseUntil: batch.dispatchLeaseUntil,
-      });
-    } else {
-      await this.workItems.terminalizeBatchItems({
-        dispatchBatchId: batch.id,
-        now: timestamp,
-        errorCode: "dispatch_attempts_exhausted",
-        errorMessage: "Queue dispatch attempt ceiling exhausted.",
-      });
-    }
     const transitioned =
       batch.state === "dispatching"
         ? batch.dispatchLeaseUntil
-          ? await this.batches.transition({
+          ? await this.batches.terminalizeBatchAndItems({
               id: batch.id,
               from: "dispatching",
-              to: "terminal",
               now: timestamp,
               errorCode: "dispatch_attempts_exhausted",
               errorMessage: "Queue dispatch attempt ceiling exhausted.",
               expectedDispatchLeaseUntil: batch.dispatchLeaseUntil,
             })
           : false
-        : await this.batches.transition({
+        : await this.batches.terminalizeBatchAndItems({
             id: batch.id,
             from: "queued",
-            to: "terminal",
             now: timestamp,
             errorCode: "dispatch_attempts_exhausted",
             errorMessage: "Queue dispatch attempt ceiling exhausted.",

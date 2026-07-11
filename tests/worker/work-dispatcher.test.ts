@@ -888,4 +888,47 @@ describe("normalized work dispatcher and queue consumer", () => {
       ).first(),
     ).toEqual({ outcome: "failed" });
   });
+
+  it("fences terminal item updates to the batch owner lease", async () => {
+    await insertInstrument();
+    await insertWork({ id: "terminal-race", date: "2026-01-01" });
+    const { service } = dispatcher();
+    await service.dispatch();
+    const workItems = new WorkItemRepository(env.DB);
+    const staleDispatchUpdate = await workItems.terminalizeBatchItems({
+      dispatchBatchId: "batch-1",
+      now,
+      errorCode: "dispatch_attempts_exhausted",
+      errorMessage: "stale",
+      expectedDispatchLeaseUntil: "2026-07-10T21:05:00.000Z",
+    });
+    expect(staleDispatchUpdate).toBe(0);
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE dispatch_batches SET state = 'processing',
+         dispatch_lease_until = NULL,
+         processing_lease_until = '2026-07-10T22:00:00.000Z'
+         WHERE id = 'batch-1'`,
+      ),
+      env.DB.prepare(
+        `UPDATE work_items SET state = 'processing',
+         dispatch_lease_until = NULL,
+         processing_lease_until = '2026-07-10T22:00:00.000Z'
+         WHERE id = 'terminal-race'`,
+      ),
+    ]);
+    const staleProcessingUpdate = await workItems.terminalizeBatchItems({
+      dispatchBatchId: "batch-1",
+      now,
+      errorCode: "pipeline_attempts_exhausted",
+      errorMessage: "stale",
+      expectedLeaseUntil: "2026-07-10T21:10:00.000Z",
+    });
+    expect(staleProcessingUpdate).toBe(0);
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM work_items WHERE id = 'terminal-race'",
+      ).first(),
+    ).toEqual({ state: "processing" });
+  });
 });

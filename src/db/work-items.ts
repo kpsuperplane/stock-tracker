@@ -683,11 +683,30 @@ export class WorkItemRepository {
              WHERE dispatch_batch_id = ?4
            )
            AND (
-             (?5 IS NULL AND ?6 IS NULL)
-             OR (?5 IS NOT NULL AND processing_lease_until IS ?5)
+             (
+               ?5 IS NULL AND ?6 IS NULL
+               AND EXISTS (
+                 SELECT 1 FROM dispatch_batches batch
+                 WHERE batch.id = ?4 AND batch.state = 'queued'
+               )
+             )
+             OR (
+               ?5 IS NOT NULL
+               AND processing_lease_until IS ?5
+               AND EXISTS (
+                 SELECT 1 FROM dispatch_batches batch
+                 WHERE batch.id = ?4 AND batch.state = 'processing'
+                   AND batch.processing_lease_until IS ?5
+               )
+             )
              OR (
                ?6 IS NOT NULL
                AND (dispatch_lease_until IS ?6 OR state = 'queued')
+               AND EXISTS (
+                 SELECT 1 FROM dispatch_batches batch
+                 WHERE batch.id = ?4 AND batch.state = 'dispatching'
+                   AND batch.dispatch_lease_until IS ?6
+               )
              )
            )`,
       )

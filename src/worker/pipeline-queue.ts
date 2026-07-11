@@ -477,25 +477,15 @@ export class PipelineQueueConsumer {
       input.message.retry({ delaySeconds: this.retryDelaySeconds });
       return;
     }
-    await this.workItems.terminalizeBatchItems({
-      dispatchBatchId: input.batch.id,
-      now: input.timestamp,
-      expectedLeaseUntil: input.leaseUntil,
-      errorCode: attemptsExhausted
-        ? "pipeline_attempts_exhausted"
-        : "pipeline_failed",
-      errorMessage: String(input.error),
-    });
-    const transitioned = await this.batches.transition({
+    const transitioned = await this.batches.terminalizeBatchAndItems({
       id: input.batch.id,
       from: "processing",
-      to: "terminal",
       now: input.timestamp,
-      expectedProcessingLeaseUntil: input.leaseUntil,
       errorCode: attemptsExhausted
         ? "pipeline_attempts_exhausted"
         : "pipeline_failed",
       errorMessage: String(input.error),
+      expectedProcessingLeaseUntil: input.leaseUntil,
     });
     if (!transitioned) {
       input.message.retry({ delaySeconds: this.retryDelaySeconds });
@@ -595,17 +585,9 @@ export class PipelineQueueConsumer {
         message.retry({ delaySeconds: this.retryDelaySeconds });
         return;
       }
-      await this.workItems.terminalizeBatchItems({
-        dispatchBatchId: current.id,
-        now: timestamp,
-        errorCode: "pipeline_attempts_exhausted",
-        errorMessage: "Dispatch attempt ceiling exhausted.",
-        expectedDispatchLeaseUntil: current.dispatchLeaseUntil,
-      });
-      transitioned = await this.batches.transition({
+      transitioned = await this.batches.terminalizeBatchAndItems({
         id: current.id,
         from: "dispatching",
-        to: "terminal",
         now: timestamp,
         errorCode: "pipeline_attempts_exhausted",
         errorMessage: "Dispatch attempt ceiling exhausted.",
@@ -616,33 +598,18 @@ export class PipelineQueueConsumer {
         message.retry({ delaySeconds: this.retryDelaySeconds });
         return;
       }
-      await this.workItems.terminalizeBatchItems({
-        dispatchBatchId: current.id,
-        now: timestamp,
-        errorCode: "pipeline_attempts_exhausted",
-        errorMessage: "Dispatch attempt ceiling exhausted.",
-        expectedLeaseUntil: current.processingLeaseUntil,
-      });
-      transitioned = await this.batches.transition({
+      transitioned = await this.batches.terminalizeBatchAndItems({
         id: current.id,
         from: "processing",
-        to: "terminal",
         now: timestamp,
         errorCode: "pipeline_attempts_exhausted",
         errorMessage: "Dispatch attempt ceiling exhausted.",
         expectedProcessingLeaseUntil: current.processingLeaseUntil,
       });
     } else {
-      await this.workItems.terminalizeBatchItems({
-        dispatchBatchId: current.id,
-        now: timestamp,
-        errorCode: "pipeline_attempts_exhausted",
-        errorMessage: "Dispatch attempt ceiling exhausted.",
-      });
-      transitioned = await this.batches.transition({
+      transitioned = await this.batches.terminalizeBatchAndItems({
         id: current.id,
         from: "queued",
-        to: "terminal",
         now: timestamp,
         errorCode: "pipeline_attempts_exhausted",
         errorMessage: "Dispatch attempt ceiling exhausted.",

@@ -588,6 +588,112 @@ export class DispatchBatchRepository {
     return result.meta.changes === 1;
   }
 
+  /**
+   * Atomically terminalizes a batch, its linked work, and pending job links.
+   * The batch CAS is the ownership fence; all following statements require
+   * the terminal batch state, so a stale owner cannot mutate a newly claimed
+   * batch and a crash cannot leave a queued terminal batch half-settled.
+   */
+  async terminalizeBatchAndItems(input: {
+    id: string;
+    from: "dispatching" | "queued" | "processing";
+    now: string;
+    errorCode: string;
+    errorMessage: string;
+    expectedDispatchLeaseUntil?: string;
+    expectedProcessingLeaseUntil?: string;
+  }): Promise<boolean> {
+    if (input.from === "dispatching" && !input.expectedDispatchLeaseUntil) {
+      throw new Error("terminal_dispatch_batch_requires_lease");
+    }
+    if (input.from === "processing" && !input.expectedProcessingLeaseUntil) {
+      throw new Error("terminal_processing_batch_requires_lease");
+    }
+    const leasePredicate =
+      input.from === "dispatching"
+        ? " AND dispatch_lease_until IS ?6"
+        : input.from === "processing"
+          ? " AND processing_lease_until IS ?6"
+          : "";
+    const batchBindings =
+      input.from === "dispatching"
+        ? [
+            input.errorCode,
+            input.errorMessage,
+            input.now,
+            input.id,
+            input.from,
+            input.expectedDispatchLeaseUntil,
+          ]
+        : input.from === "processing"
+          ? [
+              input.errorCode,
+              input.errorMessage,
+              input.now,
+              input.id,
+              input.from,
+              input.expectedProcessingLeaseUntil,
+            ]
+          : [
+              input.errorCode,
+              input.errorMessage,
+              input.now,
+              input.id,
+              input.from,
+            ];
+    const batchStatement = this.db.prepare(
+      `UPDATE dispatch_batches
+       SET state = 'terminal', dispatch_lease_until = NULL,
+           processing_lease_until = NULL, terminal_error_code = ?1,
+           terminal_error_message = ?2, completed_at = ?3, updated_at = ?3,
+           dlq_state = CASE WHEN dlq_state = 'delivered'
+                            THEN 'delivered' ELSE 'pending' END,
+           dlq_lease_until = NULL
+       WHERE id = ?4 AND state = ?5${leasePredicate}`,
+    );
+    const itemStatement = this.db
+      .prepare(
+        `UPDATE work_items
+         SET state = 'terminal', dispatch_lease_until = NULL,
+             processing_lease_until = NULL, terminal_error_code = ?1,
+             terminal_error_message = ?2, completed_at = ?3, updated_at = ?3
+         WHERE scope = 'global_fact'
+           AND state IN ('dispatching', 'queued', 'processing')
+           AND id IN (
+             SELECT work_item_id FROM dispatch_batch_items
+             WHERE dispatch_batch_id = ?4
+           )
+           AND EXISTS (
+             SELECT 1 FROM dispatch_batches batch
+             WHERE batch.id = ?4 AND batch.state = 'terminal'
+           )`,
+      )
+      .bind(input.errorCode, input.errorMessage, input.now, input.id);
+    const linkStatement = this.db
+      .prepare(
+        `UPDATE job_work_items
+         SET outcome = CASE
+             WHEN work.state = 'complete' THEN 'processed'
+             WHEN work.state = 'terminal' THEN 'failed'
+             ELSE job_work_items.outcome
+           END,
+           updated_at = ?1
+         FROM dispatch_batch_items item
+         JOIN work_items work ON work.id = item.work_item_id
+         WHERE job_work_items.work_item_id = item.work_item_id
+           AND item.dispatch_batch_id = ?2
+           AND job_work_items.outcome = 'pending'
+           AND work.state IN ('complete', 'terminal')`,
+      )
+      .bind(input.now, input.id);
+    const results = await this.db.batch([
+      batchStatement.bind(...batchBindings),
+      itemStatement,
+      linkStatement,
+    ]);
+    return results[0]?.meta.changes === 1;
+  }
+
   async markDlqDelivered(input: {
     id: string;
     now: string;
