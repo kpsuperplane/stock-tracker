@@ -21,6 +21,13 @@ export interface PipelineJobRecord {
   status: PipelineJobStatus;
   createdAt: string;
   updatedAt: string;
+  backfillReprocessExisting?: boolean;
+  backfillForcedRefreshGeneration?: number | null;
+  plannerCursor?: string | null;
+  plannerDividendCursor?: string | null;
+  plannerLeaseUntil?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
 }
 
 export interface PipelineJobProgress {
@@ -44,6 +51,13 @@ interface PipelineJobRow {
   status: PipelineJobStatus;
   created_at: string;
   updated_at: string;
+  backfill_reprocess_existing: number;
+  backfill_forced_refresh_generation: number | null;
+  planner_cursor: string | null;
+  planner_dividend_cursor: string | null;
+  planner_lease_until: string | null;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 const mapPipelineJob = (row: PipelineJobRow): PipelineJobRecord => ({
@@ -57,6 +71,13 @@ const mapPipelineJob = (row: PipelineJobRow): PipelineJobRecord => ({
   status: row.status,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+  backfillReprocessExisting: row.backfill_reprocess_existing === 1,
+  backfillForcedRefreshGeneration: row.backfill_forced_refresh_generation,
+  plannerCursor: row.planner_cursor,
+  plannerDividendCursor: row.planner_dividend_cursor,
+  plannerLeaseUntil: row.planner_lease_until,
+  startedAt: row.started_at,
+  completedAt: row.completed_at,
 });
 
 const allowedTransitions: Readonly<
@@ -79,7 +100,10 @@ export class PipelineJobRepository {
         `SELECT id, trigger_type, requested_start_date,
                 requested_end_date, affected_instruments_json,
                 eligibility_intervals_json, priority, status,
-                created_at, updated_at
+                created_at, updated_at, backfill_reprocess_existing,
+                backfill_forced_refresh_generation, planner_cursor,
+                planner_dividend_cursor, planner_lease_until, started_at,
+                completed_at
          FROM pipeline_jobs WHERE id = ?1`,
       )
       .bind(id)
@@ -93,8 +117,11 @@ export class PipelineJobRepository {
         `INSERT INTO pipeline_jobs
          (id, trigger_type, requested_start_date, requested_end_date,
           affected_instruments_json, eligibility_intervals_json, priority,
-          status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+          status, created_at, updated_at, backfill_reprocess_existing,
+          backfill_forced_refresh_generation, planner_cursor,
+          planner_dividend_cursor, planner_lease_until)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                 ?14, ?15)`,
       )
       .bind(
         job.id,
@@ -107,7 +134,52 @@ export class PipelineJobRepository {
         job.status,
         job.createdAt,
         job.updatedAt,
+        job.backfillReprocessExisting ? 1 : 0,
+        job.backfillForcedRefreshGeneration ?? null,
+        job.plannerCursor ?? null,
+        job.plannerDividendCursor ?? null,
+        job.plannerLeaseUntil ?? null,
       );
+  }
+
+  async updatePlannerCursor(input: {
+    id: string;
+    cursor: string | null;
+    dividendCursor: string | null;
+    leaseUntil: string | null;
+    now: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE pipeline_jobs
+            SET planner_cursor = ?1,
+                planner_dividend_cursor = ?2,
+                planner_lease_until = ?3,
+                updated_at = ?4
+          WHERE id = ?5 AND status IN ('pending', 'planning', 'running')`,
+      )
+      .bind(
+        input.cursor,
+        input.dividendCursor,
+        input.leaseUntil,
+        input.now,
+        input.id,
+      )
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async reopenForRetry(input: { id: string; now: string }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE pipeline_jobs
+            SET status = 'running', completed_at = NULL, updated_at = ?1
+          WHERE id = ?2
+            AND status IN ('complete', 'complete_with_errors', 'terminal')`,
+      )
+      .bind(input.now, input.id)
+      .run();
+    return result.meta.changes === 1;
   }
 
   async transition(input: {
@@ -129,7 +201,12 @@ export class PipelineJobRepository {
     const result = await this.db
       .prepare(
         `UPDATE pipeline_jobs
-         SET status = ?1, updated_at = ?2, completed_at = ?3,
+         SET status = ?1, updated_at = ?2,
+             started_at = CASE
+               WHEN ?1 IN ('planning', 'running') THEN COALESCE(started_at, ?2)
+               ELSE started_at
+             END,
+             completed_at = ?3,
              retention_until = ?4
          WHERE id = ?5 AND status = ?6`,
       )

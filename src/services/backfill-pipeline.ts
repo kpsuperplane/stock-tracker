@@ -36,6 +36,7 @@ interface PipelineDateRow {
 
 interface PipelineErrorRow {
   id: string;
+  symbol: string | null;
   effective_date: string | null;
   work_type: string;
   state: string;
@@ -67,6 +68,9 @@ export class BackfillPipelineAdapter {
     const instrumentIds = await this.findInstrumentIds(symbols);
     const plannerWorkItemId = crypto.randomUUID();
     const now = input.now;
+    const forcedRefreshGeneration = input.reprocessExisting
+      ? await this.nextForcedRefreshGeneration()
+      : null;
     const pipelineJob: PipelineJobRecord = {
       id,
       triggerType: "backfill",
@@ -87,6 +91,11 @@ export class BackfillPipelineAdapter {
       status: "pending",
       createdAt: now,
       updatedAt: now,
+      backfillReprocessExisting: input.reprocessExisting,
+      backfillForcedRefreshGeneration: forcedRefreshGeneration,
+      plannerCursor: null,
+      plannerDividendCursor: null,
+      plannerLeaseUntil: null,
     };
 
     const plannerWorkItem = {
@@ -115,34 +124,7 @@ export class BackfillPipelineAdapter {
         .bind(id, plannerWorkItemId, now),
     ]);
 
-    const forcedRefreshGeneration = input.reprocessExisting
-      ? await this.nextForcedRefreshGeneration()
-      : undefined;
-    const planner = new ReconciliationPlannerService({
-      db: this.dependencies.db,
-      now: () => new Date(now),
-    });
-
-    let cursor: string | null = null;
-    let plannerLeaseUntil: string | null = null;
-    let complete = false;
-    while (!complete) {
-      const page = await planner.planPage({
-        pipelineJobId: id,
-        plannerWorkItemId,
-        cursor,
-        pageSize: 100,
-        reprocessExisting: input.reprocessExisting,
-        ...(plannerLeaseUntil ? { plannerLeaseUntil } : {}),
-        ...(forcedRefreshGeneration !== undefined
-          ? { forcedRefreshGeneration }
-          : {}),
-      });
-      cursor = page.nextCursor;
-      plannerLeaseUntil = page.plannerLeaseUntil;
-      complete = page.complete;
-    }
-
+    await this.planNextPage(id, now);
     await this.completeIfSettled(id, now);
 
     return id;
@@ -154,8 +136,15 @@ export class BackfillPipelineAdapter {
    * legacy `backfill_jobs` row.
    */
   async getStatus(id: string): Promise<Record<string, unknown> | null> {
-    const job = await this.pipelineJobs.findById(id);
+    let job = await this.pipelineJobs.findById(id);
     if (!job) return null;
+
+    if (job.triggerType === "backfill") {
+      await this.continuePlanning(id);
+      await this.completeIfSettled(id, new Date().toISOString());
+      job = await this.pipelineJobs.findById(id);
+      if (!job) return null;
+    }
 
     const [progress, dateRows, errors, forcedRefreshGeneration] =
       await Promise.all([
@@ -213,13 +202,22 @@ export class BackfillPipelineAdapter {
       requestedEndDate: job.requestedEndDate,
       progress,
       forcedRefreshGeneration,
+      reprocessExisting: job.backfillReprocessExisting === true,
+      plannerCursor: job.plannerCursor,
+      plannerDividendCursor: job.plannerDividendCursor,
+      startedAt: job.startedAt ?? null,
+      completedAt: job.completedAt ?? null,
     };
 
     return {
       id: job.id,
       start_date: job.requestedStartDate,
       end_date: job.requestedEndDate,
-      reprocess_existing: forcedRefreshGeneration !== null,
+      created_at: job.createdAt,
+      updated_at: job.updatedAt,
+      started_at: job.startedAt ?? null,
+      completed_at: job.completedAt ?? null,
+      reprocess_existing: job.backfillReprocessExisting === true,
       pipeline_job_id: job.id,
       status,
       dates_total: dates.length,
@@ -254,12 +252,144 @@ export class BackfillPipelineAdapter {
     return result.results.map((row) => row.id);
   }
 
+  private async planNextPage(
+    pipelineJobId: string,
+    now: string,
+  ): Promise<void> {
+    const job = await this.pipelineJobs.findById(pipelineJobId);
+    if (!job) throw new Error("pipeline_job_not_found");
+    const plannerWork = await this.workItems.findPlanningForJob(pipelineJobId);
+    if (!plannerWork) throw new Error("planner_work_item_missing");
+    if (plannerWork.state === "complete" || plannerWork.state === "terminal") {
+      return;
+    }
+    const planner = new ReconciliationPlannerService({
+      db: this.dependencies.db,
+      now: () => new Date(now),
+    });
+    const plannerLeaseUntil =
+      job.plannerLeaseUntil ?? plannerWork.processingLeaseUntil;
+    const page = await planner.planPage({
+      pipelineJobId,
+      plannerWorkItemId: plannerWork.id,
+      ...(job.plannerCursor === undefined ? {} : { cursor: job.plannerCursor }),
+      ...(job.plannerDividendCursor === undefined
+        ? {}
+        : { dividendCursor: job.plannerDividendCursor }),
+      ...(plannerLeaseUntil ? { plannerLeaseUntil } : {}),
+      ...(job.backfillReprocessExisting
+        ? {
+            forceRefresh: true,
+            reprocessExisting: true,
+            forcedRefreshGeneration: job.backfillForcedRefreshGeneration ?? 1,
+          }
+        : {}),
+    });
+    if (page.dividendRecalculations.length > 0) {
+      await this.dependencies.db.batch(
+        page.dividendRecalculations.map((event) =>
+          this.dependencies.db
+            .prepare(
+              `INSERT OR IGNORE INTO pipeline_job_dividend_recalculations
+               (pipeline_job_id, instrument_id, ex_date, created_at)
+               VALUES (?1, ?2, ?3, ?4)`,
+            )
+            .bind(pipelineJobId, event.instrumentId, event.exDate, now),
+        ),
+      );
+    }
+    const updated = await this.pipelineJobs.updatePlannerCursor({
+      id: pipelineJobId,
+      cursor: page.nextCursor,
+      dividendCursor: page.nextDividendCursor,
+      leaseUntil: page.plannerLeaseUntil,
+      now,
+    });
+    if (!updated) throw new Error("pipeline_planner_cursor_conflict");
+  }
+
+  private async continuePlanning(pipelineJobId: string): Promise<void> {
+    const job = await this.pipelineJobs.findById(pipelineJobId);
+    if (
+      !job ||
+      job.status === "complete" ||
+      job.status === "complete_with_errors" ||
+      job.status === "terminal"
+    ) {
+      return;
+    }
+    const plannerWork = await this.workItems.findPlanningForJob(pipelineJobId);
+    if (
+      !plannerWork ||
+      plannerWork.state === "complete" ||
+      plannerWork.state === "terminal"
+    ) {
+      return;
+    }
+    await this.planNextPage(pipelineJobId, new Date().toISOString());
+  }
+
+  async retry(input: {
+    pipelineJobId: string;
+    workItemId: string;
+    now: string;
+  }): Promise<
+    | { kind: "queued"; workItemId: string }
+    | { kind: "not_found" }
+    | { kind: "not_retryable" }
+  > {
+    const job = await this.pipelineJobs.findById(input.pipelineJobId);
+    const work = await this.workItems.findById(input.workItemId);
+    if (!job || !work || work.scope !== "global_fact") {
+      return { kind: "not_found" };
+    }
+    if (
+      !(await this.workItems.isLinkedToJob({
+        pipelineJobId: input.pipelineJobId,
+        workItemId: input.workItemId,
+      }))
+    ) {
+      return { kind: "not_found" };
+    }
+    if (work.state !== "terminal") return { kind: "not_retryable" };
+    await this.dependencies.db.batch([
+      this.dependencies.db
+        .prepare(
+          `UPDATE work_items
+              SET state = 'pending', attempt_count = 0,
+                  dispatch_lease_until = NULL, processing_lease_until = NULL,
+                  terminal_error_code = NULL, terminal_error_message = NULL,
+                  completed_at = NULL, available_at = ?1, updated_at = ?1
+            WHERE id = ?2 AND scope = 'global_fact' AND state = 'terminal'`,
+        )
+        .bind(input.now, input.workItemId),
+      this.dependencies.db
+        .prepare(
+          `UPDATE job_work_items
+              SET outcome = 'pending', updated_at = ?1
+            WHERE pipeline_job_id = ?2 AND work_item_id = ?3`,
+        )
+        .bind(input.now, input.pipelineJobId, input.workItemId),
+    ]);
+    if (
+      job.status === "complete" ||
+      job.status === "complete_with_errors" ||
+      job.status === "terminal"
+    ) {
+      await this.pipelineJobs.reopenForRetry({
+        id: input.pipelineJobId,
+        now: input.now,
+      });
+    }
+    return { kind: "queued", workItemId: input.workItemId };
+  }
+
   private async nextForcedRefreshGeneration(): Promise<number> {
     const row = await this.dependencies.db
       .prepare(
         `SELECT COALESCE(MAX(forced_refresh_generation), 0) + 1 AS next_generation
-           FROM work_items
-          WHERE scope = 'global'`,
+          FROM work_items
+          WHERE scope = 'global_fact'`,
       )
       .first<{ next_generation: number }>();
     return Math.max(1, Number(row?.next_generation ?? 1));
@@ -320,10 +450,9 @@ export class BackfillPipelineAdapter {
         Number(row?.stored_work_processed ?? 0),
         Number(row?.linked_work_processed ?? 0),
       ),
-      workFailed: Math.max(
-        Number(row?.stored_work_failed ?? 0),
-        Number(row?.linked_work_failed ?? 0),
-      ),
+      // A targeted retry clears the terminal work state. Do not retain the
+      // previous failure counter as if it were still an active error.
+      workFailed: Number(row?.linked_work_failed ?? 0),
     };
   }
 
@@ -355,11 +484,12 @@ export class BackfillPipelineAdapter {
   ): Promise<Record<string, unknown>[]> {
     const result = await this.dependencies.db
       .prepare(
-        `SELECT w.id, w.effective_date, w.work_type, w.state,
+        `SELECT w.id, i.symbol, w.effective_date, w.work_type, w.state,
                 w.terminal_error_code AS error_code,
                 w.terminal_error_message AS last_error, w.attempt_count
            FROM job_work_items j
            JOIN work_items w ON w.id = j.work_item_id
+           LEFT JOIN instruments i ON i.id = w.instrument_id
           WHERE j.pipeline_job_id = ?1
             AND w.scope = 'global_fact'
             AND w.state = 'terminal'
@@ -369,7 +499,10 @@ export class BackfillPipelineAdapter {
       .all<PipelineErrorRow>();
     return result.results.map((row) => ({
       workItemId: row.id,
+      screeningId: row.id,
+      symbol: row.symbol ?? "",
       date: row.effective_date,
+      tradingDate: row.effective_date ?? "",
       workType: row.work_type,
       state: row.state,
       errorCode: row.error_code,
@@ -434,10 +567,15 @@ function mapPipelineStatus(
   status: PipelineJobRecord["status"],
   failed: number,
 ): string {
-  if (status === "complete_with_errors" || failed > 0)
-    return "complete_with_errors";
+  if (status === "complete_with_errors") return "complete_with_errors";
   if (status === "complete") return "complete";
   if (status === "terminal") return "failed";
+  // Terminal children do not settle the compatibility job until every other
+  // linked work item has reached a terminal state.
+  if (status === "running" || status === "planning" || status === "pending") {
+    return "running";
+  }
+  if (failed > 0) return "complete_with_errors";
   return "running";
 }
 

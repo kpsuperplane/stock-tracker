@@ -17,6 +17,16 @@ const createSchema = z
   })
   .strict();
 
+const pipelineRetrySchema = z
+  .object({
+    workItemId: z.string().min(1).optional(),
+    screeningId: z.string().min(1).optional(),
+  })
+  .strict()
+  .refine((value) => value.workItemId || value.screeningId, {
+    message: "workItemId is required",
+  });
+
 export const backfillRoutes = new Hono<{ Bindings: Env }>();
 
 backfillRoutes.post("/", async (context) => {
@@ -68,4 +78,57 @@ backfillRoutes.get("/:id", async (context) => {
         },
         404,
       );
+});
+
+backfillRoutes.post("/:id/retry", async (context) => {
+  if (!backfillPipelineFlagEnabled(context.env)) {
+    return context.json(
+      {
+        error: {
+          code: "pipeline_disabled",
+          message: "Pipeline retries are not enabled.",
+        },
+      },
+      409,
+    );
+  }
+  const body = pipelineRetrySchema.parse(await context.req.json());
+  const pipeline = new BackfillPipelineAdapter({
+    db: context.env.DB,
+    listActiveSymbols: async () =>
+      (await new TickerRepository(context.env.DB).listActive()).map(
+        (ticker) => ticker.symbol,
+      ),
+  });
+  const result = await pipeline.retry({
+    pipelineJobId: context.req.param("id"),
+    workItemId: body.workItemId ?? body.screeningId ?? "",
+    now: new Date().toISOString(),
+  });
+  if (result.kind === "queued") {
+    return context.json(
+      { queued: true as const, workItemId: result.workItemId },
+      202,
+    );
+  }
+  if (result.kind === "not_found") {
+    return context.json(
+      {
+        error: {
+          code: "backfill_not_found",
+          message: "Backfill work item not found.",
+        },
+      },
+      404,
+    );
+  }
+  return context.json(
+    {
+      error: {
+        code: "pipeline_work_not_retryable",
+        message: "This pipeline work item cannot be retried.",
+      },
+    },
+    409,
+  );
 });
