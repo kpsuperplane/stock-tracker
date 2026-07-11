@@ -1,3 +1,8 @@
+/* Astryx's documented cascade: reset -> base components -> neutral theme. */
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
+@import "@astryxdesign/theme-neutral/theme.css";
+
 :root {
   color: #1b1d20;
   background: #f3f4f6;
