@@ -187,31 +187,37 @@ export class PortfolioReadModelService {
     asOfDate: string,
     validOnly: boolean,
   ): Promise<D1Result<FactRow>> {
-    const validFilter = validOnly
-      ? "AND f.status = 'valid' AND f.movement_basis <> 'legacy_migration'"
-      : "";
     const candidateFilter = validOnly
       ? "AND candidate.status = 'valid' AND candidate.movement_basis <> 'legacy_migration'"
       : "";
     return this.db
       .prepare(
-        `SELECT f.id, f.instrument_id, f.trading_date, f.previous_trading_date,
+        `WITH held_instruments AS (
+           SELECT DISTINCT instrument_id FROM transactions
+         ),
+         latest_dates AS (
+           SELECT held.instrument_id,
+                  (
+                    SELECT candidate.trading_date
+                      FROM daily_market_facts candidate
+                     WHERE candidate.instrument_id = held.instrument_id
+                       AND candidate.trading_date <= ?1
+                       ${candidateFilter}
+                     ORDER BY candidate.trading_date DESC
+                     LIMIT 1
+                  ) AS trading_date
+             FROM held_instruments held
+         )
+         SELECT f.id, f.instrument_id, f.trading_date, f.previous_trading_date,
                 f.previous_raw_close_decimal, f.current_raw_close_decimal,
                 f.split_adjusted_previous_close_decimal,
                 f.movement_amount_decimal, f.movement_percent_decimal,
                 f.raw_close_difference_decimal, f.movement_basis, f.status,
                 f.error_code, f.error_message
-         FROM daily_market_facts f
-         WHERE f.trading_date <= ?1
-           AND f.instrument_id IN (SELECT DISTINCT instrument_id FROM transactions)
-           ${validFilter}
-           AND f.trading_date = (
-             SELECT MAX(candidate.trading_date)
-             FROM daily_market_facts candidate
-             WHERE candidate.instrument_id = f.instrument_id
-               AND candidate.trading_date <= ?1
-               ${candidateFilter}
-           )
+           FROM latest_dates latest
+           JOIN daily_market_facts f
+             ON f.instrument_id = latest.instrument_id
+            AND f.trading_date = latest.trading_date
          ORDER BY f.instrument_id`,
       )
       .bind(asOfDate)

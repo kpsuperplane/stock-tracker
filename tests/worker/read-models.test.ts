@@ -119,6 +119,39 @@ describe("portfolio and calendar read models", () => {
     );
   });
 
+  it("drives latest fact lookups from held instruments", async () => {
+    const plan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+         WITH held_instruments AS (
+           SELECT DISTINCT instrument_id FROM transactions
+         ),
+         latest_dates AS (
+           SELECT held.instrument_id,
+                  (SELECT candidate.trading_date
+                     FROM daily_market_facts candidate
+                    WHERE candidate.instrument_id = held.instrument_id
+                      AND candidate.trading_date <= ?1
+                    ORDER BY candidate.trading_date DESC
+                    LIMIT 1) AS trading_date
+             FROM held_instruments held
+         )
+         SELECT f.id
+           FROM latest_dates latest
+           JOIN daily_market_facts f
+             ON f.instrument_id = latest.instrument_id
+            AND f.trading_date = latest.trading_date`,
+    )
+      .bind("2026-07-10")
+      .all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail.toLowerCase());
+    expect(details.some((detail) => detail.includes("search candidate"))).toBe(
+      true,
+    );
+    expect(details.some((detail) => detail.includes("scan candidate"))).toBe(
+      false,
+    );
+  });
+
   it("chunks read-model queries when more than one hundred instruments are held", async () => {
     const statements: D1PreparedStatement[] = [];
     const flush = async () => {
