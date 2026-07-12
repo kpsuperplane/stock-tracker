@@ -24,6 +24,30 @@ export const LEGACY_SCREENING_CRON = "0 22 * * MON-FRI";
 const isNormalizedPlannerCron = (cron: string): boolean =>
   (NORMALIZED_PLANNER_CRONS as readonly string[]).includes(cron);
 
+const continueActiveBackfills = async (
+  env: Env,
+  now: string,
+): Promise<void> => {
+  if (!backfillPipelineFlagEnabled(env)) return;
+  const pendingBackfills = await env.DB.prepare(
+    `SELECT id FROM pipeline_jobs
+        WHERE trigger_type = 'backfill'
+          AND status IN ('pending', 'planning', 'running')
+        ORDER BY priority DESC, created_at
+        LIMIT 10`,
+  ).all<{ id: string }>();
+  const adapter = new BackfillPipelineAdapter({
+    db: env.DB,
+    listActiveSymbols: async () =>
+      (await new TickerRepository(env.DB).listActive()).map(
+        (ticker) => ticker.symbol,
+      ),
+  });
+  await Promise.all(
+    pendingBackfills.results.map(({ id }) => adapter.continuePlanning(id, now)),
+  );
+};
+
 export const handleScheduled = async (
   controller: ScheduledController,
   env: Env,
@@ -59,6 +83,7 @@ export const handleScheduled = async (
       db: env.DB,
       now: () => scheduledTime,
     }).continueScheduledPlanning(scheduledTime);
+    await continueActiveBackfills(env, scheduledTime.toISOString());
     const result = await new WorkDispatcherService({
       db: env.DB,
       queue: env.NORMALIZED_WORK_QUEUE,
@@ -123,27 +148,7 @@ export const handleScheduled = async (
       });
     }
   }
-  if (backfillPipelineFlagEnabled(env)) {
-    const pendingBackfills = await env.DB.prepare(
-      `SELECT id FROM pipeline_jobs
-          WHERE trigger_type = 'backfill'
-            AND status IN ('pending', 'planning', 'running')
-          ORDER BY priority DESC, created_at
-          LIMIT 10`,
-    ).all<{ id: string }>();
-    const adapter = new BackfillPipelineAdapter({
-      db: env.DB,
-      listActiveSymbols: async () =>
-        (await new TickerRepository(env.DB).listActive()).map(
-          (ticker) => ticker.symbol,
-        ),
-    });
-    await Promise.all(
-      pendingBackfills.results.map(({ id }) =>
-        adapter.continuePlanning(id, now),
-      ),
-    );
-  }
+  await continueActiveBackfills(env, now);
   logEvent("scheduled_dispatch", {
     runId,
     tradingDate: now.slice(0, 10),
