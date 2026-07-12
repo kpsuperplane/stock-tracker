@@ -65,7 +65,14 @@ export const requestWithMeta = async <T>(
   if (!headers.has("Content-Type") && !isFormDataBody(init?.body)) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(path, { ...init, headers });
+  const response = await fetch(path, {
+    ...init,
+    headers,
+    // Keep the browser's HTTP authentication context on every API request.
+    // This is explicit because the app is protected by Basic Auth and may be
+    // served through a preview shell before it reaches the Worker.
+    credentials: init?.credentials ?? "same-origin",
+  });
   if (response.status === 304 && options.allowNotModified) {
     return { data: undefined as T, headers: response.headers };
   }
@@ -342,6 +349,7 @@ export const eventsApi: EventsApiClient = {
   list: async (filters) => {
     const response = await requestWithMeta<EventsTimelineDto>(
       `/api/events${queryString(filters)}`,
+      { cache: "no-store" },
     );
     const revision = Number(
       response.headers.get("X-Position-Basis-Revision") ??

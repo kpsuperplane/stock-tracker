@@ -39,6 +39,9 @@ describe("product event API clients", () => {
       "/api/events?symbol=+aapl+&type=transaction&limit=25",
       expect.objectContaining({ headers: expect.any(Headers) }),
     );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.credentials).toBe("same-origin");
+    expect(init.cache).toBe("no-store");
   });
 
   it("does not override multipart boundaries for CSV preview", async () => {
