@@ -33,4 +33,21 @@ describe("legacy stylesheet boundary", () => {
     expect(styles).not.toContain(".product-page {");
     expect(styles).not.toContain(".product-shell {");
   });
+
+  it("does not force minimum widths on tables", () => {
+    for (const className of [
+      "mover-table",
+      "watchlist-table",
+      "job-table",
+      "error-table",
+      "product-portfolio-table",
+      "product-events-table",
+      "product-split-table",
+    ]) {
+      const rule = styles.match(
+        new RegExp(`\\.${className}[^{}]*\\{([^}]*)\\}`),
+      );
+      expect(rule?.[1] ?? "").not.toContain("min-width");
+    }
+  });
 });

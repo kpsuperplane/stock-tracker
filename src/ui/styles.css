@@ -304,22 +304,6 @@ body {
   font-size: 0.76rem;
 }
 
-.mover-table {
-  min-width: 64rem;
-}
-
-.watchlist-table {
-  min-width: 40rem;
-}
-
-.job-table {
-  min-width: 28rem;
-}
-
-.error-table {
-  min-width: 38rem;
-}
-
 .portfolio-table th,
 .portfolio-table td {
   padding: 0.55rem 0.65rem;
@@ -741,18 +725,6 @@ body {
 .product-split-table {
   width: 100%;
   table-layout: auto;
-}
-
-.product-portfolio-table {
-  min-width: 72rem;
-}
-
-.product-events-table {
-  min-width: 58rem;
-}
-
-.product-split-table {
-  min-width: 38rem;
 }
 
 .product-portfolio-table th,
