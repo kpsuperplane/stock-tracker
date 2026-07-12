@@ -102,21 +102,48 @@ describe("WorkersAiExplanationProvider", () => {
     });
   });
 
-  it("rejects empty output", async () => {
+  it("retries an invalid response before accepting valid Chinese output", async () => {
     const ai = {
-      run: vi.fn(async () => ({ response: "   " })),
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({ response: "News may explain the move." })
+        .mockResolvedValueOnce({ response: "相关报道可能解释本次异动。" }),
     } as unknown as Ai;
     await expect(
       new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
-    ).rejects.toThrow("invalid_explanation_text");
+    ).resolves.toEqual({
+      explanationZhCn: "相关报道可能解释本次异动。",
+      model: "@cf/qwen/qwen3-30b-a3b-fp8",
+    });
+    expect(ai.run).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects output without Simplified Chinese text", async () => {
+  it("uses deterministic Chinese copy after two invalid responses", async () => {
     const ai = {
-      run: vi.fn(async () => ({ response: "News may explain the move." })),
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({ response: "   " })
+        .mockResolvedValueOnce({ response: "News may explain the move." }),
     } as unknown as Ai;
     await expect(
       new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
-    ).rejects.toThrow("invalid_explanation_language");
+    ).resolves.toEqual({
+      explanationZhCn:
+        "模型未能生成有效的中文摘要。现有新闻来源可能与本次异动相关，但无法确认明确催化因素。",
+      model: "deterministic-invalid-output",
+    });
+    expect(ai.run).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves provider failures to the queue retry policy", async () => {
+    const ai = {
+      run: vi.fn(async () => {
+        throw new Error("provider_503");
+      }),
+    } as unknown as Ai;
+    await expect(
+      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
+    ).rejects.toThrow("provider_503");
+    expect(ai.run).toHaveBeenCalledOnce();
   });
 });

@@ -17,6 +17,13 @@ export interface ExplanationProvider {
 }
 
 const model = "@cf/qwen/qwen3-30b-a3b-fp8";
+const invalidOutputFallback =
+  "模型未能生成有效的中文摘要。现有新闻来源可能与本次异动相关，但无法确认明确催化因素。";
+const isInvalidOutputError = (error: unknown): boolean =>
+  error instanceof Error &&
+  /^(?:invalid_explanation_text|invalid_explanation_language)$/.test(
+    error.message,
+  );
 
 interface QwenInput {
   messages: Array<{ role: "system" | "user"; content: string }>;
@@ -54,7 +61,7 @@ export class WorkersAiExplanationProvider implements ExplanationProvider {
     const qwen = this.ai as unknown as {
       run(modelName: string, input: QwenInput): Promise<unknown>;
     };
-    const result = await qwen.run(model, {
+    const request: QwenInput = {
       messages: [
         {
           role: "system",
@@ -79,26 +86,34 @@ export class WorkersAiExplanationProvider implements ExplanationProvider {
       max_tokens: 320,
       temperature: 0.1,
       chat_template_kwargs: { enable_thinking: false },
-    });
-    const output = result as {
-      response?: unknown;
-      choices?: Array<{
-        message?: {
-          content?: unknown;
-          reasoning_content?: unknown;
-          reasoning?: unknown;
-        };
-      }>;
     };
-    const message = output.choices?.[0]?.message;
-    const raw =
-      output.response ??
-      message?.content ??
-      message?.reasoning_content ??
-      message?.reasoning;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await qwen.run(model, request);
+      const output = result as {
+        response?: unknown;
+        choices?: Array<{
+          message?: {
+            content?: unknown;
+            reasoning_content?: unknown;
+            reasoning?: unknown;
+          };
+        }>;
+      };
+      const message = output.choices?.[0]?.message;
+      const raw =
+        output.response ??
+        message?.content ??
+        message?.reasoning_content ??
+        message?.reasoning;
+      try {
+        return { explanationZhCn: plainChineseText(raw), model };
+      } catch (error) {
+        if (!isInvalidOutputError(error)) throw error;
+      }
+    }
     return {
-      explanationZhCn: plainChineseText(raw),
-      model,
+      explanationZhCn: invalidOutputFallback,
+      model: "deterministic-invalid-output",
     };
   }
 }

@@ -165,6 +165,28 @@ const validFact = (input: {
 });
 
 describe("incremental reconciliation planner", () => {
+  it("skips exchange holidays even when a broad backfill interval includes them", async () => {
+    await insertInstrument();
+    await insertTransaction({ id: "holiday-buy", tradeDate: "2026-07-01" });
+    await createJob({
+      id: "holiday-backfill",
+      triggerType: "backfill",
+      startDate: "2026-07-02",
+      endDate: "2026-07-03",
+      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-03" }],
+    });
+
+    const result = await planner().planPage({
+      pipelineJobId: "holiday-backfill",
+      latestCompletedTradingDate: latestDate,
+    });
+
+    expect((await listGlobal()).map((work) => work.effective_date)).toEqual([
+      "2026-07-02",
+    ]);
+    expect(result.skippedCount).toBe(1);
+  });
+
   it("does not create work for a quantity-only positive-position edit", async () => {
     await insertInstrument();
     await insertTransaction({ id: "buy-1", tradeDate: "2026-07-01" });
@@ -240,7 +262,7 @@ describe("incremental reconciliation planner", () => {
   it("shares deterministic child work while attaching every owning job", async () => {
     await insertInstrument();
     await insertTransaction({ id: "shared-buy", tradeDate: "2026-07-01" });
-    const interval = [{ startDate: "2026-07-02", endDate: "2026-07-03" }];
+    const interval = [{ startDate: "2026-07-02", endDate: "2026-07-06" }];
     await createJob({ id: "shared-a", intervals: interval });
     await createJob({ id: "shared-b", intervals: interval });
 
@@ -401,8 +423,8 @@ describe("incremental reconciliation planner", () => {
       id: "forced-backfill",
       triggerType: "backfill",
       startDate: "2026-07-01",
-      endDate: "2026-07-03",
-      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-03" }],
+      endDate: "2026-07-06",
+      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-06" }],
     });
     const forced = await planner().planPage({
       pipelineJobId: "forced-backfill",
@@ -514,13 +536,13 @@ describe("incremental reconciliation planner", () => {
     await insertTransaction({ id: "scheduled-buy", tradeDate: "2026-07-01" });
     await insertTransaction({
       id: "scheduled-sell",
-      tradeDate: "2026-07-05",
+      tradeDate: "2026-07-07",
       side: "sell",
     });
     await createJob({
       id: "scheduled-history",
       triggerType: "scheduled",
-      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-03" }],
+      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-06" }],
     });
 
     const result = await planner().planPage({
@@ -557,7 +579,7 @@ describe("incremental reconciliation planner", () => {
 
     await createJob({
       id: "leased-owner",
-      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-03" }],
+      intervals: [{ startDate: "2026-07-02", endDate: "2026-07-06" }],
     });
     const service = planner();
     const first = await service.planPage({

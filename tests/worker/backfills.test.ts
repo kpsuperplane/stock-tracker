@@ -55,11 +55,11 @@ describe("backfill routes", () => {
     ).toEqual({ count: 7 });
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS count FROM screenings").first(),
-    ).toEqual({ count: 14 });
+    ).toEqual({ count: 12 });
     await tickers.softDelete("shop", new Date().toISOString());
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS count FROM screenings").first(),
-    ).toEqual({ count: 14 });
+    ).toEqual({ count: 12 });
     await env.DB.prepare(
       `UPDATE screenings SET status = 'failed', qualified = 1,
        current_price = 174.45, error_code = 'news_schema',
@@ -185,7 +185,7 @@ describe("backfill routes", () => {
         await env.DB.prepare(
           "SELECT COUNT(*) AS count FROM work_items WHERE scope = 'global_fact'",
         ).first(),
-      ).toEqual({ count: 6 });
+      ).toEqual({ count: 5 });
       const status = await exports.default.fetch(
         new Request(`http://local/api/backfills/${id}`, { headers }),
       );
@@ -194,7 +194,7 @@ describe("backfill routes", () => {
       expect(job.pipelineJob).toEqual(
         expect.objectContaining({ id, status: "running" }),
       );
-      expect(job.ticker_jobs_total).toBe(6);
+      expect(job.ticker_jobs_total).toBe(5);
 
       const sharedResponse = await exports.default.fetch(
         new Request("http://local/api/backfills", {
@@ -212,13 +212,13 @@ describe("backfill routes", () => {
         await env.DB.prepare(
           "SELECT COUNT(*) AS count FROM work_items WHERE scope = 'global_fact'",
         ).first(),
-      ).toEqual({ count: 6 });
+      ).toEqual({ count: 5 });
       expect(
         await env.DB.prepare(
           `SELECT COUNT(*) AS count FROM job_work_items
              WHERE work_item_id IN (SELECT id FROM work_items WHERE scope = 'global_fact')`,
         ).first(),
-      ).toEqual({ count: 12 });
+      ).toEqual({ count: 10 });
 
       const reprocessResponse = await exports.default.fetch(
         new Request("http://local/api/backfills", {
@@ -237,7 +237,7 @@ describe("backfill routes", () => {
           `SELECT COUNT(*) AS count FROM work_items
              WHERE scope = 'global_fact' AND forced_refresh_generation = 1`,
         ).first(),
-      ).toEqual({ count: 6 });
+      ).toEqual({ count: 5 });
       expect(
         await env.DB.prepare(
           "SELECT COUNT(*) AS count FROM movement_analyses",
@@ -261,7 +261,7 @@ describe("backfill routes", () => {
           `SELECT COUNT(*) AS count FROM work_items
              WHERE scope = 'global_fact' AND forced_refresh_generation = 2`,
         ).first(),
-      ).toEqual({ count: 6 });
+      ).toEqual({ count: 5 });
     } finally {
       delete flags.BACKFILL_PIPELINE_ENABLED;
     }

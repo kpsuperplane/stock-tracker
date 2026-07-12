@@ -3,6 +3,7 @@ import {
   PipelineJobRepository,
 } from "../db/pipeline-jobs";
 import { WorkItemRepository } from "../db/work-items";
+import { isMarketTradingDayForExchange } from "../domain/market-calendar";
 import { ReconciliationPlannerService } from "./reconciliation-planner";
 
 export interface BackfillPipelineStartInput {
@@ -47,6 +48,11 @@ interface PipelineErrorRow {
   attempt_count: number;
 }
 
+interface BackfillInstrument {
+  id: string;
+  exchange: string;
+}
+
 const MAX_START_PLANNER_PAGES = 10;
 const MAX_CONTINUATION_PAGES = 25;
 const MAX_GENERATION_RESERVATION_ATTEMPTS = 5;
@@ -88,7 +94,8 @@ export class BackfillPipelineAdapter {
   async start(input: BackfillPipelineStartInput): Promise<string> {
     const id = crypto.randomUUID();
     const symbols = await this.dependencies.listActiveSymbols();
-    const instrumentIds = await this.findInstrumentIds(symbols);
+    const instruments = await this.findInstruments(symbols);
+    const instrumentIds = instruments.map((instrument) => instrument.id);
     const plannerWorkItemId = crypto.randomUUID();
     const now = input.now;
     const plannerWorkItem = {
@@ -123,13 +130,20 @@ export class BackfillPipelineAdapter {
         requestedStartDate: input.startDate,
         requestedEndDate: input.endDate,
         affectedInstrumentsJson: JSON.stringify(instrumentIds),
-        // Backfills retain the legacy weekday contract while the planner still
-        // expands each date against each instrument's holding timeline.
         eligibilityIntervalsJson: JSON.stringify(
-          weekdaysInRange(input.startDate, input.endDate).map((date) => ({
-            startDate: date,
-            endDate: date,
-          })),
+          instruments.flatMap((instrument) =>
+            weekdaysInRange(input.startDate, input.endDate).flatMap((date) =>
+              isMarketTradingDayForExchange(date, instrument.exchange)
+                ? [
+                    {
+                      instrumentId: instrument.id,
+                      startDate: date,
+                      endDate: date,
+                    },
+                  ]
+                : [],
+            ),
+          ),
         ),
         priority: 200,
         status: "pending",
@@ -284,18 +298,20 @@ export class BackfillPipelineAdapter {
     };
   }
 
-  private async findInstrumentIds(symbols: string[]): Promise<string[]> {
+  private async findInstruments(
+    symbols: string[],
+  ): Promise<BackfillInstrument[]> {
     if (symbols.length === 0) return [];
     const result = await this.dependencies.db
       .prepare(
-        `SELECT id
+        `SELECT id, exchange
            FROM instruments
           WHERE UPPER(symbol) IN (SELECT UPPER(value) FROM json_each(?1))
           ORDER BY symbol`,
       )
       .bind(JSON.stringify(symbols))
-      .all<{ id: string }>();
-    return result.results.map((row) => row.id);
+      .all<BackfillInstrument>();
+    return result.results;
   }
 
   private async planNextPage(

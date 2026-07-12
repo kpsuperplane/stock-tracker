@@ -14,6 +14,7 @@ import {
   type Holdings,
   type LedgerTransaction,
 } from "../domain/holdings";
+import { isMarketTradingDayForExchange } from "../domain/market-calendar";
 import { easternMarketDate } from "../shared/dates";
 
 export const MARKET_FACT_WORK_TYPE = "market_fact" as const;
@@ -122,6 +123,7 @@ interface PlannerCandidate {
 interface InstrumentTimeline {
   holdings: Holdings;
   actions: CorporateActionRecord[];
+  exchange: string;
 }
 
 const nextDate = (date: string): string => {
@@ -582,20 +584,29 @@ export class ReconciliationPlannerService {
     const rangeStart = job.requestedStartDate ?? "1900-01-01";
     const rangeEnd = job.requestedEndDate ?? latestCompleted;
     const intervals = parseIntervals(job, instruments);
-    const [transactions, actions, facts, analyses, dividends, workStates] =
-      await Promise.all([
-        this.loadTransactions(instruments),
-        this.loadActions(instruments),
-        this.loadFacts(instruments),
-        this.loadAnalyses(instruments),
-        this.loadDividends(instruments),
-        this.loadWorkStates(instruments),
-      ]);
+    const [
+      transactions,
+      actions,
+      facts,
+      analyses,
+      dividends,
+      workStates,
+      exchanges,
+    ] = await Promise.all([
+      this.loadTransactions(instruments),
+      this.loadActions(instruments),
+      this.loadFacts(instruments),
+      this.loadAnalyses(instruments),
+      this.loadDividends(instruments),
+      this.loadWorkStates(instruments),
+      this.loadExchanges(instruments),
+    ]);
     const timelines = new Map<string, InstrumentTimeline>();
     for (const instrumentId of instruments) {
       const instrumentActions = actions.get(instrumentId) ?? [];
       timelines.set(instrumentId, {
         actions: instrumentActions,
+        exchange: exchanges.get(instrumentId) ?? "",
         holdings: deriveHoldings({
           today,
           transactions: (transactions.get(instrumentId) ?? []).map(
@@ -606,11 +617,18 @@ export class ReconciliationPlannerService {
       });
     }
     const requestedDates = new Map<string, Set<string>>();
+    const calendarSkipped = new Set<string>();
     const addDate = (
       instrumentId: string,
       date: string,
       allowBeforeRangeStart = false,
     ) => {
+      const timeline = timelines.get(instrumentId);
+      if (!timeline) return;
+      if (!isMarketTradingDayForExchange(date, timeline.exchange)) {
+        calendarSkipped.add(`${instrumentId}:${date}`);
+        return;
+      }
       if (
         (!allowBeforeRangeStart && date < rangeStart) ||
         date > rangeEnd ||
@@ -674,7 +692,7 @@ export class ReconciliationPlannerService {
       input.forcedRefreshGeneration ??
       (input.forceRefresh || input.reprocessExisting ? 1 : null);
     const candidates: PlannerCandidate[] = [];
-    let skippedCount = 0;
+    let skippedCount = calendarSkipped.size;
     for (const [instrumentId, dates] of requestedDates) {
       const timeline = timelines.get(instrumentId);
       if (!timeline) continue;
@@ -837,6 +855,20 @@ export class ReconciliationPlannerService {
       .bind(...instrumentIds)
       .all<TransactionRecord>();
     return this.groupBy(rows.results, (row) => row.instrumentId);
+  }
+
+  private async loadExchanges(
+    instrumentIds: readonly string[],
+  ): Promise<Map<string, string>> {
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT id, exchange
+           FROM instruments
+          WHERE id IN (${instrumentIds.map((_id, i) => `?${i + 1}`).join(",")})`,
+      )
+      .bind(...instrumentIds)
+      .all<{ id: string; exchange: string }>();
+    return new Map(rows.results.map((row) => [row.id, row.exchange]));
   }
 
   private async loadActions(

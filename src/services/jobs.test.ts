@@ -150,6 +150,66 @@ describe("backfill jobs", () => {
     );
   });
 
+  it("plans each exchange only on its own trading days", async () => {
+    const runs = repository();
+    const usTicker = {
+      id: "aapl",
+      symbol: "AAPL",
+      companyName: "Apple Inc.",
+      exchange: "NMS",
+      currency: "USD",
+      active: true,
+      deletedAt: null,
+    };
+    const canadianTicker = {
+      ...usTicker,
+      id: "shop",
+      symbol: "SHOP.TO",
+      companyName: "Shopify Inc.",
+      exchange: "TSX",
+      currency: "CAD",
+    };
+    const service = new JobsService(
+      runs,
+      { listActive: vi.fn(async () => [usTicker, canadianTicker]) },
+      {} as Queue<ScreeningJobMessage>,
+    );
+
+    await service.createBackfill(
+      {
+        startDate: "2026-07-01",
+        endDate: "2026-07-03",
+        reprocessExisting: true,
+      },
+      "2026-07-09T22:00:00.000Z",
+    );
+
+    expect(runs.createBackfill).toHaveBeenCalledWith(
+      expect.objectContaining({ datesTotal: 3 }),
+    );
+    expect(runs.createRun).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        tradingDate: "2026-07-01",
+        tickers: [usTicker],
+      }),
+    );
+    expect(runs.createRun).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        tradingDate: "2026-07-02",
+        tickers: [usTicker, canadianTicker],
+      }),
+    );
+    expect(runs.createRun).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        tradingDate: "2026-07-03",
+        tickers: [canadianTicker],
+      }),
+    );
+  });
+
   it("respects the 2,500-message daily soft ceiling", async () => {
     const runs = repository();
     runs.countDispatchedSince.mockResolvedValue(2_499);

@@ -41,6 +41,33 @@ const insertHolding = async (suffix: string, now: string): Promise<void> => {
 };
 
 describe("backfill pipeline residual guards", () => {
+  it("stores exchange-specific trading-day intervals", async () => {
+    const now = "2026-07-10T21:00:00.000Z";
+    await insertHolding("HOLIDAY", now);
+    const adapter = new BackfillPipelineAdapter({
+      db: env.DB,
+      listActiveSymbols: async () => ["HOLIDAY"],
+    });
+    const id = await adapter.start({
+      startDate: "2026-07-02",
+      endDate: "2026-07-03",
+      reprocessExisting: false,
+      now,
+    });
+    const row = await env.DB.prepare(
+      "SELECT eligibility_intervals_json FROM pipeline_jobs WHERE id = ?1",
+    )
+      .bind(id)
+      .first<{ eligibility_intervals_json: string }>();
+    expect(JSON.parse(row?.eligibility_intervals_json ?? "[]")).toEqual([
+      {
+        instrumentId: "HOLIDAY-instrument",
+        startDate: "2026-07-02",
+        endDate: "2026-07-02",
+      },
+    ]);
+  });
+
   it("allocates distinct generations for concurrent no-work reprocesses", async () => {
     const adapter = new BackfillPipelineAdapter({
       db: env.DB,
@@ -262,10 +289,12 @@ describe("backfill pipeline residual guards", () => {
           .first(),
       ).toEqual({ state: "terminal" });
       expect(
-        await env.DB.prepare(
-          "SELECT bucket_key, revision FROM fact_revision_buckets ORDER BY bucket_key",
-        ).all(),
-      ).toEqual(revisionsBefore);
+        (
+          await env.DB.prepare(
+            "SELECT bucket_key, revision FROM fact_revision_buckets ORDER BY bucket_key",
+          ).all()
+        ).results,
+      ).toEqual(revisionsBefore.results);
 
       // A failed per-job link remains an error even if another job later
       // completes the shared global work item.

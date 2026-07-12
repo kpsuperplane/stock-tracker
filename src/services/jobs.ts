@@ -1,5 +1,6 @@
 import type { CreateRunInput, RunRepository } from "../db/runs";
 import type { TickerRecord, TickerRepository } from "../db/tickers";
+import { isMarketTradingDayForExchange } from "../domain/market-calendar";
 import type { ScreeningJobMessage } from "../shared/contracts";
 import { easternMarketDate } from "../shared/dates";
 import { ApiError } from "../worker/errors";
@@ -114,32 +115,32 @@ export class JobsService {
     if (this.backfillPipeline) {
       return this.backfillPipeline.start({ ...input, now });
     }
-    const dates: string[] = [];
+    const snapshot = await this.tickers.listActive();
+    const dates: Array<{ tradingDate: string; tickers: TickerRecord[] }> = [];
     for (const date of weekdaysInRange(input.startDate, input.endDate)) {
+      const tickers = snapshot.filter((ticker) =>
+        isMarketTradingDayForExchange(date, ticker.exchange),
+      );
       if (
-        input.reprocessExisting ||
-        !(await this.runs.hasPublishedDate(date))
+        tickers.length > 0 &&
+        (input.reprocessExisting || !(await this.runs.hasPublishedDate(date)))
       ) {
-        dates.push(date);
+        dates.push({ tradingDate: date, tickers });
       }
     }
-    const snapshot = await this.tickers.listActive();
     const backfillId = await this.runs.createBackfill({
       ...input,
       now,
       datesTotal: dates.length,
     });
-    for (const tradingDate of dates) {
-      const runId = (
-        await this.runs.createRun({
-          tradingDate,
-          origin: "backfill",
-          backfillJobId: backfillId,
-          tickers: snapshot,
-          now,
-        })
-      ).runId;
-      if (snapshot.length === 0) await this.runs.finalizeRun(runId, now);
+    for (const { tradingDate, tickers } of dates) {
+      await this.runs.createRun({
+        tradingDate,
+        origin: "backfill",
+        backfillJobId: backfillId,
+        tickers,
+        now,
+      });
     }
     return backfillId;
   }
