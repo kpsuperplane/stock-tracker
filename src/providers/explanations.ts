@@ -40,7 +40,12 @@ const plainChineseText = (raw: unknown) => {
     .replace(/\s*```$/, "")
     .trim();
   if (!text) throw new Error("invalid_explanation_text");
-  if (!/\p{Script=Han}/u.test(text)) {
+  const hanCharacters = text.match(/\p{Script=Han}/gu)?.length ?? 0;
+  const latinCharacters = text.match(/[A-Za-z]/g)?.length ?? 0;
+  if (
+    hanCharacters === 0 ||
+    (latinCharacters > 40 && latinCharacters > hanCharacters)
+  ) {
     throw new Error("invalid_explanation_language");
   }
   return text.slice(0, 1_000);

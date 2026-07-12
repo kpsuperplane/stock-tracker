@@ -118,6 +118,30 @@ describe("WorkersAiExplanationProvider", () => {
     expect(ai.run).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects English-dominant mixed output", async () => {
+    const ai = {
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({
+          response:
+            "Super Micro Computer announced a large financing transaction to fund component purchases. 公司表示相关资金将用于履行人工智能服务器订单。",
+        })
+        .mockResolvedValueOnce({
+          response:
+            "超微电脑宣布一项大型融资交易，相关资金将用于采购组件并履行人工智能服务器订单。这一消息可能与股价上涨有关。",
+        }),
+    } as unknown as Ai;
+
+    await expect(
+      new WorkersAiExplanationProvider(ai).explain({ ...move, sources }),
+    ).resolves.toEqual({
+      explanationZhCn:
+        "超微电脑宣布一项大型融资交易，相关资金将用于采购组件并履行人工智能服务器订单。这一消息可能与股价上涨有关。",
+      model: "@cf/qwen/qwen3-30b-a3b-fp8",
+    });
+    expect(ai.run).toHaveBeenCalledTimes(2);
+  });
+
   it("uses deterministic Chinese copy after two invalid responses", async () => {
     const ai = {
       run: vi
