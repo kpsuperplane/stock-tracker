@@ -3,7 +3,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { ButtonGroup } from "@astryxdesign/core/ButtonGroup";
 import { Icon } from "@astryxdesign/core/Icon";
 import { TopNav, TopNavHeading, TopNavItem } from "@astryxdesign/core/TopNav";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import type { Locale } from "../i18n/catalog";
 import { I18nProvider, useI18n } from "../i18n/I18nProvider";
 import { BackfillPage } from "../pages/BackfillPage";
@@ -69,23 +69,40 @@ const ProductNavigation = ({ activeRoute, onNavigate }: NavigationProps) => {
           logo={<Icon icon="arrowsUpDown" size="sm" />}
         />
       }
-      startContent={APP_ROUTES.map(({ id }) => (
-        <TopNavItem
-          key={id}
-          label={t(routeCopy[id].title)}
-          icon={<Icon icon={routeIcons[id]} size="sm" />}
-          href={pathForRoute(id)}
-          isSelected={activeRoute === id}
-          onClick={(event) => {
-            if (!isPlainLeftClick(event)) return;
-            event.preventDefault();
-            onNavigate(id);
-          }}
-        />
-      ))}
+      startContent={
+        <>
+          {APP_ROUTES.map(({ id }) => (
+            <TopNavItem
+              key={id}
+              label={t(routeCopy[id].title)}
+              icon={<Icon icon={routeIcons[id]} size="sm" />}
+              href={pathForRoute(id)}
+              isSelected={activeRoute === id}
+              onClick={(event) => {
+                if (!isPlainLeftClick(event)) return;
+                event.preventDefault();
+                onNavigate(id);
+              }}
+            />
+          ))}
+          <span className="mobile-locale-switcher">
+            <LocaleSwitcher />
+          </span>
+        </>
+      }
       endContent={<LocaleSwitcher />}
     />
   );
+};
+
+const ProductDocumentTitle = ({ route }: { route: AppRoute }) => {
+  const { t } = useI18n();
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.title = `${t(routeCopy[route].title)} · ${t("appName")}`;
+    }
+  }, [route, t]);
+  return null;
 };
 
 interface ProductPageProps {
@@ -126,6 +143,7 @@ export const ProductApp = ({
   const i18nProps = initialLocale === undefined ? {} : { initialLocale };
   return (
     <I18nProvider {...i18nProps}>
+      <ProductDocumentTitle route={router.route} />
       <AstryxAppShell
         data-testid="product-app-shell"
         topNav={

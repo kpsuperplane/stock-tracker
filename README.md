@@ -15,9 +15,10 @@ npm run dev
 
 Open <http://127.0.0.1:5173> and use the credentials from `.dev.vars`. Never commit `.dev.vars`.
 
-The new Portfolio/Events/Calendar/Backfill shell is opt-in while the migration
-is in progress. Leaving `VITE_NEW_PRODUCT_UI` unset keeps the legacy dashboard
-as the default. The shell and its derived read models are separate gates: copy
+Production builds enable the Portfolio/Events/Calendar/Backfill shell via
+`.env.production`. Local development can still opt into it explicitly with
+`VITE_NEW_PRODUCT_UI=true`; leaving the variable unset keeps the legacy
+dashboard as the default. The shell and its derived read models are separate gates: copy
 the commented `READ_MODELS_ENABLED=true` line into `.dev.vars` before previewing
 Portfolio, Calendar, or normalized reconciliation jobs, then run:
 

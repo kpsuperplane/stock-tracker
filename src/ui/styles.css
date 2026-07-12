@@ -744,3 +744,54 @@ body {
 .product-split-table td {
   max-width: none;
 }
+
+/* Astryx's required marker is English-only. Keep its aria-required semantics
+ * while presenting the visible marker in the selected locale. */
+html[lang="zh-CN"] .astryx-field-label:has(> span > span[aria-hidden="true"])
+  > span {
+  display: none;
+}
+
+html[lang="zh-CN"]
+  .astryx-field-label:has(> span > span[aria-hidden="true"])::after {
+  color: inherit;
+  content: "∙ 必填";
+  font-size: 0.86em;
+  font-weight: 400;
+}
+
+/* Dense tables and the seven-column calendar intentionally scroll on phones;
+ * make that affordance explicit without adding desktop noise. */
+.horizontal-scroll-hint {
+  display: none;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  .horizontal-scroll-hint {
+    display: block;
+  }
+}
+
+/* Keep the mover header fixed while allowing long news/source lists to scroll
+ * inside the remaining dialog body at every desktop height. */
+.calendar-mover-dialog__body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.mobile-locale-switcher {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .mobile-locale-switcher {
+    display: block;
+    margin-block-start: 0.5rem;
+    padding-block-start: 0.5rem;
+    border-block-start: 1px solid var(--color-border);
+  }
+}

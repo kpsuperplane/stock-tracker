@@ -77,6 +77,7 @@ describe("BackfillPage", () => {
     expect(markup).toContain('data-testid="backfill-page"');
     expect(markup).toContain("Backfill and reconciliation");
     expect(markup).toContain("Start date");
+    expect(markup).toContain("Select a date");
     expect(markup).toContain("Reprocess existing facts");
     expect(markup).toContain("Processing continues in the background.");
     expect(markup).toContain("Manual backfills");

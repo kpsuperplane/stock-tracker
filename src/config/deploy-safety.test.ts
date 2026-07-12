@@ -168,13 +168,20 @@ describe("deployment safety", () => {
     });
   });
 
-  it("keeps all cutover flags explicitly off in both configs", () => {
-    for (const config of [
-      readJsonc("wrangler.jsonc"),
-      readJsonc("wrangler.test.jsonc"),
-    ]) {
-      for (const key of flagKeys) expect(config.vars?.[key]).toBe("false");
+  it("keeps writes and migration off while production reads are enabled", () => {
+    const production = readJsonc("wrangler.jsonc");
+    const test = readJsonc("wrangler.test.jsonc");
+    expect(production.vars?.PORTFOLIO_NEW_READS_ENABLED).toBe("true");
+    expect(production.vars?.CALENDAR_READ_MODELS_ENABLED).toBe("true");
+    expect(production.vars?.JOB_READ_MODELS_ENABLED).toBe("true");
+    for (const config of [production, test]) {
+      for (const key of flagKeys.filter(
+        (candidate) => candidate !== "PORTFOLIO_NEW_READS_ENABLED",
+      )) {
+        expect(config.vars?.[key]).toBe("false");
+      }
     }
+    expect(test.vars?.PORTFOLIO_NEW_READS_ENABLED).toBe("false");
   });
 
   it("covers both Toronto 4:30 p.m. UTC candidates and the 15-minute dispatcher", () => {

@@ -625,10 +625,11 @@ const ProductBackfillPage = ({
               ? t("manualBackfills")
               : t("automaticReconciliation")}
           </Heading>
-          {group.map((job) => (
+          {group.map((job, index) => (
             <JobProgress
               key={job.id}
               job={job}
+              defaultIsOpen={index === 0}
               onRetry={(jobError) => void retry(job, jobError)}
               {...(!isReadModelJob(job) && job.details_truncated
                 ? {
@@ -659,6 +660,7 @@ const ProductBackfillPage = ({
           <FormLayout direction="horizontal" className="backfill-date-layout">
             <DateInput
               label={t("backfillStartDate")}
+              placeholder={t("datePlaceholder")}
               {...(startDate ? { value: isoDate(startDate) } : {})}
               onChange={(value) => setStartDate(value ?? "")}
               isRequired
@@ -667,6 +669,7 @@ const ProductBackfillPage = ({
             />
             <DateInput
               label={t("backfillEndDate")}
+              placeholder={t("datePlaceholder")}
               {...(endDate ? { value: isoDate(endDate) } : {})}
               onChange={(value) => setEndDate(value ?? "")}
               isRequired

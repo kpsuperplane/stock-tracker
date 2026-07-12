@@ -7,6 +7,7 @@ import {
   FileInput,
   FormLayout,
   HStack,
+  Icon,
   Table,
   TableBody,
   TableCell,
@@ -37,6 +38,24 @@ export interface EventImportDialogProps {
   /** Optional seed used by fixture-driven previews and SSR verification. */
   initialPreview?: ImportPreviewResponse;
 }
+
+const DialogCloseButton = ({
+  onOpenChange,
+}: {
+  onOpenChange: (open: boolean) => unknown;
+}) => {
+  const { t } = useI18n();
+  return (
+    <Button
+      variant="ghost"
+      label={t("close")}
+      tooltip={t("close")}
+      icon={<Icon icon="close" color="inherit" />}
+      isIconOnly
+      onClick={() => onOpenChange(false)}
+    />
+  );
+};
 
 const errorCopyKey = (
   error: unknown,
@@ -339,7 +358,7 @@ export const EventImportDialog = ({
       <DialogHeader
         title={t("csvImportTitle")}
         subtitle={t("csvImportDescription")}
-        onOpenChange={close}
+        endContent={<DialogCloseButton onOpenChange={close} />}
       />
       <VStack gap={4}>
         <FormLayout>
@@ -356,6 +375,7 @@ export const EventImportDialog = ({
             }}
             accept=".csv,text/csv,application/csv,text/plain"
             mode="dropzone"
+            placeholder={t("chooseFile")}
             description={t("csvTemplateDescription")}
             isDisabled={isPreviewing || isCommitting}
             isRequired

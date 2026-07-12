@@ -298,19 +298,24 @@ export const MoverDialog = ({
       width="min(540px, calc(100vw - 2rem))"
       maxHeight="min(80vh, 720px)"
       padding={4}
+      className="calendar-mover-dialog"
     >
       <DialogHeader title={title} endContent={closeButton} />
-      {selection?.kind === "mover" && <MoverDetails event={selection.event} />}
-      {selection?.kind === "dividend" && (
-        <DividendDetails event={selection.event} />
-      )}
-      {selection?.kind === "more" && (
-        <MoreDetails
-          date={selection.date}
-          events={selection.events}
-          onSelect={onSelect}
-        />
-      )}
+      <div className="calendar-mover-dialog__body">
+        {selection?.kind === "mover" && (
+          <MoverDetails event={selection.event} />
+        )}
+        {selection?.kind === "dividend" && (
+          <DividendDetails event={selection.event} />
+        )}
+        {selection?.kind === "more" && (
+          <MoreDetails
+            date={selection.date}
+            events={selection.events}
+            onSelect={onSelect}
+          />
+        )}
+      </div>
     </Dialog>
   );
 };

@@ -69,6 +69,7 @@ describe("EventsPage", () => {
     expect(markup).toContain("Split");
     expect(markup).toContain("Active");
     expect(markup).toContain("Import CSV");
+    expect(markup).toContain("Select...");
   });
 
   it("keeps empty states explicit and bilingual", () => {

@@ -285,6 +285,9 @@ export const CalendarPage = ({
           {calendar.events.length === 0 && calendar.pending.length === 0 && (
             <Banner status="info" title={t("noCalendarEvents")} />
           )}
+          <div className="horizontal-scroll-hint" role="note">
+            {t("horizontalScrollHint")}
+          </div>
           <MarketCalendar
             calendar={calendar}
             view={view}

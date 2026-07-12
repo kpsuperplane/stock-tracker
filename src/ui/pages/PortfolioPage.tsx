@@ -416,6 +416,9 @@ export const PortfolioPage = ({
                 <Heading level={2} id="portfolio-positions-heading">
                   {t("positions")}
                 </Heading>
+                <div className="horizontal-scroll-hint" role="note">
+                  {t("horizontalScrollHint")}
+                </div>
                 <Table
                   tableProps={{ className: "product-portfolio-table" }}
                   density="compact"

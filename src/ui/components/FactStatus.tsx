@@ -38,11 +38,14 @@ export const FactStatus = ({
   const { t } = useI18n();
   return (
     <VStack gap={1} align="start">
-      <Badge variant={freshnessBadgeVariant(freshness)} label={t(freshness)} />
+      <Badge
+        variant={freshnessBadgeVariant(freshness)}
+        label={`${t("valuationFreshness")}: ${t(freshness)}`}
+      />
       {analysisStatus && analysisStatus !== "complete" && (
         <Badge
           variant={freshnessBadgeVariant(analysisStatus as FactFreshness)}
-          label={t(analysisStatus)}
+          label={`${t("analysisStatusLabel")}: ${t(analysisStatus)}`}
         />
       )}
       {conflicts.length > 0 && (
