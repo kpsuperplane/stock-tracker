@@ -48,11 +48,26 @@ body {
   min-width: 0;
 }
 
+.events-filter-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1.25fr) minmax(10rem, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.events-filter-row > * {
+  min-width: 0;
+}
+
 @media (max-width: 520px) {
   .backfill-date-layout {
     grid-auto-flow: row;
     grid-auto-columns: auto;
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .events-filter-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   }
 }
 
@@ -760,18 +775,10 @@ html[lang="zh-CN"]
   font-weight: 400;
 }
 
-/* Dense tables and the seven-column calendar intentionally scroll on phones;
- * make that affordance explicit without adding desktop noise. */
-.horizontal-scroll-hint {
-  display: none;
+.product-page-meta {
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
-}
-
-@media (max-width: 768px) {
-  .horizontal-scroll-hint {
-    display: block;
-  }
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Keep the mover header fixed while allowing long news/source lists to scroll

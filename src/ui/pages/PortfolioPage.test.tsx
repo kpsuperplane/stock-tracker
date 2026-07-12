@@ -98,7 +98,7 @@ const portfolio: PortfolioReadModelDto = {
 };
 
 describe("PortfolioPage", () => {
-  it("renders mixed-currency totals, completed date, movement, Chinese summary, sources, and stale state", () => {
+  it("renders the completed date, movement, Chinese summary, sources, and stale state", () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">
         <PortfolioPage initialPortfolio={portfolio} />
@@ -106,9 +106,9 @@ describe("PortfolioPage", () => {
     );
 
     expect(markup).toContain('data-testid="portfolio-page"');
-    expect(markup).toContain("USD total");
-    expect(markup).toContain("CAD total");
-    expect(markup).toContain("Latest completed close");
+    expect(markup).not.toContain("USD total");
+    expect(markup).not.toContain("CAD total");
+    expect(markup).toContain("close Jul 10, 2026");
     expect(markup).toContain("AAPL");
     expect(markup).toContain("+5.32%");
     expect(markup).toContain("苹果发布了新的产品更新。");
@@ -124,8 +124,8 @@ describe("PortfolioPage", () => {
       </I18nProvider>,
     );
 
-    expect(markup).toContain("美元合计");
-    expect(markup).toContain("加元合计");
+    expect(markup).not.toContain("美元合计");
+    expect(markup).not.toContain("加元合计");
     expect(markup).toContain("苹果发布了新的产品更新。");
     expect(markup).toContain("超过 ±5% 阈值");
     expect(markup).not.toContain("USD total");

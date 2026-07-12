@@ -1,6 +1,5 @@
 import type { ISODateString } from "@astryxdesign/core";
 import {
-  Badge,
   Banner,
   Button,
   CheckboxInput,
@@ -649,10 +648,9 @@ const ProductBackfillPage = ({
     ) : null;
 
   return (
-    <VStack gap={4} data-testid="backfill-page">
-      <VStack gap={1}>
+    <VStack gap={3} data-testid="backfill-page">
+      <VStack gap={0.5}>
         <Heading level={1}>{t("backfillHeading")}</Heading>
-        <div>{t("backfillIntro")}</div>
       </VStack>
 
       <form onSubmit={(event) => void submit(event)}>
@@ -685,13 +683,6 @@ const ProductBackfillPage = ({
               value={reprocessExisting}
               onChange={setReprocessExisting}
               size="sm"
-            />
-            <Badge
-              label={
-                reprocessExisting
-                  ? t("backfillReprocessMode")
-                  : t("backfillNormalMode")
-              }
             />
           </HStack>
           <Button

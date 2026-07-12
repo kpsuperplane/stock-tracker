@@ -81,7 +81,7 @@ describe("Plan 3 product-flow fixture", () => {
       <PortfolioPage initialPortfolio={productFlowFixture.portfolio} />,
       "cn",
     );
-    expect(portfolioMarkup).toContain("美元合计");
+    expect(portfolioMarkup).not.toContain("美元合计");
     expect(portfolioMarkup).toContain("苹果发布了新的产品更新。");
     expect(portfolioMarkup).not.toContain("USD total");
   });

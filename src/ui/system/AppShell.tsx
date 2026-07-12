@@ -152,7 +152,7 @@ export const ProductApp = ({
         mobileNav={{ breakpoint: "md" }}
         variant="section"
         height="auto"
-        contentPadding={4}
+        contentPadding={3}
       >
         {children ??
           (router.route === "events" ? (

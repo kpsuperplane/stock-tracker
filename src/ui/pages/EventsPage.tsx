@@ -39,6 +39,13 @@ import {
   type SplitSnapshotLike,
   type TransactionMutationInput,
 } from "../api";
+import {
+  EditIcon,
+  PlusIcon,
+  RefreshIcon,
+  TrashIcon,
+  UploadIcon,
+} from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
 import { EventImportDialog } from "./EventImportDialog";
 
@@ -637,27 +644,36 @@ export const EventsPage = ({
   };
 
   return (
-    <VStack gap={4} data-testid="events-page">
-      <HStack gap={3} justify="between" align="start" wrap="wrap">
-        <VStack gap={1}>
-          <Heading level={1}>{t("eventsHeading")}</Heading>
-          <div>{t("eventsIntro")}</div>
-        </VStack>
-        <HStack gap={2} wrap="wrap">
+    <VStack gap={3} data-testid="events-page">
+      <HStack gap={2} justify="between" align="center" wrap="nowrap">
+        <Heading level={1}>{t("eventsHeading")}</Heading>
+        <HStack gap={1} wrap="nowrap">
           <Button
             variant="secondary"
+            size="sm"
             label={t("refresh")}
+            tooltip={t("refresh")}
+            icon={<Icon icon={RefreshIcon} size="sm" />}
+            isIconOnly
             isLoading={isLoading}
             onClick={() => void load(true)}
           />
           <Button
             variant="secondary"
+            size="sm"
             label={t("importCsv")}
+            tooltip={t("importCsv")}
+            icon={<Icon icon={UploadIcon} size="sm" />}
+            isIconOnly
             onClick={() => setIsImportOpen(true)}
           />
           <Button
             variant="primary"
+            size="sm"
             label={t("addEvent")}
+            tooltip={t("addEvent")}
+            icon={<Icon icon={PlusIcon} size="sm" />}
+            isIconOnly
             onClick={() => setIsAddOpen(true)}
           />
         </HStack>
@@ -687,16 +703,20 @@ export const EventsPage = ({
       )}
       {mutationError && <Banner status="error" title={mutationError} />}
 
-      <HStack gap={2} wrap="wrap" align="end">
+      <div className="events-filter-row">
         <TextInput
           label={t("filterSymbol")}
+          placeholder={t("filterSymbol")}
+          isLabelHidden
           value={symbolFilter}
           onChange={setSymbolFilter}
           hasClear
           size="sm"
+          width="100%"
         />
         <Selector
           label={t("filterType")}
+          isLabelHidden
           aria-label={t("filterType")}
           placeholder={t("selectPlaceholder")}
           options={[
@@ -707,112 +727,118 @@ export const EventsPage = ({
           hasClear
           onChange={setTypeFilter}
           size="sm"
+          width="100%"
         />
         <Button
-          variant="secondary"
+          variant="ghost"
+          size="sm"
           label={t("applyFilters")}
+          tooltip={t("applyFilters")}
+          icon={<Icon icon="funnel" size="sm" />}
+          isIconOnly
           onClick={handleApplyFilters}
         />
-      </HStack>
+      </div>
 
       {isLoading && events.length === 0 ? (
         <Banner status="info" title={t("loadingEvents")} />
       ) : events.length === 0 ? (
         <Banner status="info" title={t("noEvents")} />
       ) : (
-        <>
-          <div className="horizontal-scroll-hint" role="note">
-            {t("horizontalScrollHint")}
-          </div>
-          <Table
-            tableProps={{ className: "product-events-table" }}
-            density="compact"
-            dividers="rows"
-            hasHover
-            textOverflow="wrap"
-            aria-label={t("eventsHeading")}
-          >
-            <TableHeader>
-              <TableRow isHeaderRow>
-                <TableHeaderCell>{t("date")}</TableHeaderCell>
-                <TableHeaderCell>{t("instrument")}</TableHeaderCell>
-                <TableHeaderCell>{t("side")}</TableHeaderCell>
-                <TableHeaderCell>{t("quantity")}</TableHeaderCell>
-                <TableHeaderCell>{t("price")}</TableHeaderCell>
-                <TableHeaderCell>{t("status")}</TableHeaderCell>
-                <TableHeaderCell>{t("revision")}</TableHeaderCell>
-                <TableHeaderCell>{t("actions")}</TableHeaderCell>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {events.map((event) =>
-                event.type === "transaction" ? (
-                  <TableRow key={`${event.type}-${event.id}`}>
-                    <TableCell>{event.tradeDate}</TableCell>
-                    <TableCell>
-                      <strong>{event.symbol}</strong>
-                      <div>{event.companyName}</div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={event.side === "buy" ? "success" : "error"}
-                        label={event.side === "buy" ? t("buy") : t("sell")}
+        <Table
+          tableProps={{ className: "product-events-table" }}
+          density="compact"
+          dividers="rows"
+          hasHover
+          textOverflow="wrap"
+          aria-label={t("eventsHeading")}
+        >
+          <TableHeader>
+            <TableRow isHeaderRow>
+              <TableHeaderCell>{t("date")}</TableHeaderCell>
+              <TableHeaderCell>{t("instrument")}</TableHeaderCell>
+              <TableHeaderCell>{t("side")}</TableHeaderCell>
+              <TableHeaderCell>{t("quantity")}</TableHeaderCell>
+              <TableHeaderCell>{t("price")}</TableHeaderCell>
+              <TableHeaderCell>{t("status")}</TableHeaderCell>
+              <TableHeaderCell>{t("revision")}</TableHeaderCell>
+              <TableHeaderCell>{t("actions")}</TableHeaderCell>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {events.map((event) =>
+              event.type === "transaction" ? (
+                <TableRow key={`${event.type}-${event.id}`}>
+                  <TableCell>{event.tradeDate}</TableCell>
+                  <TableCell>
+                    <strong>{event.symbol}</strong>
+                    <div>{event.companyName}</div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant={event.side === "buy" ? "success" : "error"}
+                      label={event.side === "buy" ? t("buy") : t("sell")}
+                    />
+                  </TableCell>
+                  <TableCell>{event.quantityDecimal}</TableCell>
+                  <TableCell>
+                    {event.priceDecimal} {event.currency}
+                  </TableCell>
+                  <TableCell>{t("transactionEvents")}</TableCell>
+                  <TableCell>{event.revision}</TableCell>
+                  <TableCell>
+                    <HStack gap={1} wrap="wrap">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        label={t("edit")}
+                        tooltip={t("edit")}
+                        icon={<Icon icon={EditIcon} size="sm" />}
+                        isIconOnly
+                        onClick={() => setEditing(event)}
                       />
-                    </TableCell>
-                    <TableCell>{event.quantityDecimal}</TableCell>
-                    <TableCell>
-                      {event.priceDecimal} {event.currency}
-                    </TableCell>
-                    <TableCell>{t("transactionEvents")}</TableCell>
-                    <TableCell>{event.revision}</TableCell>
-                    <TableCell>
-                      <HStack gap={1} wrap="wrap">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          label={t("edit")}
-                          onClick={() => setEditing(event)}
-                        />
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          label={t("delete")}
-                          onClick={() => setDeleting(event)}
-                        />
-                      </HStack>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  <TableRow key={`${event.type}-${event.id}`}>
-                    <TableCell>{event.effectiveDate}</TableCell>
-                    <TableCell>
-                      <strong>{event.symbol}</strong>
-                      <div>{event.companyName}</div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="neutral" label={t("split")} />
-                    </TableCell>
-                    <TableCell>
-                      {event.numerator}:{event.denominator}
-                    </TableCell>
-                    <TableCell>{event.provider}</TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={splitStatusVariant(event.status)}
-                        label={statusLabel(event.status)}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        label={t("delete")}
+                        tooltip={t("delete")}
+                        icon={<Icon icon={TrashIcon} size="sm" />}
+                        isIconOnly
+                        onClick={() => setDeleting(event)}
                       />
-                      {event.conflictMessage && (
-                        <div>{event.conflictMessage}</div>
-                      )}
-                    </TableCell>
-                    <TableCell>{event.revision}</TableCell>
-                    <TableCell>—</TableCell>
-                  </TableRow>
-                ),
-              )}
-            </TableBody>
-          </Table>
-        </>
+                    </HStack>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                <TableRow key={`${event.type}-${event.id}`}>
+                  <TableCell>{event.effectiveDate}</TableCell>
+                  <TableCell>
+                    <strong>{event.symbol}</strong>
+                    <div>{event.companyName}</div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="neutral" label={t("split")} />
+                  </TableCell>
+                  <TableCell>
+                    {event.numerator}:{event.denominator}
+                  </TableCell>
+                  <TableCell>{event.provider}</TableCell>
+                  <TableCell>
+                    <Badge
+                      variant={splitStatusVariant(event.status)}
+                      label={statusLabel(event.status)}
+                    />
+                    {event.conflictMessage && (
+                      <div>{event.conflictMessage}</div>
+                    )}
+                  </TableCell>
+                  <TableCell>{event.revision}</TableCell>
+                  <TableCell>—</TableCell>
+                </TableRow>
+              ),
+            )}
+          </TableBody>
+        </Table>
       )}
 
       {nextCursor && (

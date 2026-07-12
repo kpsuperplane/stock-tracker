@@ -4,6 +4,7 @@ import {
   Button,
   Heading,
   HStack,
+  Icon,
   Table,
   TableBody,
   TableCell,
@@ -25,6 +26,7 @@ import {
   portfolioApi,
 } from "../api";
 import { FactStatus } from "../components/FactStatus";
+import { RefreshIcon } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
 import {
   formatDate,
@@ -319,15 +321,13 @@ export const PortfolioPage = ({
   const retry = () => void load();
 
   return (
-    <VStack gap={4} data-testid="portfolio-page">
+    <VStack gap={3} data-testid="portfolio-page">
       <HStack gap={3} justify="between" align="start" wrap="wrap">
-        <VStack gap={1}>
+        <VStack gap={0.5}>
           <Heading level={1}>{t("portfolioHeading")}</Heading>
-          <div>{t("portfolioIntro")}</div>
           {portfolio && (
-            <div>
-              {t("asOfDate")}: {formatDate(portfolio.asOfDate, locale)} ·{" "}
-              {t("latestTradingDate")}:{" "}
+            <div className="product-page-meta">
+              {formatDate(portfolio.asOfDate, locale)} · {t("latestClose")}{" "}
               {portfolio.latestTradingDate
                 ? formatDate(portfolio.latestTradingDate, locale)
                 : "—"}
@@ -336,7 +336,11 @@ export const PortfolioPage = ({
         </VStack>
         <Button
           variant="secondary"
+          size="sm"
           label={refreshing ? t("portfolioRefreshing") : t("refresh")}
+          tooltip={refreshing ? t("portfolioRefreshing") : t("refresh")}
+          icon={<Icon icon={RefreshIcon} size="sm" />}
+          isIconOnly
           isLoading={refreshing}
           onClick={retry}
         />
@@ -366,30 +370,7 @@ export const PortfolioPage = ({
       )}
 
       {portfolio && (
-        <VStack gap={3}>
-          <section aria-labelledby="portfolio-totals-heading">
-            <VStack gap={2}>
-              <Heading level={2} id="portfolio-totals-heading">
-                {t("totals")}
-              </Heading>
-              <HStack gap={5} wrap="wrap">
-                <VStack gap={0.5}>
-                  <span>{t("usdTotal")}</span>
-                  <strong style={numericStyle}>
-                    {safeCurrency(portfolio.totals.USD, "USD", locale)}
-                  </strong>
-                </VStack>
-                <VStack gap={0.5}>
-                  <span>{t("cadTotal")}</span>
-                  <strong style={numericStyle}>
-                    {safeCurrency(portfolio.totals.CAD, "CAD", locale)}
-                  </strong>
-                </VStack>
-                <FactStatus freshness={portfolio.freshness} conflicts={[]} />
-              </HStack>
-            </VStack>
-          </section>
-
+        <VStack gap={2}>
           {portfolio.conflicts.length > 0 && (
             <Banner
               status="warning"
@@ -411,55 +392,45 @@ export const PortfolioPage = ({
           {portfolio.positions.length === 0 ? (
             <Banner status="info" title={t("noPositions")} />
           ) : (
-            <section aria-labelledby="portfolio-positions-heading">
-              <VStack gap={2}>
-                <Heading level={2} id="portfolio-positions-heading">
-                  {t("positions")}
-                </Heading>
-                <div className="horizontal-scroll-hint" role="note">
-                  {t("horizontalScrollHint")}
-                </div>
-                <Table
-                  tableProps={{ className: "product-portfolio-table" }}
-                  density="compact"
-                  dividers="rows"
-                  hasHover
-                  textOverflow="wrap"
-                  aria-label={t("positions")}
-                >
-                  <TableHeader>
-                    <TableRow isHeaderRow>
-                      <TableHeaderCell>{t("instrument")}</TableHeaderCell>
-                      <TableHeaderCell style={numericStyle}>
-                        {t("quantity")}
-                      </TableHeaderCell>
-                      <TableHeaderCell style={numericStyle}>
-                        {t("rawClose")}
-                      </TableHeaderCell>
-                      <TableHeaderCell style={numericStyle}>
-                        {t("valuation")}
-                      </TableHeaderCell>
-                      <TableHeaderCell style={numericStyle}>
-                        {t("movement")}
-                      </TableHeaderCell>
-                      <TableHeaderCell>
-                        {t("actualTradingDate")}
-                      </TableHeaderCell>
-                      <TableHeaderCell>{t("summary")}</TableHeaderCell>
-                      <TableHeaderCell>{t("freshness")}</TableHeaderCell>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {portfolio.positions.map((position) => (
-                      <PositionRow
-                        key={position.instrumentId}
-                        position={position}
-                        locale={locale}
-                      />
-                    ))}
-                  </TableBody>
-                </Table>
-              </VStack>
+            <section aria-label={t("positions")}>
+              <Table
+                tableProps={{ className: "product-portfolio-table" }}
+                density="compact"
+                dividers="rows"
+                hasHover
+                textOverflow="wrap"
+                aria-label={t("positions")}
+              >
+                <TableHeader>
+                  <TableRow isHeaderRow>
+                    <TableHeaderCell>{t("instrument")}</TableHeaderCell>
+                    <TableHeaderCell style={numericStyle}>
+                      {t("quantity")}
+                    </TableHeaderCell>
+                    <TableHeaderCell style={numericStyle}>
+                      {t("rawClose")}
+                    </TableHeaderCell>
+                    <TableHeaderCell style={numericStyle}>
+                      {t("valuation")}
+                    </TableHeaderCell>
+                    <TableHeaderCell style={numericStyle}>
+                      {t("movement")}
+                    </TableHeaderCell>
+                    <TableHeaderCell>{t("actualTradingDate")}</TableHeaderCell>
+                    <TableHeaderCell>{t("summary")}</TableHeaderCell>
+                    <TableHeaderCell>{t("freshness")}</TableHeaderCell>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {portfolio.positions.map((position) => (
+                    <PositionRow
+                      key={position.instrumentId}
+                      position={position}
+                      locale={locale}
+                    />
+                  ))}
+                </TableBody>
+              </Table>
             </section>
           )}
         </VStack>

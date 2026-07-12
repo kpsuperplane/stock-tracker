@@ -28,24 +28,33 @@ export interface FactStatusProps {
   freshness: FactFreshness;
   conflicts?: PortfolioConflictDto[];
   analysisStatus?: NonNullable<PortfolioPositionDto["analysisStatus"]>;
+  compact?: boolean;
 }
 
 export const FactStatus = ({
   freshness,
   conflicts = [],
   analysisStatus,
+  compact = false,
 }: FactStatusProps) => {
   const { t } = useI18n();
+  const freshnessLabel = compact
+    ? t(freshness)
+    : `${t("valuationFreshness")}: ${t(freshness)}`;
   return (
     <VStack gap={1} align="start">
       <Badge
         variant={freshnessBadgeVariant(freshness)}
-        label={`${t("valuationFreshness")}: ${t(freshness)}`}
+        label={freshnessLabel}
       />
       {analysisStatus && analysisStatus !== "complete" && (
         <Badge
           variant={freshnessBadgeVariant(analysisStatus as FactFreshness)}
-          label={`${t("analysisStatusLabel")}: ${t(analysisStatus)}`}
+          label={
+            compact
+              ? t(analysisStatus)
+              : `${t("analysisStatusLabel")}: ${t(analysisStatus)}`
+          }
         />
       )}
       {conflicts.length > 0 && (

@@ -24,7 +24,7 @@ describe("legacy stylesheet boundary", () => {
     expect(calendarStyles).toContain("prefers-reduced-motion");
     expect(styles).toContain(".backfill-date-layout");
     expect(styles).toContain('content: "∙ 必填"');
-    expect(styles).toContain(".horizontal-scroll-hint");
+    expect(styles).not.toContain(".horizontal-scroll-hint");
     expect(styles).toContain(".calendar-mover-dialog__body");
     expect(styles).not.toContain(".product-page {");
     expect(styles).not.toContain(".product-shell {");
