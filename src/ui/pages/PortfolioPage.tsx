@@ -417,6 +417,7 @@ export const PortfolioPage = ({
                   {t("positions")}
                 </Heading>
                 <Table
+                  tableProps={{ className: "product-portfolio-table" }}
                   density="compact"
                   dividers="rows"
                   hasHover

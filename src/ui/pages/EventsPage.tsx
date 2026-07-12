@@ -304,6 +304,7 @@ const SplitReviewDialog = ({
           <div>{t("splitReviewNoEvents")}</div>
         ) : (
           <Table
+            tableProps={{ className: "product-split-table" }}
             density="compact"
             dividers="rows"
             aria-label={t("splitReviewTitle")}
@@ -688,6 +689,7 @@ export const EventsPage = ({
         <Banner status="info" title={t("noEvents")} />
       ) : (
         <Table
+          tableProps={{ className: "product-events-table" }}
           density="compact"
           dividers="rows"
           hasHover

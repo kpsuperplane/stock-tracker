@@ -713,3 +713,34 @@ body {
     transform: none;
   }
 }
+
+/* Astryx's children-mode tables apply max-width: 0 to wrapping cells. These
+ * product tables need readable ledger columns, with horizontal scrolling on
+ * narrow screens instead of one-character wrapping. */
+.product-portfolio-table,
+.product-events-table,
+.product-split-table {
+  width: 100%;
+  table-layout: auto;
+}
+
+.product-portfolio-table {
+  min-width: 72rem;
+}
+
+.product-events-table {
+  min-width: 58rem;
+}
+
+.product-split-table {
+  min-width: 38rem;
+}
+
+.product-portfolio-table th,
+.product-portfolio-table td,
+.product-events-table th,
+.product-events-table td,
+.product-split-table th,
+.product-split-table td {
+  max-width: none;
+}
