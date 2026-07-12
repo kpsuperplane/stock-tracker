@@ -22,6 +22,7 @@ export interface NormalizedDividendEvent extends DividendEventIdentity {
   exDate: string;
   amount: string;
   currency: string;
+  sourceUrl?: string | null;
 }
 
 export interface DividendEventRange {

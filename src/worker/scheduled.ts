@@ -1,10 +1,13 @@
 import { readPortfolioFeatureFlags } from "../config/features";
 import { RunRepository } from "../db/runs";
 import { TickerRepository } from "../db/tickers";
+import { AlphaVantageDividendEventProvider } from "../providers/alpha-vantage-dividends";
+import { YahooDividendEventProvider } from "../providers/yahoo-dividends";
 import {
   BackfillPipelineAdapter,
   backfillPipelineFlagEnabled,
 } from "../services/backfill-pipeline";
+import { ScheduledDividendRefreshService } from "../services/dividend-refresh";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
 import { LegacyFactMigrator } from "../services/legacy-fact-migrator";
@@ -23,6 +26,11 @@ export const LEGACY_SCREENING_CRON = "0 22 * * MON-FRI";
 
 const isNormalizedPlannerCron = (cron: string): boolean =>
   (NORMALIZED_PLANNER_CRONS as readonly string[]).includes(cron);
+
+const dividendProviderFor = (env: Env) =>
+  env.ALPHA_VANTAGE_API_KEY
+    ? new AlphaVantageDividendEventProvider(env.ALPHA_VANTAGE_API_KEY)
+    : new YahooDividendEventProvider();
 
 const continueActiveBackfills = async (
   env: Env,
@@ -102,6 +110,29 @@ export const handleScheduled = async (
   // is disabled (and available as the rollback path after enabling it).
   if (controller.cron !== LEGACY_SCREENING_CRON) return;
   const now = new Date(controller.scheduledTime).toISOString();
+  let dividendRefresh: string | null = null;
+  try {
+    dividendRefresh = JSON.stringify(
+      await new ScheduledDividendRefreshService({
+        db: env.DB,
+        provider: dividendProviderFor(env),
+        now: () => new Date(now),
+      }).refreshHeldInstruments(),
+    );
+    logEvent("dividend_refresh_scheduled", {
+      scheduledTime: now,
+      result: dividendRefresh,
+    });
+  } catch (error) {
+    dividendRefresh = JSON.stringify({
+      status: "failed",
+      message: safeErrorMessage(error),
+    });
+    logEvent("dividend_refresh_failed", {
+      scheduledTime: now,
+      message: safeErrorMessage(error),
+    });
+  }
   let migrationResult: string | null = null;
   if (portfolioFlags.migrator) {
     try {
@@ -156,5 +187,6 @@ export const handleScheduled = async (
     compatibilitySeeded,
     compatibilityRetried,
     migration: migrationResult,
+    dividends: dividendRefresh,
   });
 };

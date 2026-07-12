@@ -107,7 +107,8 @@ describe("CalendarPage", () => {
     expect(markup).toContain('data-testid="calendar-page"');
     expect(markup).toContain("Market calendar");
     expect(markup).toContain("+5.32%");
-    expect(markup).toContain("AAPL $0.25");
+    expect(markup).toContain("AAPL $0.50");
+    expect(markup).toContain('aria-label="AAPL, Dividend, AAPL $0.50"');
     expect(markup).toContain(
       "Future dividend coverage is not currently known.",
     );

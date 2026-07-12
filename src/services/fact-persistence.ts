@@ -403,7 +403,10 @@ export class DividendFactsService {
           typeof candidate.currency === "string" &&
           typeof candidate.provider === "string" &&
           typeof candidate.providerEventId === "string" &&
-          typeof candidate.providerRevision === "string"
+          typeof candidate.providerRevision === "string" &&
+          (candidate.sourceUrl === undefined ||
+            candidate.sourceUrl === null ||
+            typeof candidate.sourceUrl === "string")
         );
       });
       if (!eventsAreValid) throw new Error("provider_snapshot_mismatch");
@@ -466,6 +469,12 @@ export class DividendFactsService {
         if (event.currency !== "USD" && event.currency !== "CAD") {
           throw new Error("provider_unsupported_currency");
         }
+        const sourceUrl = event.sourceUrl
+          ? canonicalUrl(event.sourceUrl)
+          : null;
+        if (event.sourceUrl && sourceUrl === null) {
+          throw new Error("provider_invalid_source_url");
+        }
         const existing = existingProviderRows.filter(
           (row) => row.providerEventId === event.providerEventId,
         );
@@ -514,7 +523,7 @@ export class DividendFactsService {
               provider: event.provider,
               providerEventId: event.providerEventId,
               providerRevision: event.providerRevision,
-              sourceUrl: null,
+              sourceUrl,
               announcedAt: null,
               retrievedAt: range.range.observedAt,
               status: "error",
@@ -555,7 +564,7 @@ export class DividendFactsService {
               provider: event.provider,
               providerEventId: event.providerEventId,
               providerRevision: event.providerRevision,
-              sourceUrl: null,
+              sourceUrl,
               announcedAt: null,
               retrievedAt: range.range.observedAt,
               status: quarantined ? "error" : "active",

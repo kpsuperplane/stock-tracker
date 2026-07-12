@@ -18,6 +18,15 @@ best-effort dividend feed. Its rows may populate Calendar facts, but absence of
 a future row means only that this source reports no currently known announced
 event. It is not evidence that the issuer will pay no future dividend.
 
+### Production fallback
+
+The Worker prefers Alpha Vantage when `ALPHA_VANTAGE_API_KEY` is configured.
+Without that secret it falls back to Yahoo chart dividend events so historical
+ex-dividend dates, per-share amounts, eligible quantities, and expected totals
+remain usable. Yahoo fallback rows retain their provider identity and source
+link, remain explicitly best-effort, and do not establish complete historical
+or future-announcement coverage.
+
 Continue to keep the existing `YahooMarketDataProvider` and its
 `DailySeries.corporateActionDates` behavior unchanged. The new split adapter
 must never authorize a ledger mutation by itself, and neither adapter may be

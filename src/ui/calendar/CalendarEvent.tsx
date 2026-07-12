@@ -100,9 +100,13 @@ export const CalendarEventChip = ({
         locale,
       )}%`
     : `${event.symbol} ${
-        event.amountPerShareDecimal === null
+        event.expectedTotalValueDecimal === null
           ? "—"
-          : safeCurrency(event.amountPerShareDecimal, event.currency, locale)
+          : safeCurrency(
+              event.expectedTotalValueDecimal,
+              event.currency,
+              locale,
+            )
       }`;
   const tone = mover ? moverTone(event) : "dividend";
   const ariaLabel = mover
