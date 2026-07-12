@@ -204,6 +204,7 @@ const SourcesButton = ({ position }: { position: PortfolioPositionDto }) => {
     <Popover
       label={t("sources")}
       width="min(28rem, calc(100vw - 2rem))"
+      hasCloseButton={false}
       content={<SourceLinks sources={sources} />}
     >
       <Button
