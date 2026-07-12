@@ -527,7 +527,13 @@ const createBody = (overrides: Record<string, unknown> = {}) => ({
 
 describe("portfolio event routes", () => {
   it("accepts a watchlist symbol in place of an opaque instrument ID", async () => {
-    await insertInstrument();
+    await env.DB.prepare(
+      `INSERT INTO tickers
+       (id, symbol, company_name, exchange, currency, active, created_at, updated_at)
+       VALUES ('ticker-shop', 'SHOP.TO', 'Shopify', 'TSX', 'CAD', 1, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
     mockSplitProvider();
 
     const response = await exports.default.fetch(
@@ -542,6 +548,15 @@ describe("portfolio event routes", () => {
     expect(
       (await response.json<{ error: { code: string } }>()).error.code,
     ).toBe("split_review_required");
+    expect(
+      await env.DB.prepare(
+        "SELECT id, symbol, provider_symbol FROM instruments WHERE symbol = 'SHOP.TO'",
+      ).first(),
+    ).toEqual({
+      id: "SHOP.TO",
+      symbol: "SHOP.TO",
+      provider_symbol: "SHOP.TO",
+    });
   });
 
   it("returns a paginated combined timeline with canonical decimal strings and filters", async () => {

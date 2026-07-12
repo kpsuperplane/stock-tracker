@@ -26,6 +26,16 @@ interface InstrumentRow {
   updated_at: string;
 }
 
+interface TickerIdentityRow {
+  id: string;
+  symbol: string;
+  company_name: string;
+  exchange: string;
+  currency: "USD" | "CAD";
+  created_at: string;
+  updated_at: string;
+}
+
 const mapInstrument = (row: InstrumentRow): InstrumentRecord => ({
   id: row.id,
   symbol: row.symbol,
@@ -81,5 +91,53 @@ export class InstrumentRepository {
       .bind(symbol)
       .first<InstrumentRow>();
     return row ? mapInstrument(row) : null;
+  }
+
+  /**
+   * Materialize a normalized identity only when a ledger mutation needs it.
+   * The legacy watchlist remains the source of display/provider metadata, while
+   * the normalized symbol itself is the stable identity for this single-
+   * provider application.
+   */
+  async ensureForSymbol(
+    symbol: string,
+    now: string,
+  ): Promise<InstrumentRecord | null> {
+    const normalized = symbol.trim().toUpperCase();
+    if (!normalized) return null;
+
+    const existing = await this.findBySymbol(normalized);
+    if (existing) return existing;
+
+    const ticker = await this.db
+      .prepare(
+        `SELECT id, symbol, company_name, exchange, currency,
+                created_at, updated_at
+           FROM tickers
+          WHERE symbol = ?1`,
+      )
+      .bind(normalized)
+      .first<TickerIdentityRow>();
+    if (!ticker) return null;
+
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO instruments
+           (id, symbol, company_name, exchange, currency, instrument_type,
+            provider, provider_symbol, provider_metadata_json, created_at,
+            updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'stock', 'yahoo', ?2, NULL, ?6, ?6)`,
+      )
+      .bind(
+        ticker.symbol,
+        ticker.symbol,
+        ticker.company_name,
+        ticker.exchange,
+        ticker.currency,
+        now,
+      )
+      .run();
+
+    return this.findBySymbol(normalized);
   }
 }

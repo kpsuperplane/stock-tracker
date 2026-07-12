@@ -495,7 +495,10 @@ const createTransaction = async (context: EventContext) => {
   const instruments = new InstrumentRepository(context.env.DB);
   const instrument =
     (await instruments.findById(body.instrumentId)) ??
-    (await instruments.findBySymbol(body.instrumentId.trim().toUpperCase()));
+    (await instruments.ensureForSymbol(
+      body.instrumentId.trim().toUpperCase(),
+      new Date().toISOString(),
+    ));
   const result = await new LedgerService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
