@@ -16,7 +16,6 @@ Before scheduling a read or write cutover, record these facts:
 | Compatibility writes | Legacy publication still wins; repair markers are empty or explained | D1 counts, provenance sample, safe tail | `NOT RUN` |
 | Published migration | High-water reached; two consecutive clean passes; no unexplained audit differences | migrator status/audit export | `NOT RUN` |
 | Performance | Local budgets in [portfolio-performance.md](./portfolio-performance.md) pass | `npm run test:worker -- tests/worker/performance.test.ts` | `PASS (local)` |
-| UI asset rollback | A previously built `VITE_NEW_PRODUCT_UI=false` asset/Worker version is available | deployment artifact/version ID | `NOT RUN` |
 | Normalized processor | Market/news/LLM processor is configured and tested; no `pipeline_processor_unconfigured` terminal outcomes | Queue consumer and provider evidence | `PASS (local; production not run)` |
 | Rollback | Legacy schedule/queue and published generations remain available | flag-off rehearsal evidence | `NOT RUN` |
 
@@ -120,13 +119,9 @@ Keep `PORTFOLIO_MIGRATOR_ENABLED`, `PORTFOLIO_NEW_READS_ENABLED`, and
 5. Roll back the API read rehearsal by setting
    `PORTFOLIO_NEW_READS_ENABLED=false` (and any explicitly configured legacy
    `READ_MODELS_ENABLED`/model-specific aliases to false). This makes the
-   normalized API return its explicit disabled response, but it does **not**
-   switch the already-built browser bundle: `VITE_NEW_PRODUCT_UI` is a
-   build-time gate. To restore the legacy UI, deploy the previously verified
-   asset/Worker version built with `VITE_NEW_PRODUCT_UI=false` (or roll back to
-   that deployment version) after the API flags are safe. Verify the legacy
-   page routes and API, then confirm normalized facts, ledger transactions,
-   and audit rows were not deleted or rewritten.
+   normalized API return its explicit disabled response; the product UI remains
+   deployed and presents that state. Confirm normalized facts, ledger
+   transactions, and audit rows were not deleted or rewritten.
 
 ## Rollback and abort procedure
 
@@ -138,10 +133,8 @@ budget breach.
 1. Disable new writes first (if they were ever enabled):
    `PORTFOLIO_NEW_WRITES_ENABLED=false`.
 2. Disable new reads: `PORTFOLIO_NEW_READS_ENABLED=false`.
-3. Roll back the static asset/Worker deployment to the recorded
-   `VITE_NEW_PRODUCT_UI=false` version. If that artifact is unavailable, stop
-   and serve the explicit read-model-disabled state; do not claim the legacy
-   UI has been restored. An unavailable asset rollback is an abort criterion.
+3. Leave the product UI deployed and verify it presents the explicit
+   read-model-disabled state; there is no legacy UI asset rollback.
 4. Leave D1 work, normalized facts, audit rows, and legacy generations intact;
    do not run cleanup or destructive SQL as rollback.
 5. Keep the legacy Cron/Queue path authoritative. Disable dual-write and the

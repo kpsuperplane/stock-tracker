@@ -15,25 +15,21 @@ npm run dev
 
 Open <http://127.0.0.1:5173> and use the credentials from `.dev.vars`. Never commit `.dev.vars`.
 
-Production builds enable the Portfolio/Events/Calendar/Backfill shell via
-`.env.production`. Local development can still opt into it explicitly with
-`VITE_NEW_PRODUCT_UI=true`; leaving the variable unset keeps the legacy
-dashboard as the default. The shell and its derived read models are separate gates: copy
-the commented `READ_MODELS_ENABLED=true` line into `.dev.vars` before previewing
-Portfolio, Calendar, or normalized reconciliation jobs, then run:
+The Portfolio/Events/Calendar/Backfill shell is the only UI. Its derived read
+models remain server-side gates: copy the commented `READ_MODELS_ENABLED=true`
+line into `.dev.vars` before previewing Portfolio, Calendar, or normalized
+reconciliation jobs, then run:
 
 ```bash
-VITE_NEW_PRODUCT_UI=true npm run dev
+npm run dev
 ```
 
-If only the shell gate is enabled, Portfolio and Calendar show an explicit
-read-model-disabled message instead of silently treating a 404 as an empty
-portfolio.
+If the read models are disabled, Portfolio and Calendar show an explicit
+read-model-disabled message instead of silently treating a 404 as empty data.
 
-### Product UI preview
+### Application UI
 
-With the product flag enabled, the persistent sidebar links to four stable
-destinations:
+The persistent navigation links to four stable destinations:
 
 - **Portfolio** shows today’s derived holdings, quantity, native-currency
   valuation, latest completed close movement, and Chinese analysis/source links
@@ -71,23 +67,12 @@ npm run check
 
 `npm run check` regenerates Worker types, checks formatting/lint and TypeScript, runs service and local D1/Worker tests, and creates the production build.
 
-The product shell remains opt-in during migration. For a flag-boundary smoke
-check, run the same gate once with the legacy default and once with the product
-preview enabled:
-
-```bash
-VITE_NEW_PRODUCT_UI=false npm run check
-VITE_NEW_PRODUCT_UI=true READ_MODELS_ENABLED=true npm run check
-```
-
 Worker integration tests use the local-only `wrangler.test.jsonc`. Keep that test configuration separate from `wrangler.jsonc`; pointing Vitest at the production configuration can connect remote bindings and mutate deployed Worker state.
 
 ## Portfolio-events foundation (development notes)
 
-The ledger API is intentionally available for tests and later UI work, but the
-current dashboard and navigation remain the legacy report experience until the
-Portfolio/Events UI is delivered. Do not link these routes from the existing
-application yet.
+The ledger API backs the Events and Portfolio experience and remains available
+to integration tests and external clients.
 
 - `GET /api/events` returns the reverse-chronological transaction/split timeline
   and its position-basis revision. It accepts bounded `limit`, `cursor`,

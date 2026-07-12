@@ -83,10 +83,4 @@ describe("BackfillPage", () => {
     expect(markup).toContain("Manual backfills");
     expect(markup).toContain('role="progressbar"');
   });
-
-  it("preserves the legacy page behind the legacy prop", () => {
-    const markup = renderToStaticMarkup(<BackfillPage legacy />);
-    expect(markup).toContain("历史回补");
-    expect(markup).not.toContain("Backfill and reconciliation");
-  });
 });

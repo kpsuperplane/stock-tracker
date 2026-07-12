@@ -133,7 +133,6 @@ export interface ProductAppProps {
   children?: ReactNode;
 }
 
-/** Feature-flagged product UI shell; the legacy App remains outside it. */
 export const ProductApp = ({
   initialPath,
   initialLocale,

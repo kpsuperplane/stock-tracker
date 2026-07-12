@@ -7,16 +7,12 @@ const calendarStyles = readFileSync(
   "utf8",
 );
 
-describe("legacy stylesheet boundary", () => {
-  it("keeps legacy control and typography rules out of the Astryx shell", () => {
-    expect(styles).toContain(".legacy-app button");
-    expect(styles).toContain(".legacy-app a");
-    expect(styles).toContain(".legacy-app input");
-    expect(styles).toContain(".legacy-app h1");
+describe("product stylesheet", () => {
+  it("contains no legacy UI selectors", () => {
+    expect(styles).not.toContain(".legacy-app");
+    expect(styles).not.toContain(".dashboard");
+    expect(styles).not.toContain(".portfolio-table");
     expect(styles).toContain("min-height: 100dvh");
-    expect(styles).toContain("background: var(--background)");
-    expect(styles).not.toMatch(/\nbutton,\ninput,\nselect\s*\{/);
-    expect(styles).not.toMatch(/\n:focus-visible\s*\{/);
   });
 
   it("keeps custom product CSS scoped to the calendar and phone fallback", () => {
@@ -36,10 +32,6 @@ describe("legacy stylesheet boundary", () => {
 
   it("does not force minimum widths on tables", () => {
     for (const className of [
-      "mover-table",
-      "watchlist-table",
-      "job-table",
-      "error-table",
       "product-portfolio-table",
       "product-events-table",
       "product-split-table",
