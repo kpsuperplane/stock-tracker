@@ -517,7 +517,7 @@ const mockSplitProvider = (revision = "snapshot-r1") =>
     );
 
 const createBody = (overrides: Record<string, unknown> = {}) => ({
-  instrumentId: "instrument-1",
+  symbol: "SHOP.TO",
   tradeDate: "2024-01-02",
   side: "buy",
   quantityDecimal: "1.230000",
@@ -540,7 +540,7 @@ describe("portfolio event routes", () => {
       new Request("http://local/api/events", {
         method: "POST",
         headers: mutationHeaders('"position-basis-0"'),
-        body: JSON.stringify(createBody({ instrumentId: "shop.to" })),
+        body: JSON.stringify(createBody({ symbol: "shop.to" })),
       }),
     );
 
@@ -746,7 +746,7 @@ describe("portfolio event routes", () => {
         method: "POST",
         headers: mutationHeaders(`"position-basis-${reviewBasis}"`),
         body: JSON.stringify({
-          instrumentId: "instrument-1",
+          symbol: "SHOP.TO",
           confirmation: {
             requestedStartDate: review.review.range.requestedStartDate,
             requestedEndDate: review.review.range.requestedEndDate,
@@ -776,7 +776,7 @@ describe("portfolio event routes", () => {
         method: "POST",
         headers: mutationHeaders(`"position-basis-${refreshedBasis}"`),
         body: JSON.stringify({
-          instrumentId: "instrument-1",
+          symbol: "SHOP.TO",
           confirmation: {
             requestedStartDate:
               refreshedPayload.review.range.requestedStartDate,
@@ -869,7 +869,7 @@ describe("portfolio event routes", () => {
         method: "POST",
         headers: mutationHeaders('"position-basis-0"'),
         body: JSON.stringify({
-          instrumentId: "instrument-1",
+          symbol: "SHOP.TO",
           confirmation: {
             requestedStartDate: "2024-01-01",
             requestedEndDate: marketDate,
@@ -914,7 +914,7 @@ describe("portfolio event routes", () => {
         method: "POST",
         headers: mutationHeaders('"position-basis-1"'),
         body: JSON.stringify({
-          instrumentId: "instrument-1",
+          symbol: "SHOP.TO",
           confirmation: {
             requestedStartDate: review.review.range.requestedStartDate,
             requestedEndDate: review.review.range.requestedEndDate,

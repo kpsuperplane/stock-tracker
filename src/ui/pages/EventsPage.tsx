@@ -41,11 +41,9 @@ import {
 import { useI18n } from "../i18n/I18nProvider";
 import { EventImportDialog } from "./EventImportDialog";
 
-type TransactionInput = Required<
-  Pick<TransactionMutationInput, "instrumentId">
-> &
-  Omit<TransactionMutationInput, "instrumentId">;
-type EditableTransactionInput = Omit<TransactionMutationInput, "instrumentId">;
+type TransactionInput = Required<Pick<TransactionMutationInput, "symbol">> &
+  Omit<TransactionMutationInput, "symbol">;
+type EditableTransactionInput = Omit<TransactionMutationInput, "symbol">;
 
 type PendingMutation =
   | { kind: "create"; input: TransactionInput }
@@ -63,7 +61,7 @@ type PendingMutation =
     };
 
 type SplitReviewState = {
-  instrumentId: string;
+  symbol: string;
   snapshot: SplitSnapshotLike;
   pending: PendingMutation;
 };
@@ -155,9 +153,7 @@ const TransactionDialog = ({
   isSaving: boolean;
 }) => {
   const { t } = useI18n();
-  const [instrumentId, setInstrumentId] = useState(
-    transaction?.instrumentId ?? "",
-  );
+  const [symbol, setSymbol] = useState(transaction?.symbol ?? "");
   const [tradeDate, setTradeDate] = useState(transaction?.tradeDate ?? "");
   const [side, setSide] = useState<"buy" | "sell">(transaction?.side ?? "buy");
   const [quantityDecimal, setQuantityDecimal] = useState(
@@ -169,7 +165,7 @@ const TransactionDialog = ({
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const submit = async () => {
-    if ((!transaction && instrumentId.trim() === "") || tradeDate === "") {
+    if ((!transaction && symbol.trim() === "") || tradeDate === "") {
       setValidationError(t("genericMutationError"));
       return;
     }
@@ -187,7 +183,7 @@ const TransactionDialog = ({
     if (transaction) {
       await onSave(common);
     } else {
-      await onSave({ ...common, instrumentId: instrumentId.trim() });
+      await onSave({ ...common, symbol: symbol.trim() });
     }
   };
 
@@ -208,8 +204,8 @@ const TransactionDialog = ({
           {!transaction && (
             <TextInput
               label={t("transactionSymbol")}
-              value={instrumentId}
-              onChange={setInstrumentId}
+              value={symbol}
+              onChange={setSymbol}
               isRequired
               hasAutoFocus
             />
@@ -468,14 +464,14 @@ export const EventsPage = ({
             ? details.review
             : details.correction
         ) as SplitSnapshotLike;
-        const instrumentId =
+        const symbol =
           pending.kind === "create"
-            ? pending.input.instrumentId
+            ? pending.input.symbol
             : pending.kind === "update"
-              ? events.find((event) => event.id === pending.id)?.instrumentId
-              : events.find((event) => event.id === pending.id)?.instrumentId;
-        if (instrumentId) {
-          setReview({ instrumentId, snapshot, pending });
+              ? events.find((event) => event.id === pending.id)?.symbol
+              : events.find((event) => event.id === pending.id)?.symbol;
+        if (symbol) {
+          setReview({ symbol, snapshot, pending });
           setMutationError(
             caught.code === "split_correction_conflict"
               ? t("splitCorrection")
@@ -559,7 +555,7 @@ export const EventsPage = ({
         providerRevision: review.snapshot.range.providerRevision,
       };
       const result = await apiClient.confirmSplit(
-        review.instrumentId,
+        review.symbol,
         confirmation,
         positionBasisRevision,
       );

@@ -32,7 +32,7 @@ const confirmationSchema = z
 
 const createSchema = z
   .object({
-    instrumentId: z.string().min(1).max(128),
+    symbol: z.string().min(1).max(32),
     tradeDate: z.iso.date(),
     side: z.enum(["buy", "sell"]),
     quantityDecimal: z.string().min(1).max(64),
@@ -59,7 +59,7 @@ const deleteSchema = z
 
 const confirmSchema = z
   .object({
-    instrumentId: z.string().min(1).max(128),
+    symbol: z.string().min(1).max(32),
     confirmation: confirmationSchema,
   })
   .strict();
@@ -493,12 +493,18 @@ const createTransaction = async (context: EventContext) => {
   const future = futureTrade(context, body.tradeDate);
   if (future) return future;
   const instruments = new InstrumentRepository(context.env.DB);
-  const instrument =
-    (await instruments.findById(body.instrumentId)) ??
-    (await instruments.ensureForSymbol(
-      body.instrumentId.trim().toUpperCase(),
-      new Date().toISOString(),
-    ));
+  const instrument = await instruments.ensureForSymbol(
+    body.symbol,
+    new Date().toISOString(),
+  );
+  if (!instrument) {
+    return error(
+      context,
+      422,
+      "instrument_not_found",
+      "The selected symbol is not in the watchlist.",
+    );
+  }
   const result = await new LedgerService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
@@ -506,7 +512,7 @@ const createTransaction = async (context: EventContext) => {
     expectedPositionBasisRevision: positionBasisRevision,
     proposal: {
       kind: "create",
-      instrumentId: instrument?.id ?? body.instrumentId,
+      instrumentId: instrument.id,
       tradeDate: body.tradeDate,
       side: body.side,
       quantityDecimal: body.quantityDecimal,
@@ -592,12 +598,23 @@ const confirmSplitHistory = async (context: EventContext) => {
   const stale = await staleBasis(context, positionBasisRevision);
   if (stale) return stale;
   const body = confirmSchema.parse(await context.req.json());
+  const instrument = await new InstrumentRepository(
+    context.env.DB,
+  ).findBySymbol(body.symbol.trim().toUpperCase());
+  if (!instrument) {
+    return error(
+      context,
+      422,
+      "instrument_not_found",
+      "The selected symbol is not in the watchlist.",
+    );
+  }
   const result = await new LedgerService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
   }).confirmSplitHistory({
     expectedPositionBasisRevision: positionBasisRevision,
-    instrumentId: body.instrumentId,
+    instrumentId: instrument.id,
     confirmation: body.confirmation,
   });
   return mutationResponse(context, result, 200);

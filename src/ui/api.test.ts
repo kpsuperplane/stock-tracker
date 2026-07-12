@@ -92,7 +92,7 @@ describe("product event API clients", () => {
     const error = await eventsApi
       .create(
         {
-          instrumentId: "instrument-1",
+          symbol: "SHOP.TO",
           tradeDate: "2026-07-10",
           side: "buy",
           quantityDecimal: "1",

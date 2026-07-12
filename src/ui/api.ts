@@ -202,7 +202,7 @@ export interface CalendarApiClient {
 }
 
 export type TransactionMutationInput = {
-  instrumentId?: string;
+  symbol?: string;
   tradeDate: string;
   side: "buy" | "sell";
   quantityDecimal: string;
@@ -286,13 +286,13 @@ export type ImportCommitResponse = {
 export interface EventsApiClient {
   list: (filters?: EventFilters) => Promise<EventsTimelineDto>;
   create: (
-    input: Required<Pick<TransactionMutationInput, "instrumentId">> &
-      Omit<TransactionMutationInput, "instrumentId">,
+    input: Required<Pick<TransactionMutationInput, "symbol">> &
+      Omit<TransactionMutationInput, "symbol">,
     positionBasisRevision: number,
   ) => Promise<EventMutationResponse>;
   update: (
     id: string,
-    input: Omit<TransactionMutationInput, "instrumentId">,
+    input: Omit<TransactionMutationInput, "symbol">,
     positionBasisRevision: number,
     eventRevision: number,
   ) => Promise<EventMutationResponse>;
@@ -303,7 +303,7 @@ export interface EventsApiClient {
     confirmation?: SplitConfirmationDto,
   ) => Promise<EventMutationResponse>;
   confirmSplit: (
-    instrumentId: string,
+    symbol: string,
     confirmation: SplitConfirmationDto,
     positionBasisRevision: number,
   ) => Promise<EventMutationResponse>;
@@ -369,11 +369,11 @@ export const eventsApi: EventsApiClient = {
       headers: mutationHeaders(positionBasisRevision, eventRevision),
       body: JSON.stringify(confirmation ? { confirmation } : {}),
     }),
-  confirmSplit: (instrumentId, confirmation, positionBasisRevision) =>
+  confirmSplit: (symbol, confirmation, positionBasisRevision) =>
     request<EventMutationResponse>("/api/corporate-actions/confirm", {
       method: "POST",
       headers: mutationHeaders(positionBasisRevision),
-      body: JSON.stringify({ instrumentId, confirmation }),
+      body: JSON.stringify({ symbol, confirmation }),
     }),
 };
 
