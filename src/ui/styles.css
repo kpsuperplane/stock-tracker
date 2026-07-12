@@ -59,6 +59,10 @@ body {
   min-width: 0;
 }
 
+.product-top-nav {
+  background-color: var(--color-background-surface);
+}
+
 @media (max-width: 520px) {
   .backfill-date-layout {
     grid-auto-flow: row;

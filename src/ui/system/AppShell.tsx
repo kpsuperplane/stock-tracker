@@ -61,6 +61,7 @@ const ProductNavigation = ({ activeRoute, onNavigate }: NavigationProps) => {
   const { t } = useI18n();
   return (
     <TopNav
+      className="product-top-nav"
       label={t("navigation")}
       heading={
         <TopNavHeading
