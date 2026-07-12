@@ -67,7 +67,8 @@ describe("EventsPage", () => {
     expect(markup).toContain("Apple Inc.");
     expect(markup).toContain("Buy");
     expect(markup).toContain("Split");
-    expect(markup).toContain("Active");
+    expect(markup).not.toContain(">Status<");
+    expect(markup).not.toContain(">Revision<");
     expect(markup).toContain("Import CSV");
     expect(markup).toContain("Select...");
   });

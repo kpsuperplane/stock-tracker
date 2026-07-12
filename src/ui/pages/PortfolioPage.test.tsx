@@ -113,7 +113,10 @@ describe("PortfolioPage", () => {
     expect(markup).toContain("+5.32%");
     expect(markup).toContain("苹果发布了新的产品更新。");
     expect(markup).toContain("https://example.com/apple");
-    expect(markup).toContain("Stale");
+    expect(markup).toContain(">Sources<");
+    expect(markup).not.toContain("Trading date");
+    expect(markup).not.toContain("Freshness");
+    expect(markup).not.toContain("Under ±5% threshold");
     expect(markup).toContain("A close is stale.");
   });
 
@@ -127,7 +130,11 @@ describe("PortfolioPage", () => {
     expect(markup).not.toContain("美元合计");
     expect(markup).not.toContain("加元合计");
     expect(markup).toContain("苹果发布了新的产品更新。");
-    expect(markup).toContain("超过 ±5% 阈值");
+    expect(markup).toContain(">来源<");
+    expect(markup).not.toContain("交易日期");
+    expect(markup).not.toContain("新鲜度");
+    expect(markup).not.toContain("低于 ±5% 阈值");
+    expect(markup).not.toContain("超过 ±5% 阈值");
     expect(markup).not.toContain("USD total");
   });
 

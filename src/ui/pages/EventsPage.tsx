@@ -24,7 +24,6 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import type {
   EventsTimelineDto,
-  SplitEventDto,
   TransactionEventDto,
 } from "../../shared/contracts";
 import {
@@ -108,21 +107,6 @@ const DialogCloseButton = ({
       onClick={() => onOpenChange(false)}
     />
   );
-};
-
-const splitStatusVariant = (
-  status: SplitEventDto["status"],
-): "neutral" | "success" | "warning" | "error" => {
-  switch (status) {
-    case "active":
-      return "success";
-    case "candidate":
-      return "warning";
-    case "quarantined":
-      return "error";
-    default:
-      return "neutral";
-  }
 };
 
 const isSplitSnapshot = (value: unknown): value is SplitSnapshotLike => {
@@ -630,19 +614,6 @@ export const EventsPage = ({
     void load(true);
   };
 
-  const statusLabel = (event: SplitEventDto["status"]) => {
-    switch (event) {
-      case "active":
-        return t("active");
-      case "candidate":
-        return t("candidate");
-      case "superseded":
-        return t("superseded");
-      default:
-        return t("quarantined");
-    }
-  };
-
   return (
     <VStack gap={3} data-testid="events-page">
       <HStack gap={2} justify="between" align="center" wrap="nowrap">
@@ -760,8 +731,6 @@ export const EventsPage = ({
               <TableHeaderCell>{t("side")}</TableHeaderCell>
               <TableHeaderCell>{t("quantity")}</TableHeaderCell>
               <TableHeaderCell>{t("price")}</TableHeaderCell>
-              <TableHeaderCell>{t("status")}</TableHeaderCell>
-              <TableHeaderCell>{t("revision")}</TableHeaderCell>
               <TableHeaderCell>{t("actions")}</TableHeaderCell>
             </TableRow>
           </TableHeader>
@@ -784,8 +753,6 @@ export const EventsPage = ({
                   <TableCell>
                     {event.priceDecimal} {event.currency}
                   </TableCell>
-                  <TableCell>{t("transactionEvents")}</TableCell>
-                  <TableCell>{event.revision}</TableCell>
                   <TableCell>
                     <HStack gap={1} wrap="wrap">
                       <Button
@@ -823,16 +790,6 @@ export const EventsPage = ({
                     {event.numerator}:{event.denominator}
                   </TableCell>
                   <TableCell>{event.provider}</TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={splitStatusVariant(event.status)}
-                      label={statusLabel(event.status)}
-                    />
-                    {event.conflictMessage && (
-                      <div>{event.conflictMessage}</div>
-                    )}
-                  </TableCell>
-                  <TableCell>{event.revision}</TableCell>
                   <TableCell>—</TableCell>
                 </TableRow>
               ),

@@ -1,10 +1,10 @@
 import {
-  Badge,
   Banner,
   Button,
   Heading,
   HStack,
   Icon,
+  Popover,
   Table,
   TableBody,
   TableCell,
@@ -25,7 +25,6 @@ import {
   type PortfolioReadOptions,
   portfolioApi,
 } from "../api";
-import { FactStatus } from "../components/FactStatus";
 import { RefreshIcon } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
 import {
@@ -134,15 +133,16 @@ const movementLabel = (
   return { amount, percent };
 };
 
-const SourceLinks = ({ position }: { position: PortfolioPositionDto }) => {
-  const { t } = useI18n();
-  const sources = position.sources.filter(
-    (source): source is typeof source & { sourceUrl: string } =>
-      source.sourceUrl !== null,
+type PositionSource = PortfolioPositionDto["sources"][number] & {
+  sourceUrl: string;
+};
+
+const sourcesForPosition = (position: PortfolioPositionDto): PositionSource[] =>
+  position.sources.filter(
+    (source): source is PositionSource => source.sourceUrl !== null,
   );
-  if (sources.length === 0) {
-    return <span>{t("noSources")}</span>;
-  }
+
+const SourceLinks = ({ sources }: { sources: PositionSource[] }) => {
   return (
     <VStack gap={0.5}>
       {sources.map((source) => (
@@ -160,6 +160,27 @@ const SourceLinks = ({ position }: { position: PortfolioPositionDto }) => {
   );
 };
 
+const SourcesButton = ({ position }: { position: PortfolioPositionDto }) => {
+  const { t } = useI18n();
+  const sources = sourcesForPosition(position);
+  if (sources.length === 0) return null;
+  return (
+    <Popover
+      label={t("sources")}
+      width="min(28rem, calc(100vw - 2rem))"
+      content={<SourceLinks sources={sources} />}
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        label={t("sources")}
+        tooltip={t("sources")}
+        icon={<Icon icon="externalLink" size="sm" />}
+      />
+    </Popover>
+  );
+};
+
 const PositionRow = ({
   position,
   locale,
@@ -170,8 +191,7 @@ const PositionRow = ({
   const { t } = useI18n();
   const tone = movementTone(position.movement);
   const movement = movementLabel(position.movement, locale, t("unavailable"));
-  const qualified = position.movement?.qualified;
-  const showAnalysis = qualified === true;
+  const showAnalysis = position.movement?.qualified === true;
   return (
     <TableRow key={position.instrumentId}>
       <TableCell>
@@ -221,23 +241,8 @@ const PositionRow = ({
                   : t("legacyBasis")}
               </span>
             )}
-            <Badge
-              variant={qualified === true ? "success" : "neutral"}
-              label={
-                qualified === true
-                  ? t("qualified")
-                  : qualified === false
-                    ? t("notQualified")
-                    : t("unavailable")
-              }
-            />
           </VStack>
         )}
-      </TableCell>
-      <TableCell>
-        {position.latestTradingDate
-          ? formatDate(position.latestTradingDate, locale)
-          : "—"}
       </TableCell>
       <TableCell style={summaryStyle}>
         <VStack gap={1}>
@@ -246,17 +251,8 @@ const PositionRow = ({
               ? (position.summaryZhCn ?? t("summaryUnavailable"))
               : t("summaryNotRequired")}
           </span>
-          {showAnalysis && <SourceLinks position={position} />}
+          {showAnalysis && <SourcesButton position={position} />}
         </VStack>
-      </TableCell>
-      <TableCell>
-        <FactStatus
-          freshness={position.freshness}
-          conflicts={position.conflicts}
-          {...(position.analysisStatus
-            ? { analysisStatus: position.analysisStatus }
-            : {})}
-        />
       </TableCell>
     </TableRow>
   );
@@ -416,9 +412,7 @@ export const PortfolioPage = ({
                     <TableHeaderCell style={numericStyle}>
                       {t("movement")}
                     </TableHeaderCell>
-                    <TableHeaderCell>{t("actualTradingDate")}</TableHeaderCell>
                     <TableHeaderCell>{t("summary")}</TableHeaderCell>
-                    <TableHeaderCell>{t("freshness")}</TableHeaderCell>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
