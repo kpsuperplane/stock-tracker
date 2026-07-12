@@ -36,7 +36,7 @@ describe("product event API clients", () => {
 
     expect(timeline.positionBasisRevision).toBe(7);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/events?symbol=+aapl+&type=transaction&limit=25",
+      "/data/ledger?symbol=+aapl+&type=transaction&limit=25",
       expect.objectContaining({ headers: expect.any(Headers) }),
     );
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;

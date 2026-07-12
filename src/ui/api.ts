@@ -348,7 +348,7 @@ const queryString = (filters: EventFilters = {}): string => {
 export const eventsApi: EventsApiClient = {
   list: async (filters) => {
     const response = await requestWithMeta<EventsTimelineDto>(
-      `/api/events${queryString(filters)}`,
+      `/data/ledger${queryString(filters)}`,
       { cache: "no-store" },
     );
     const revision = Number(

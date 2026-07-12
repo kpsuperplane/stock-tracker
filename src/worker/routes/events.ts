@@ -645,6 +645,12 @@ eventsRoutes.all("/:id", methodNotAllowed("PATCH, DELETE"));
 eventsRoutes.all("/", methodNotAllowed("GET, POST"));
 eventsRoutes.all("/*", methodNotAllowed("GET, POST, PATCH, DELETE"));
 
+// Some browser environments block generic `/api/*` reads before they reach
+// the Worker. Keep the authenticated, read-only timeline available on a
+// neutral data path for the product UI; mutations remain under `/api/events`.
+export const ledgerReadRoutes = new Hono<{ Bindings: Env }>();
+ledgerReadRoutes.get("/", timeline);
+
 export const corporateActionRoutes = new Hono<{ Bindings: Env }>();
 
 corporateActionRoutes.post("/confirm", confirmSplitHistory);

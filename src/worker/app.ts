@@ -6,7 +6,11 @@ import type { Env } from "./env";
 import { ApiError, safeErrorMessage } from "./errors";
 import { backfillRoutes } from "./routes/backfills";
 import { eventImportRoutes } from "./routes/event-imports";
-import { corporateActionRoutes, eventsRoutes } from "./routes/events";
+import {
+  corporateActionRoutes,
+  eventsRoutes,
+  ledgerReadRoutes,
+} from "./routes/events";
 import {
   calendarRoutes,
   jobRoutes,
@@ -115,6 +119,7 @@ export const createApp = () => {
   app.route("/api/backfills", backfillRoutes);
   app.route("/api/corporate-actions", corporateActionRoutes);
   app.route("/api/events", eventsRoutes);
+  app.route("/data/ledger", ledgerReadRoutes);
   app.route("/api/event-imports", eventImportRoutes);
   app.route("/api/reports", reportRoutes);
   app.route("/api/portfolio", portfolioRoutes);

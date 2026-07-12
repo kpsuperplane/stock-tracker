@@ -139,6 +139,14 @@ const errorCopyKey = (
   }
 };
 
+const eventLoadErrorMessage = (copy: string, caught: unknown): string => {
+  if (caught instanceof ApiClientError) {
+    return `${copy} (${caught.status}${caught.code ? `: ${caught.code}` : ""})`;
+  }
+  if (caught instanceof TypeError) return `${copy} (network error)`;
+  return copy;
+};
+
 const TransactionDialog = ({
   isOpen,
   onOpenChange,
@@ -394,8 +402,8 @@ export const EventsPage = ({
         );
         setNextCursor(timeline.nextCursor);
         setPositionBasisRevision(timeline.positionBasisRevision);
-      } catch {
-        setLoadError(t("eventsLoadError"));
+      } catch (caught) {
+        setLoadError(eventLoadErrorMessage(t("eventsLoadError"), caught));
       } finally {
         setIsLoading(false);
       }
@@ -421,8 +429,8 @@ export const EventsPage = ({
         setEvents(timeline.events);
         setNextCursor(timeline.nextCursor);
         setPositionBasisRevision(timeline.positionBasisRevision);
-      } catch {
-        setLoadError(t("eventsLoadError"));
+      } catch (caught) {
+        setLoadError(eventLoadErrorMessage(t("eventsLoadError"), caught));
       } finally {
         setIsLoading(false);
       }

@@ -91,6 +91,9 @@ application yet.
 - `GET /api/events` returns the reverse-chronological transaction/split timeline
   and its position-basis revision. It accepts bounded `limit`, `cursor`,
   `instrumentId`, `symbol`, and `type` filters.
+- The product UI reads the same authenticated timeline from
+  `/data/ledger`; this neutral read path avoids browser environments that
+  block generic `/api/*` fetches before they reach the Worker.
 - `POST /api/events` creates a transaction. `PATCH` and `DELETE`
   `/api/events/:id` require both the current `X-Position-Basis-Revision` and
   the transaction `If-Match: "event-N"` revision. A create requires the basis

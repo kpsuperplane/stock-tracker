@@ -603,6 +603,22 @@ describe("portfolio event routes", () => {
     ]);
     expect(firstPayload.nextCursor).toEqual(expect.any(String));
 
+    const neutralRead = await exports.default.fetch(
+      new Request("http://local/data/ledger?limit=1", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(neutralRead.status).toBe(200);
+    const neutralPayload = await neutralRead.json<{
+      events: Array<Record<string, unknown>>;
+    }>();
+    expect(neutralPayload.events).toEqual([
+      expect.objectContaining({
+        type: "split",
+        status: "quarantined",
+      }),
+    ]);
+
     const second = await exports.default.fetch(
       new Request(
         `http://local/api/events?limit=1&cursor=${encodeURIComponent(firstPayload.nextCursor ?? "")}`,
