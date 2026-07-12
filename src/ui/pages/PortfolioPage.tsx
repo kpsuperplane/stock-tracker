@@ -13,7 +13,7 @@ import {
   TableRow,
   VStack,
 } from "@astryxdesign/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type {
   PortfolioMovementDto,
   PortfolioPositionDto,
@@ -45,12 +45,6 @@ const numericStyle = {
   whiteSpace: "nowrap" as const,
 };
 
-const summaryStyle = {
-  minWidth: "15rem",
-  maxWidth: "30rem",
-  overflowWrap: "anywhere" as const,
-};
-
 const safeDecimal = (
   value: string | null,
   locale: "en" | "cn",
@@ -75,6 +69,21 @@ const safeCurrency = (
   } catch {
     return "—";
   }
+};
+
+const formatSignedCurrency = (
+  value: string | null,
+  currency: "CAD" | "USD",
+  locale: "en" | "cn",
+): string => {
+  if (value === null) return "—";
+  const trimmed = value.trim();
+  const sign = trimmed.startsWith("-") ? "-" : "+";
+  const absolute = trimmed.replace(/^[+-]/, "");
+  if (/^0(?:\.0*)?$/.test(absolute)) {
+    return safeCurrency("0", currency, locale);
+  }
+  return `${sign}${safeCurrency(absolute, currency, locale)}`;
 };
 
 export const formatSignedDecimal = (
@@ -120,11 +129,16 @@ const movementColor = {
 
 const movementLabel = (
   movement: PortfolioMovementDto | null,
+  currency: "CAD" | "USD",
   locale: "en" | "cn",
   emptyLabel: string,
 ) => {
   if (!movement) return emptyLabel;
-  const amount = formatSignedDecimal(movement.movementAmountDecimal, locale, 2);
+  const amount = formatSignedCurrency(
+    movement.movementAmountDecimal,
+    currency,
+    locale,
+  );
   const percent = formatSignedDecimal(
     movement.movementPercentDecimal,
     locale,
@@ -132,6 +146,26 @@ const movementLabel = (
   );
   return { amount, percent };
 };
+
+const movementPercentValue = (
+  position: PortfolioPositionDto,
+): number | null => {
+  const raw = position.movement?.movementPercentDecimal?.trim();
+  if (!raw || !/^[+-]?\d+(?:\.\d+)?$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+};
+
+export const sortPortfolioPositions = (
+  positions: PortfolioPositionDto[],
+): PortfolioPositionDto[] =>
+  [...positions].sort((left, right) => {
+    const leftValue = movementPercentValue(left);
+    const rightValue = movementPercentValue(right);
+    if (leftValue === null) return rightValue === null ? 0 : 1;
+    if (rightValue === null) return -1;
+    return rightValue - leftValue;
+  });
 
 type PositionSource = PortfolioPositionDto["sources"][number] & {
   sourceUrl: string;
@@ -190,71 +224,65 @@ const PositionRow = ({
 }) => {
   const { t } = useI18n();
   const tone = movementTone(position.movement);
-  const movement = movementLabel(position.movement, locale, t("unavailable"));
-  const showAnalysis = position.movement?.qualified === true;
+  const movement = movementLabel(
+    position.movement,
+    position.currency,
+    locale,
+    t("unavailable"),
+  );
+  const summary = position.summaryZhCn?.trim();
+  const hasAnalysis = Boolean(summary);
   return (
-    <TableRow key={position.instrumentId}>
-      <TableCell>
-        <strong>{position.symbol}</strong>
-        <div>{position.companyName}</div>
-        <div>
-          {position.exchange} · {position.currency}
-        </div>
-      </TableCell>
-      <TableCell style={numericStyle}>
-        {safeDecimal(position.quantityDecimal, locale)}
-      </TableCell>
-      <TableCell style={numericStyle}>
-        {safeCurrency(
-          position.currentRawCloseDecimal,
-          position.currency,
-          locale,
-        )}
-      </TableCell>
-      <TableCell style={numericStyle}>
-        {safeCurrency(position.valuationDecimal, position.currency, locale)}
-      </TableCell>
-      <TableCell style={{ ...numericStyle, color: movementColor[tone] }}>
-        {typeof movement === "string" ? (
-          movement
-        ) : (
-          <VStack gap={0.5} align="end">
-            <strong>{movement.percent}%</strong>
-            <span>{movement.amount}</span>
-            {position.movement && (
-              <span>
-                {t("previousClose")}:{" "}
-                {position.movement.previousRawCloseDecimal === null
-                  ? "—"
-                  : safeCurrency(
-                      position.movement.previousRawCloseDecimal,
-                      position.currency,
-                      locale,
-                    )}
-              </span>
-            )}
-            {position.movement && (
-              <span>
-                {t("movementBasis")}:{" "}
-                {position.movement.basis === "split_adjusted_price_return"
-                  ? t("splitAdjustedBasis")
-                  : t("legacyBasis")}
-              </span>
-            )}
-          </VStack>
-        )}
-      </TableCell>
-      <TableCell style={summaryStyle}>
-        <VStack gap={1}>
-          <span>
-            {showAnalysis
-              ? (position.summaryZhCn ?? t("summaryUnavailable"))
-              : t("summaryNotRequired")}
-          </span>
-          {showAnalysis && <SourcesButton position={position} />}
-        </VStack>
-      </TableCell>
-    </TableRow>
+    <Fragment key={position.instrumentId}>
+      <TableRow>
+        <TableCell>
+          <strong>{position.symbol}</strong>
+          <div>{position.companyName}</div>
+          <div>
+            {position.exchange} · {position.currency}
+          </div>
+        </TableCell>
+        <TableCell style={numericStyle}>
+          {safeDecimal(position.quantityDecimal, locale)}
+        </TableCell>
+        <TableCell style={numericStyle}>
+          {safeCurrency(
+            position.currentRawCloseDecimal,
+            position.currency,
+            locale,
+          )}
+        </TableCell>
+        <TableCell style={numericStyle}>
+          {safeCurrency(position.valuationDecimal, position.currency, locale)}
+        </TableCell>
+        <TableCell style={{ ...numericStyle, color: movementColor[tone] }}>
+          {typeof movement === "string" ? (
+            movement
+          ) : (
+            <HStack gap={1} justify="end" wrap="nowrap">
+              <strong>{movement.percent}%</strong>
+              <span>{movement.amount}</span>
+            </HStack>
+          )}
+        </TableCell>
+      </TableRow>
+      {hasAnalysis && (
+        <TableRow>
+          <TableCell
+            colSpan={5}
+            style={{
+              color: "var(--color-text-secondary)",
+              background: "var(--color-background-muted)",
+            }}
+          >
+            <HStack gap={2} align="start" wrap="wrap">
+              <span>{summary}</span>
+              <SourcesButton position={position} />
+            </HStack>
+          </TableCell>
+        </TableRow>
+      )}
+    </Fragment>
   );
 };
 
@@ -412,17 +440,18 @@ export const PortfolioPage = ({
                     <TableHeaderCell style={numericStyle}>
                       {t("movement")}
                     </TableHeaderCell>
-                    <TableHeaderCell>{t("summary")}</TableHeaderCell>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {portfolio.positions.map((position) => (
-                    <PositionRow
-                      key={position.instrumentId}
-                      position={position}
-                      locale={locale}
-                    />
-                  ))}
+                  {sortPortfolioPositions(portfolio.positions).map(
+                    (position) => (
+                      <PositionRow
+                        key={position.instrumentId}
+                        position={position}
+                        locale={locale}
+                      />
+                    ),
+                  )}
                 </TableBody>
               </Table>
             </section>

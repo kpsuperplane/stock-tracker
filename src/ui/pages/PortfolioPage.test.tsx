@@ -8,6 +8,7 @@ import {
   movementTone,
   PortfolioPage,
   portfolioErrorMessageKey,
+  sortPortfolioPositions,
 } from "./PortfolioPage";
 
 const portfolio: PortfolioReadModelDto = {
@@ -110,10 +111,16 @@ describe("PortfolioPage", () => {
     expect(markup).not.toContain("CAD total");
     expect(markup).toContain("close Jul 10, 2026");
     expect(markup).toContain("AAPL");
+    expect(markup.indexOf("AAPL")).toBeLessThan(markup.indexOf("SHOP.TO"));
     expect(markup).toContain("+5.32%");
+    expect(markup).toContain("+$20.20");
     expect(markup).toContain("苹果发布了新的产品更新。");
     expect(markup).toContain("https://example.com/apple");
     expect(markup).toContain(">Sources<");
+    expect(markup).toContain('colSpan="5"');
+    expect(markup).not.toContain("Movement basis:");
+    expect(markup).not.toContain("Previous close:");
+    expect(markup).not.toContain(">Summary<");
     expect(markup).not.toContain("Trading date");
     expect(markup).not.toContain("Freshness");
     expect(markup).not.toContain("Under ±5% threshold");
@@ -131,6 +138,7 @@ describe("PortfolioPage", () => {
     expect(markup).not.toContain("加元合计");
     expect(markup).toContain("苹果发布了新的产品更新。");
     expect(markup).toContain(">来源<");
+    expect(markup).toContain('colSpan="5"');
     expect(markup).not.toContain("交易日期");
     expect(markup).not.toContain("新鲜度");
     expect(markup).not.toContain("低于 ±5% 阈值");
@@ -164,6 +172,32 @@ describe("PortfolioPage", () => {
 });
 
 describe("portfolio movement formatters", () => {
+  it("sorts positions by descending movement and puts missing values last", () => {
+    const positivePosition = portfolio.positions.find(
+      (position) => position.symbol === "AAPL",
+    );
+    const negativePosition = portfolio.positions.find(
+      (position) => position.symbol === "SHOP.TO",
+    );
+    if (!positivePosition || !negativePosition) {
+      throw new Error("test portfolio fixtures are incomplete");
+    }
+    const missingMovement = {
+      ...negativePosition,
+      instrumentId: "instrument-3",
+      symbol: "NVDA",
+      movement: null,
+    };
+
+    expect(
+      sortPortfolioPositions([
+        negativePosition,
+        missingMovement,
+        positivePosition,
+      ]).map((position) => position.symbol),
+    ).toEqual(["AAPL", "SHOP.TO", "NVDA"]);
+  });
+
   it("preserves signed decimal strings and identifies direction", () => {
     expect(formatSignedDecimal("5.315789", "en")).toBe("+5.32");
     expect(formatSignedDecimal("-2", "cn")).toBe("-2");
