@@ -4,6 +4,7 @@ import {
   Dialog,
   DialogHeader,
   HStack,
+  Link,
   VStack,
 } from "@astryxdesign/core";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -91,9 +92,9 @@ const SourceLink = ({
   label: string;
 }) =>
   sourceUrl ? (
-    <a href={sourceUrl} target="_blank" rel="noreferrer">
+    <Link href={sourceUrl} hasUnderline isExternalLink weight="semibold">
       {label} · {provider}
-    </a>
+    </Link>
   ) : (
     <span>{provider}</span>
   );
@@ -101,7 +102,9 @@ const SourceLink = ({
 const MoverDetails = ({ event }: { event: CalendarMoverDto }) => {
   const { locale, t } = useI18n();
   const movement = event.movement;
-  const sources = event.sources.filter((source) => source.sourceUrl !== null);
+  const sources = event.sources.flatMap((source) =>
+    source.sourceUrl ? [{ ...source, sourceUrl: source.sourceUrl }] : [],
+  );
   return (
     <VStack gap={3}>
       <DetailRow
@@ -158,15 +161,16 @@ const MoverDetails = ({ event }: { event: CalendarMoverDto }) => {
         {sources.length > 0 ? (
           <VStack gap={0.5}>
             {sources.map((source) => (
-              <a
+              <Link
                 key={source.sourceUrl}
-                href={source.sourceUrl ?? undefined}
-                target="_blank"
-                rel="noreferrer"
+                href={source.sourceUrl}
+                hasUnderline
+                isExternalLink
+                weight="semibold"
               >
                 {source.title}
                 {source.publisher ? ` · ${source.publisher}` : ""}
-              </a>
+              </Link>
             ))}
           </VStack>
         ) : (

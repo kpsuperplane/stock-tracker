@@ -4,6 +4,7 @@ import {
   Heading,
   HStack,
   Icon,
+  Link,
   Popover,
   Table,
   TableBody,
@@ -180,15 +181,16 @@ const SourceLinks = ({ sources }: { sources: PositionSource[] }) => {
   return (
     <VStack gap={0.5}>
       {sources.map((source) => (
-        <a
+        <Link
           key={source.sourceUrl}
           href={source.sourceUrl}
-          target="_blank"
-          rel="noreferrer"
+          hasUnderline
+          isExternalLink
+          weight="semibold"
         >
           {source.title}
           {source.publisher ? ` · ${source.publisher}` : ""}
-        </a>
+        </Link>
       ))}
     </VStack>
   );

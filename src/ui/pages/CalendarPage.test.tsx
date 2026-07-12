@@ -129,6 +129,8 @@ describe("CalendarPage", () => {
     expect(markup).toContain("异动");
     expect(markup).toContain("苹果公司发布了新的产品更新。");
     expect(markup).toContain("https://example.com/apple");
+    expect(markup).toContain('target="_blank"');
+    expect(markup).toContain('rel="noopener noreferrer"');
     expect(markup).not.toContain("Mover");
     expect(markup).toContain('aria-label="关闭"');
   });
@@ -148,6 +150,8 @@ describe("CalendarPage", () => {
     expect(markup).toContain("Expected total");
     expect(markup).toContain("$0.50");
     expect(markup).toContain("https://example.com/dividend");
+    expect(markup).toContain('target="_blank"');
+    expect(markup).toContain('rel="noopener noreferrer"');
   });
 
   it("renders the week layout and pending date facts", () => {

@@ -116,6 +116,8 @@ describe("PortfolioPage", () => {
     expect(markup).toContain("+$20.20");
     expect(markup).toContain("苹果发布了新的产品更新。");
     expect(markup).toContain("https://example.com/apple");
+    expect(markup).toContain('target="_blank"');
+    expect(markup).toContain('rel="noopener noreferrer"');
     expect(markup).toContain(">Sources<");
     expect(markup).toContain('colSpan="5"');
     expect(markup).not.toContain("Movement basis:");
