@@ -336,4 +336,23 @@ describe("product event API clients", () => {
       expect.objectContaining({ headers: expect.any(Headers) }),
     );
   });
+
+  it("adds the application mutation header to legacy mutation clients", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "backfill-1" }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.startBackfill({
+      startDate: "2026-06-11",
+      endDate: "2026-07-10",
+      reprocessExisting: false,
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get("X-Stock-Tracker-Request")).toBe("1");
+  });
 });

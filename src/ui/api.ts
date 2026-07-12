@@ -55,6 +55,13 @@ export const requestWithMeta = async <T>(
   options: RequestMetaOptions = {},
 ): Promise<ApiResponse<T>> => {
   const headers = new Headers(init?.headers);
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (
+    ["POST", "PATCH", "PUT", "DELETE"].includes(method) &&
+    !headers.has("X-Stock-Tracker-Request")
+  ) {
+    headers.set("X-Stock-Tracker-Request", "1");
+  }
   if (!headers.has("Content-Type") && !isFormDataBody(init?.body)) {
     headers.set("Content-Type", "application/json");
   }

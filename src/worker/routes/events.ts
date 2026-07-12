@@ -1,5 +1,6 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
+import { InstrumentRepository } from "../../db/instruments";
 import { YahooCorporateActionProvider } from "../../providers/yahoo-corporate-actions";
 import {
   type LedgerMutationResult,
@@ -491,6 +492,10 @@ const createTransaction = async (context: EventContext) => {
   const body = createSchema.parse(await context.req.json());
   const future = futureTrade(context, body.tradeDate);
   if (future) return future;
+  const instruments = new InstrumentRepository(context.env.DB);
+  const instrument =
+    (await instruments.findById(body.instrumentId)) ??
+    (await instruments.findBySymbol(body.instrumentId.trim().toUpperCase()));
   const result = await new LedgerService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
@@ -498,7 +503,7 @@ const createTransaction = async (context: EventContext) => {
     expectedPositionBasisRevision: positionBasisRevision,
     proposal: {
       kind: "create",
-      instrumentId: body.instrumentId,
+      instrumentId: instrument?.id ?? body.instrumentId,
       tradeDate: body.tradeDate,
       side: body.side,
       quantityDecimal: body.quantityDecimal,

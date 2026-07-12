@@ -526,6 +526,24 @@ const createBody = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("portfolio event routes", () => {
+  it("accepts a watchlist symbol in place of an opaque instrument ID", async () => {
+    await insertInstrument();
+    mockSplitProvider();
+
+    const response = await exports.default.fetch(
+      new Request("http://local/api/events", {
+        method: "POST",
+        headers: mutationHeaders('"position-basis-0"'),
+        body: JSON.stringify(createBody({ instrumentId: "shop.to" })),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(
+      (await response.json<{ error: { code: string } }>()).error.code,
+    ).toBe("split_review_required");
+  });
+
   it("returns a paginated combined timeline with canonical decimal strings and filters", async () => {
     await insertInstrument();
     await env.DB.batch([

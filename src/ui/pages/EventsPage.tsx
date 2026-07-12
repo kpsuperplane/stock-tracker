@@ -120,6 +120,7 @@ const errorCopyKey = (
 ):
   | "providerUnavailable"
   | "negativeHoldings"
+  | "instrumentNotFound"
   | "ledgerConflict"
   | "eventConflict"
   | "genericMutationError" => {
@@ -129,6 +130,8 @@ const errorCopyKey = (
       return "providerUnavailable";
     case "negative_holdings":
       return "negativeHoldings";
+    case "instrument_not_found":
+      return "instrumentNotFound";
     case "ledger_conflict":
       return "ledgerConflict";
     case "event_conflict":
