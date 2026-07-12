@@ -2,14 +2,7 @@ import { AppShell as AstryxAppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { ButtonGroup } from "@astryxdesign/core/ButtonGroup";
 import { Icon } from "@astryxdesign/core/Icon";
-import {
-  SideNav,
-  SideNavCollapseButton,
-  SideNavHeading,
-  SideNavItem,
-  SideNavSection,
-  useSideNavCollapse,
-} from "@astryxdesign/core/SideNav";
+import { TopNav, TopNavHeading, TopNavItem } from "@astryxdesign/core/TopNav";
 import type { ReactNode } from "react";
 import type { Locale } from "../i18n/catalog";
 import { I18nProvider, useI18n } from "../i18n/I18nProvider";
@@ -42,88 +35,56 @@ const routeIcons = {
 interface NavigationProps {
   activeRoute: AppRoute;
   onNavigate: (route: AppRoute) => void;
-  initialSidebarCollapsed?: boolean;
 }
 
 const LocaleSwitcher = () => {
   const { locale, setLocale, t } = useI18n();
-  const { isCollapsed } = useSideNavCollapse();
   return (
-    <ButtonGroup
-      label={t("language")}
-      size="sm"
-      orientation={isCollapsed ? "vertical" : "horizontal"}
-    >
+    <ButtonGroup label={t("language")} size="sm" orientation="horizontal">
       <Button
         label={t("english")}
         variant={locale === "en" ? "secondary" : "ghost"}
         aria-pressed={locale === "en"}
-        isIconOnly={isCollapsed}
-        icon={isCollapsed ? <span aria-hidden="true">EN</span> : undefined}
         onClick={() => setLocale("en")}
       />
       <Button
         label={t("chinese")}
         variant={locale === "cn" ? "secondary" : "ghost"}
         aria-pressed={locale === "cn"}
-        isIconOnly={isCollapsed}
-        icon={isCollapsed ? <span aria-hidden="true">中</span> : undefined}
         onClick={() => setLocale("cn")}
       />
     </ButtonGroup>
   );
 };
 
-const LocalizedCollapseButton = () => {
-  const { isCollapsed } = useSideNavCollapse();
+const ProductNavigation = ({ activeRoute, onNavigate }: NavigationProps) => {
   const { t } = useI18n();
   return (
-    <SideNavCollapseButton
-      label={t(isCollapsed ? "expandSidebar" : "collapseSidebar")}
-    />
-  );
-};
-
-const ProductNavigation = ({
-  activeRoute,
-  onNavigate,
-  initialSidebarCollapsed = false,
-}: NavigationProps) => {
-  const { t } = useI18n();
-  return (
-    <SideNav
-      data-testid="product-sidebar"
-      header={
-        <SideNavHeading
+    <TopNav
+      label={t("navigation")}
+      heading={
+        <TopNavHeading
           heading={t("appName")}
           headingHref={pathForRoute("portfolio")}
-          icon={<Icon icon="arrowsUpDown" size="sm" />}
+          logo={<Icon icon="arrowsUpDown" size="sm" />}
         />
       }
-      footer={<LocaleSwitcher />}
-      footerIcons={<LocalizedCollapseButton />}
-      collapsible={{
-        defaultIsCollapsed: initialSidebarCollapsed,
-        hasButton: false,
-      }}
-    >
-      <SideNavSection title={t("navigation")} isHeaderHidden>
-        {APP_ROUTES.map(({ id }) => (
-          <SideNavItem
-            key={id}
-            label={t(routeCopy[id].title)}
-            icon={routeIcons[id]}
-            href={pathForRoute(id)}
-            isSelected={activeRoute === id}
-            onClick={(event) => {
-              if (!isPlainLeftClick(event)) return;
-              event.preventDefault();
-              onNavigate(id);
-            }}
-          />
-        ))}
-      </SideNavSection>
-    </SideNav>
+      startContent={APP_ROUTES.map(({ id }) => (
+        <TopNavItem
+          key={id}
+          label={t(routeCopy[id].title)}
+          icon={<Icon icon={routeIcons[id]} size="sm" />}
+          href={pathForRoute(id)}
+          isSelected={activeRoute === id}
+          onClick={(event) => {
+            if (!isPlainLeftClick(event)) return;
+            event.preventDefault();
+            onNavigate(id);
+          }}
+        />
+      ))}
+      endContent={<LocaleSwitcher />}
+    />
   );
 };
 
@@ -151,7 +112,6 @@ const ProductPage = ({ route }: ProductPageProps) => {
 export interface ProductAppProps {
   initialPath?: string;
   initialLocale?: Locale;
-  initialSidebarCollapsed?: boolean;
   children?: ReactNode;
 }
 
@@ -159,7 +119,6 @@ export interface ProductAppProps {
 export const ProductApp = ({
   initialPath,
   initialLocale,
-  initialSidebarCollapsed = false,
   children,
 }: ProductAppProps) => {
   const router = useAppRouter(initialPath);
@@ -169,12 +128,8 @@ export const ProductApp = ({
     <I18nProvider {...i18nProps}>
       <AstryxAppShell
         data-testid="product-app-shell"
-        sideNav={
-          <ProductNavigation
-            activeRoute={router.route}
-            onNavigate={navigate}
-            initialSidebarCollapsed={initialSidebarCollapsed}
-          />
+        topNav={
+          <ProductNavigation activeRoute={router.route} onNavigate={navigate} />
         }
         mobileNav={{ breakpoint: "md" }}
         variant="section"
