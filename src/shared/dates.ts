@@ -13,6 +13,30 @@ export const easternMarketDate = (timestamp: string | Date) => {
   return `${value("year")}-${value("month")}-${value("day")}`;
 };
 
+/** Return the Toronto market close instant for an ISO calendar date. */
+export const easternCloseUtc = (date: string): string => {
+  const noonUtc = new Date(`${date}T12:00:00Z`);
+  const zoneName =
+    new Intl.DateTimeFormat("en", {
+      timeZone: "America/Toronto",
+      timeZoneName: "shortOffset",
+    })
+      .formatToParts(noonUtc)
+      .find((part) => part.type === "timeZoneName")?.value ?? "GMT-4";
+  const match = zoneName.match(/GMT([+-])(\d{1,2})/);
+  const offsetHours = match
+    ? (match[1] === "+" ? 1 : -1) * Number(match[2])
+    : -4;
+  return new Date(
+    Date.UTC(
+      noonUtc.getUTCFullYear(),
+      noonUtc.getUTCMonth(),
+      noonUtc.getUTCDate(),
+      16 - offsetHours,
+    ),
+  ).toISOString();
+};
+
 export const previousCalendarDate = (date: string) =>
   new Date(Date.parse(`${date}T12:00:00Z`) - 86_400_000)
     .toISOString()

@@ -17,13 +17,14 @@ Before scheduling a read or write cutover, record these facts:
 | Published migration | High-water reached; two consecutive clean passes; no unexplained audit differences | migrator status/audit export | `NOT RUN` |
 | Performance | Local budgets in [portfolio-performance.md](./portfolio-performance.md) pass | `npm run test:worker -- tests/worker/performance.test.ts` | `PASS (local)` |
 | UI asset rollback | A previously built `VITE_NEW_PRODUCT_UI=false` asset/Worker version is available | deployment artifact/version ID | `NOT RUN` |
-| Normalized processor | Market/news/LLM processor is configured and tested; no `pipeline_processor_unconfigured` terminal outcomes | Queue consumer and provider evidence | `BLOCKED until configured` |
+| Normalized processor | Market/news/LLM processor is configured and tested; no `pipeline_processor_unconfigured` terminal outcomes | Queue consumer and provider evidence | `PASS (local; production not run)` |
 | Rollback | Legacy schedule/queue and published generations remain available | flag-off rehearsal evidence | `NOT RUN` |
 
-The normalized Queue consumer currently has an explicit terminal outcome when
-the provider/LLM processor is not wired. Do not enable normalized writes until
-that prerequisite is replaced by a real processor and its provider/quota
-tests pass.
+The normalized Queue consumer is wired to the provider/LLM processor and the
+local provider, retry, range, persistence, and queue smoke tests pass. This is
+repository evidence only: do not enable normalized writes until the production
+provider credentials, bindings, quota, and remote rollback checks are verified
+in the deployment window.
 
 ## Phase 0 — preflight (flags unchanged)
 

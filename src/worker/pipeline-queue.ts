@@ -311,14 +311,16 @@ export class PipelineQueueConsumer {
       input.outcomes.map((outcome) => [outcome.workItemId, outcome]),
     );
     let hasRetry = false;
+    let hasDelayedRetry = false;
     let hasTerminal = false;
     let lostLease = false;
     for (const item of input.work) {
       const outcome = outcomeById.get(item.id);
       if (!outcome || outcome.kind === "retry") {
+        const delayed =
+          outcome !== undefined && delayedBarError(outcome.errorCode);
         if (
-          outcome &&
-          delayedBarError(outcome.errorCode) &&
+          delayed &&
           !isWithinDelayedBarHorizon(
             // The batch timestamp is the first dispatch attempt and is shared
             // by every item in a provider range.  Using the item creation time
@@ -341,6 +343,7 @@ export class PipelineQueueConsumer {
           else hasTerminal = true;
         } else {
           hasRetry = true;
+          hasDelayedRetry = hasDelayedRetry || delayed;
         }
         continue;
       }
@@ -383,6 +386,7 @@ export class PipelineQueueConsumer {
         id: input.batch.id,
         expectedLeaseUntil: input.leaseUntil,
         now: input.timestamp,
+        resetAttemptCount: hasDelayedRetry,
       });
       if (!requeued && !batchRequeued) {
         input.message.retry({ delaySeconds: this.retryDelaySeconds });

@@ -7,6 +7,7 @@ import { GoogleNewsProvider } from "../providers/google-news";
 import { MarketauxNewsProvider } from "../providers/marketaux";
 import { YahooMarketDataProvider } from "../providers/yahoo";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
+import { PortfolioPipelineProcessor } from "../services/portfolio-pipeline-processor";
 import { ScreeningService } from "../services/screening";
 import {
   isPipelineDispatchMessage,
@@ -25,6 +26,16 @@ const retryable = (error: unknown) =>
     String(error),
   );
 
+const newsProviderFor = (env: Env) => {
+  const exa = env.EXA_API_KEY ? new ExaNewsProvider(env.EXA_API_KEY) : null;
+  const marketaux = env.MARKETAUX_API_TOKEN
+    ? new MarketauxNewsProvider(env.MARKETAUX_API_TOKEN)
+    : null;
+  return exa && marketaux
+    ? new FallbackNewsProvider(exa, marketaux)
+    : (exa ?? marketaux ?? new GoogleNewsProvider());
+};
+
 export const handleLegacyQueue = async (
   batch: MessageBatch<ScreeningJobMessage>,
   env: Env,
@@ -33,14 +44,7 @@ export const handleLegacyQueue = async (
     enabled: readPortfolioFeatureFlags(env).dualWrite,
   });
   const repository = new RunRepository(env.DB, dualWrite);
-  const exa = env.EXA_API_KEY ? new ExaNewsProvider(env.EXA_API_KEY) : null;
-  const marketaux = env.MARKETAUX_API_TOKEN
-    ? new MarketauxNewsProvider(env.MARKETAUX_API_TOKEN)
-    : null;
-  const news =
-    exa && marketaux
-      ? new FallbackNewsProvider(exa, marketaux)
-      : (exa ?? marketaux ?? new GoogleNewsProvider());
+  const news = newsProviderFor(env);
   const service = new ScreeningService(
     repository,
     new YahooMarketDataProvider(),
@@ -163,19 +167,12 @@ export const handleQueue = async (
           {
             db: env.DB,
             dlq: env.NORMALIZED_WORK_DLQ,
-            // Provider/LLM execution is intentionally injected at the final
-            // cutover. Never silently mark normalized work complete when that
-            // processor is absent; retain the D1 terminal/DLQ audit instead.
-            processor: {
-              process: async ({ work }) =>
-                work.map((item) => ({
-                  workItemId: item.id,
-                  kind: "terminal" as const,
-                  errorCode: "pipeline_processor_unconfigured",
-                  errorMessage:
-                    "Normalized provider processor is not configured for this deployment.",
-                })),
-            },
+            processor: new PortfolioPipelineProcessor({
+              db: env.DB,
+              marketDataProvider: new YahooMarketDataProvider(),
+              newsProvider: newsProviderFor(env),
+              explanationProvider: new WorkersAiExplanationProvider(env.AI),
+            }),
           },
         )
       : Promise.resolve(),

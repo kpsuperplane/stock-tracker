@@ -5,6 +5,7 @@ import {
   DispatchBatchRepository,
 } from "../../src/db/dispatch-batches";
 import { WorkItemRepository } from "../../src/db/work-items";
+import { YahooMarketDataProvider } from "../../src/providers/yahoo";
 import {
   type WorkDispatcherDependencies,
   WorkDispatcherService,
@@ -209,6 +210,62 @@ describe("normalized work dispatcher and queue consumer", () => {
     const result = await recovered.dispatch();
     expect(result.recoveredQueuedBatches).toBe(1);
     expect(recoveredQueue.sent).toEqual([messageBody]);
+  });
+
+  it("runs a normalized batch through the provider processor when writes are enabled", async () => {
+    await insertInstrument();
+    await insertWork({ id: "normalized-provider", date: "2026-07-10" });
+    const first = dispatcher();
+    await first.service.dispatch();
+    const messageBody = first.sent[0];
+    if (!messageBody) throw new Error("dispatch_message_missing");
+    vi.spyOn(
+      YahooMarketDataProvider.prototype,
+      "getInstrument",
+    ).mockResolvedValue({
+      metadata: {
+        symbol: "DISPATCH-instrument-1",
+        companyName: "Dispatcher Corp",
+        exchange: "NYSE",
+        currency: "USD",
+        instrumentType: "EQUITY",
+      },
+      bars: [
+        { date: "2026-07-09", close: 100, adjustedClose: 100 },
+        { date: "2026-07-10", close: 110, adjustedClose: 110 },
+      ],
+      corporateActionDates: new Set<string>(),
+    });
+    const enabledEnv = new Proxy(env, {
+      get(target, property) {
+        if (property === "PORTFOLIO_NEW_WRITES_ENABLED") return "true";
+        return Reflect.get(target, property);
+      },
+    });
+    const normalizedMessage = message(messageBody);
+    await handleQueue({ messages: [normalizedMessage] } as never, enabledEnv);
+    expect(normalizedMessage.ack).toHaveBeenCalledOnce();
+    expect(normalizedMessage.retry).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare(
+        `SELECT batch.state, work.state AS work_state,
+                fact.current_raw_close_decimal, fact.movement_percent_decimal
+           FROM dispatch_batches batch
+           JOIN dispatch_batch_items item ON item.dispatch_batch_id = batch.id
+           JOIN work_items work ON work.id = item.work_item_id
+           JOIN daily_market_facts fact
+             ON fact.instrument_id = work.instrument_id
+            AND fact.trading_date = work.effective_date
+          WHERE batch.id = ?1`,
+      )
+        .bind(messageBody.dispatchBatchId)
+        .first(),
+    ).toEqual({
+      state: "complete",
+      work_state: "complete",
+      current_raw_close_decimal: "110",
+      movement_percent_decimal: "10",
+    });
   });
 
   it("recovers an expired processing lease and redelivers the queued batch", async () => {
@@ -712,6 +769,44 @@ describe("normalized work dispatcher and queue consumer", () => {
       state: "terminal",
       terminal_error_code: "delayed_bar_horizon_exhausted",
       batch_state: "terminal",
+    });
+  });
+
+  it("resets the ordinary batch attempt ceiling while a delayed bar is still within its horizon", async () => {
+    await insertInstrument();
+    await insertWork({ id: "delayed-retry", date: "2026-01-01" });
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const delayed = message(sent[0] as PipelineDispatchMessage);
+    const consumer = new PipelineQueueConsumer({
+      db: env.DB,
+      now: () => new Date("2026-07-10T21:30:00.000Z"),
+      processor: {
+        process: async ({ work }) => [
+          {
+            workItemId: work[0]?.id ?? "",
+            kind: "retry" as const,
+            errorCode: "market_bar_pending",
+          },
+        ],
+      },
+    });
+    await consumer.handle({ messages: [delayed] } as never);
+    expect(delayed.retry).toHaveBeenCalledOnce();
+    expect(delayed.ack).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare(
+        `SELECT batch.state, batch.attempt_count,
+                work.state AS work_state
+           FROM dispatch_batches batch
+           JOIN dispatch_batch_items item ON item.dispatch_batch_id = batch.id
+           JOIN work_items work ON work.id = item.work_item_id
+          WHERE batch.id = 'batch-1'`,
+      ).first(),
+    ).toEqual({
+      state: "queued",
+      attempt_count: 0,
+      work_state: "queued",
     });
   });
 

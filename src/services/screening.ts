@@ -3,34 +3,12 @@ import { calculateMovement, selectComparison } from "../domain/market";
 import type { ExplanationProvider } from "../providers/explanations";
 import type { MarketDataProvider } from "../providers/market-data";
 import type { NewsProvider } from "../providers/news";
+import { easternCloseUtc } from "../shared/dates";
 
 const addDays = (date: string, days: number) =>
   new Date(Date.parse(`${date}T12:00:00Z`) + days * 86_400_000)
     .toISOString()
     .slice(0, 10);
-
-const easternCloseUtc = (date: string) => {
-  const noonUtc = new Date(`${date}T12:00:00Z`);
-  const zoneName =
-    new Intl.DateTimeFormat("en", {
-      timeZone: "America/Toronto",
-      timeZoneName: "shortOffset",
-    })
-      .formatToParts(noonUtc)
-      .find((part) => part.type === "timeZoneName")?.value ?? "GMT-4";
-  const match = zoneName.match(/GMT([+-])(\d{1,2})/);
-  const offsetHours = match
-    ? (match[1] === "+" ? 1 : -1) * Number(match[2])
-    : -4;
-  return new Date(
-    Date.UTC(
-      noonUtc.getUTCFullYear(),
-      noonUtc.getUTCMonth(),
-      noonUtc.getUTCDate(),
-      16 - offsetHours,
-    ),
-  ).toISOString();
-};
 
 type Repository = Pick<
   RunRepository,

@@ -534,16 +534,23 @@ export class DispatchBatchRepository {
     id: string;
     expectedLeaseUntil: string;
     now: string;
+    resetAttemptCount?: boolean;
   }): Promise<boolean> {
     const result = await this.db
       .prepare(
         `UPDATE dispatch_batches
          SET state = 'queued', processing_lease_until = NULL,
+             attempt_count = CASE WHEN ?4 = 1 THEN 0 ELSE attempt_count END,
              updated_at = ?1
          WHERE id = ?2 AND state = 'processing'
            AND processing_lease_until IS ?3`,
       )
-      .bind(input.now, input.id, input.expectedLeaseUntil)
+      .bind(
+        input.now,
+        input.id,
+        input.expectedLeaseUntil,
+        input.resetAttemptCount === true ? 1 : 0,
+      )
       .run();
     return result.meta.changes === 1;
   }
