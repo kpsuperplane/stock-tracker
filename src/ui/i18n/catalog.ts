@@ -22,7 +22,6 @@ export const messageCatalog = {
     addCategoryDescription:
       "Create a category first, then add the brokerage accounts that belong to it.",
     accountCategories: "Account categories",
-    categories: "categories",
     accountsInCategoryDescription: "Rename, archive, or restore each account.",
     noAccountsDescription: "Add a category above to start organizing accounts.",
     noAccountsInCategory: "No accounts in this category yet.",
@@ -293,7 +292,6 @@ export const messageCatalog = {
     addAccount: "添加账户",
     addCategoryDescription: "先创建类别，再添加属于该类别的券商账户。",
     accountCategories: "账户类别",
-    categories: "个类别",
     accountsInCategoryDescription: "重命名、归档或恢复各个账户。",
     noAccountsDescription: "请先在上方添加类别，然后开始整理账户。",
     noAccountsInCategory: "此类别中还没有账户。",

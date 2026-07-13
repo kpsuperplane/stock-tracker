@@ -17,6 +17,16 @@ import { useAccountScope } from "../accounts/AccountScopeContext";
 import { api } from "../api";
 import { useI18n } from "../i18n/I18nProvider";
 
+const formatCategoryCount = (count: number, locale: "en" | "cn") =>
+  locale === "cn"
+    ? `${count} 个类别`
+    : `${count} ${count === 1 ? "category" : "categories"}`;
+
+const formatAccountCount = (count: number, locale: "en" | "cn") =>
+  locale === "cn"
+    ? `${count} 个账户`
+    : `${count} ${count === 1 ? "account" : "accounts"}`;
+
 const AccountsLoadingState = ({ label }: { label: string }) => (
   <div
     className="accounts-loading-state"
@@ -38,7 +48,7 @@ const AccountsLoadingState = ({ label }: { label: string }) => (
 );
 
 export const AccountsPage = () => {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { reload: reloadAccountScope } = useAccountScope();
   const [categories, setCategories] = useState<AccountCategoryDto[]>([]);
   const [newCategory, setNewCategory] = useState("");
@@ -123,7 +133,6 @@ export const AccountsPage = () => {
             <div className="accounts-create-controls">
               <TextInput
                 label={t("newCategory")}
-                isLabelHidden
                 placeholder={t("newCategory")}
                 value={newCategory}
                 onChange={setNewCategory}
@@ -166,7 +175,7 @@ export const AccountsPage = () => {
                 {t("accountCategories")}
               </Heading>
               <Text type="supporting" color="secondary">
-                {categories.length} {t("categories")}
+                {formatCategoryCount(categories.length, locale)}
               </Text>
             </div>
 
@@ -206,7 +215,7 @@ export const AccountsPage = () => {
                           )}
                         </HStack>
                         <Text type="supporting" color="secondary">
-                          {category.accounts.length} {t("accounts")}
+                          {formatAccountCount(category.accounts.length, locale)}
                         </Text>
                       </VStack>
                     </div>
@@ -307,7 +316,6 @@ export const AccountsPage = () => {
                             >
                               <TextInput
                                 label={t("accountName")}
-                                isLabelHidden
                                 value={accountName}
                                 onChange={(value) =>
                                   setNames((previous) => ({
@@ -391,7 +399,6 @@ export const AccountsPage = () => {
                       <div className="accounts-add-account-row">
                         <TextInput
                           label={t("newAccount")}
-                          isLabelHidden
                           placeholder={t("newAccount")}
                           value={newAccounts[category.id] ?? ""}
                           onChange={(value) =>

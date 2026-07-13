@@ -190,8 +190,7 @@ html[lang="zh-CN"]
 }
 
 .accounts-loading-state,
-.accounts-category-section,
-.accounts-account-list {
+.accounts-category-section {
   display: grid;
   gap: 0.75rem;
 }
@@ -245,13 +244,23 @@ html[lang="zh-CN"]
 .accounts-account-row {
   display: grid;
   grid-template-columns: minmax(12rem, 1fr) minmax(5rem, auto) auto;
-  align-items: center;
+  align-items: end;
   gap: 0.75rem;
   min-width: 0;
   padding: 0.75rem;
   background: var(--color-background-surface);
+  border-block-end: 1px solid var(--color-border);
+}
+
+.accounts-account-list {
+  overflow: hidden;
+  background: var(--color-background-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-container);
+}
+
+.accounts-account-row:last-child {
+  border-block-end: 0;
 }
 
 .accounts-account-status {
