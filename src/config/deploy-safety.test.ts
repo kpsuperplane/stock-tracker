@@ -46,6 +46,7 @@ const flagKeys = [
   "PORTFOLIO_DUAL_WRITE_ENABLED",
   "PORTFOLIO_MIGRATOR_ENABLED",
   "PORTFOLIO_NEW_READS_ENABLED",
+  "PORTFOLIO_HISTORY_ENABLED",
   "PORTFOLIO_NEW_WRITES_ENABLED",
 ] as const;
 
@@ -55,6 +56,7 @@ describe("deployment safety", () => {
       dualWrite: false,
       migrator: false,
       newReads: false,
+      history: false,
       newWrites: false,
     });
     expect(parseFeatureFlag(true)).toBe(true);
@@ -68,12 +70,14 @@ describe("deployment safety", () => {
         PORTFOLIO_DUAL_WRITE_ENABLED: "true",
         PORTFOLIO_MIGRATOR_ENABLED: "on",
         PORTFOLIO_NEW_READS_ENABLED: true,
+        PORTFOLIO_HISTORY_ENABLED: "true",
         PORTFOLIO_NEW_WRITES_ENABLED: "false",
       }),
     ).toEqual({
       dualWrite: true,
       migrator: false,
       newReads: true,
+      history: true,
       newWrites: false,
     });
   });
@@ -174,6 +178,7 @@ describe("deployment safety", () => {
     const production = readJsonc("wrangler.jsonc");
     const test = readJsonc("wrangler.test.jsonc");
     expect(production.vars?.PORTFOLIO_NEW_READS_ENABLED).toBe("true");
+    expect(production.vars?.PORTFOLIO_HISTORY_ENABLED).toBe("true");
     expect(production.vars?.CALENDAR_READ_MODELS_ENABLED).toBe("true");
     expect(production.vars?.JOB_READ_MODELS_ENABLED).toBe("true");
     expect(production.vars?.PORTFOLIO_NEW_WRITES_ENABLED).toBe("true");
@@ -185,6 +190,7 @@ describe("deployment safety", () => {
     }
     for (const key of flagKeys) expect(test.vars?.[key]).toBe("false");
     expect(test.vars?.PORTFOLIO_NEW_READS_ENABLED).toBe("false");
+    expect(test.vars?.PORTFOLIO_HISTORY_ENABLED).toBe("false");
   });
 
   it("covers both Toronto 4:30 p.m. UTC candidates and the 15-minute dispatcher", () => {

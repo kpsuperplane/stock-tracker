@@ -90,10 +90,14 @@ const insertFact = async (input: {
 describe("portfolio and calendar read models", () => {
   beforeEach(() => {
     (env as unknown as Env).READ_MODELS_ENABLED = "true";
+    (env as unknown as Record<string, unknown>).PORTFOLIO_HISTORY_ENABLED =
+      "true";
   });
 
   afterEach(() => {
     delete (env as unknown as Record<string, unknown>).READ_MODELS_ENABLED;
+    (env as unknown as Record<string, unknown>).PORTFOLIO_HISTORY_ENABLED =
+      "false";
   });
 
   it("keeps new read models disabled until explicitly enabled", async () => {
@@ -122,6 +126,21 @@ describe("portfolio and calendar read models", () => {
     mutable.PORTFOLIO_NEW_READS_ENABLED = "false";
   });
 
+  it("gates portfolio history independently", async () => {
+    const mutable = env as unknown as Record<string, unknown>;
+    mutable.PORTFOLIO_HISTORY_ENABLED = "false";
+    const response = await exports.default.fetch(
+      new Request("http://local/api/portfolio/history?range=1y", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(response.status).toBe(404);
+    expect(
+      (await response.json<{ error: { code: string } }>()).error.code,
+    ).toBe("portfolio_history_disabled");
+    mutable.PORTFOLIO_HISTORY_ENABLED = "true";
+  });
+
   it("installs date-leading range indexes for calendar reads", async () => {
     const indexes = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'index'",
@@ -134,6 +153,363 @@ describe("portfolio and calendar read models", () => {
         "work_items_fact_date_idx",
       ]),
     );
+  });
+
+  it("returns exact portfolio history with lifetime and period metrics", async () => {
+    await insertInstrument({
+      id: "history-instrument",
+      symbol: "HISTORY",
+      currency: "CAD",
+    });
+    await insertTransaction({
+      id: "history-buy",
+      instrumentId: "history-instrument",
+      date: "2026-07-07",
+      quantity: "10",
+      price: "10",
+    });
+    await env.DB.prepare(
+      `INSERT INTO transactions
+       (id, instrument_id, account_id, trade_date, side, quantity_decimal,
+        price_decimal, revision, created_at, updated_at)
+       VALUES ('history-sell', 'history-instrument', 'account-default',
+               '2026-07-09', 'sell', '4', '15', 1, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    for (const fact of [
+      {
+        id: "history-fact-8",
+        date: "2026-07-08",
+        previous: "10",
+        current: "11",
+      },
+      {
+        id: "history-fact-9",
+        date: "2026-07-09",
+        previous: "11",
+        current: "14",
+      },
+      {
+        id: "history-fact-10",
+        date: "2026-07-10",
+        previous: "14",
+        current: "13",
+      },
+    ]) {
+      await insertFact({
+        ...fact,
+        instrumentId: "history-instrument",
+        pct: "1",
+      });
+    }
+    await env.DB.prepare(
+      `INSERT INTO dividend_events
+       (id, instrument_id, ex_date, amount_per_share_decimal, currency,
+        provider, provider_event_id, provider_revision, retrieved_at, status,
+        created_at, updated_at)
+       VALUES ('history-dividend', 'history-instrument', '2026-07-09', '0.5',
+               'CAD', 'alpha-vantage', 'history-dividend', 'r1', ?1, 'active',
+               ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO dividend_events
+         (id, instrument_id, ex_date, amount_per_share_decimal, currency,
+          provider, provider_event_id, provider_revision, retrieved_at, status,
+          created_at, updated_at)
+         VALUES ('history-stale-dividend', 'history-instrument', '2026-07-09',
+                 '100', 'CAD', 'alpha-vantage', 'history-stale-dividend', 'r1',
+                 ?1, 'stale', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO dividend_events
+         (id, instrument_id, ex_date, amount_per_share_decimal, currency,
+          provider, provider_event_id, provider_revision, retrieved_at, status,
+          created_at, updated_at)
+         VALUES ('history-invalid-dividend', 'history-instrument', '2026-07-09',
+                 'not-a-decimal', 'CAD', 'alpha-vantage',
+                 'history-invalid-dividend', 'r1', ?1, 'active', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO corporate_actions
+         (id, instrument_id, action_type, effective_date, split_numerator,
+          split_denominator, provider, provider_event_id, provider_revision,
+          retrieved_at, revision, status, conflict_code, conflict_message,
+          created_at, updated_at)
+         VALUES ('history-split-conflict', 'history-instrument', 'split',
+                 '2026-07-09', '2', '1', 'yahoo', 'history-split-conflict',
+                 'r1', ?1, 1, 'quarantined', 'split_conflict',
+                 'Conflicting split fact.', ?1, ?1)`,
+      ).bind(now),
+    ]);
+
+    const response = await exports.default.fetch(
+      new Request(
+        "http://local/api/portfolio/history?range=custom&startDate=2026-07-08&endDate=2026-07-10",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(response.status).toBe(200);
+    const etag = response.headers.get("ETag");
+    const payload = await response.json<{
+      history: {
+        startDate: string;
+        endDate: string;
+        currencies: Array<{
+          currency: string;
+          summaries: Record<
+            string,
+            { valueDecimal: string | null; periodDeltaDecimal: string | null }
+          >;
+          positions: Array<Record<string, string | null>>;
+          points: Array<{ date: string; status: string }>;
+          coverage: {
+            status: string;
+            splitConflicts: unknown[];
+            dividendRefresh: unknown[];
+          };
+        }>;
+      };
+    }>();
+    const cad = payload.history.currencies[0];
+    if (!cad) throw new Error("CAD history result is missing");
+    expect(payload.history).toMatchObject({
+      startDate: "2026-07-08",
+      endDate: "2026-07-10",
+    });
+    expect(cad.currency).toBe("CAD");
+    expect(cad.summaries).toMatchObject({
+      totalValue: { valueDecimal: "78", periodDeltaDecimal: "-32" },
+      realizedGains: { valueDecimal: "20", periodDeltaDecimal: "20" },
+      unrealizedGains: { valueDecimal: "18", periodDeltaDecimal: "8" },
+      dividends: { valueDecimal: "5", periodDeltaDecimal: "5" },
+    });
+    expect(cad.positions).toEqual([
+      expect.objectContaining({
+        symbol: "HISTORY",
+        quantityDecimal: "6",
+        averageCostDecimal: "10",
+        bookCostDecimal: "60",
+        marketValueDecimal: "78",
+        unrealizedGainDecimal: "18",
+        realizedGainDecimal: "20",
+        dividendsDecimal: "5",
+      }),
+    ]);
+    expect(cad.points).toHaveLength(3);
+    expect(cad.coverage.status).toBe("partial");
+    expect(cad.coverage.splitConflicts).toHaveLength(1);
+    expect(cad.coverage.dividendRefresh).toHaveLength(2);
+
+    const cached = await exports.default.fetch(
+      new Request(
+        "http://local/api/portfolio/history?range=custom&startDate=2026-07-08&endDate=2026-07-10",
+        {
+          headers: {
+            Authorization: authorization,
+            "If-None-Match": etag ?? "",
+          },
+        },
+      ),
+    );
+    expect(cached.status).toBe(304);
+  });
+
+  it("validates portfolio history ranges and resolves Today to two closes", async () => {
+    await insertInstrument({
+      id: "history-range-instrument",
+      symbol: "RANGE",
+      currency: "USD",
+    });
+    await insertTransaction({
+      id: "history-range-buy",
+      instrumentId: "history-range-instrument",
+      quantity: "1",
+    });
+    await insertFact({
+      id: "history-range-fact-1",
+      instrumentId: "history-range-instrument",
+      date: "2026-07-09",
+      previous: "9",
+      current: "10",
+      pct: "1",
+    });
+    await insertFact({
+      id: "history-range-fact-2",
+      instrumentId: "history-range-instrument",
+      date: "2026-07-10",
+      previous: "10",
+      current: "11",
+      pct: "1",
+    });
+    const today = await exports.default.fetch(
+      new Request("http://local/api/portfolio/history?range=today", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(today.status).toBe(200);
+    expect(
+      (await today.json<{ history: { startDate: string; endDate: string } }>())
+        .history,
+    ).toMatchObject({ startDate: "2026-07-09", endDate: "2026-07-10" });
+
+    const expectedRanges = {
+      "1w": "2026-07-04",
+      "30d": "2026-06-11",
+      "3m": "2026-04-10",
+      ytd: "2026-01-01",
+      "1y": "2025-07-10",
+      all: "2026-01-02",
+    } as const;
+    for (const [range, startDate] of Object.entries(expectedRanges)) {
+      const response = await exports.default.fetch(
+        new Request(`http://local/api/portfolio/history?range=${range}`, {
+          headers: { Authorization: authorization },
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(
+        (
+          await response.json<{
+            history: { startDate: string; endDate: string };
+          }>()
+        ).history,
+      ).toMatchObject({ startDate, endDate: "2026-07-10" });
+    }
+
+    const chinese = await exports.default.fetch(
+      new Request("http://local/api/portfolio/history?range=today&locale=cn", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(chinese.status).toBe(200);
+    expect(chinese.headers.get("Content-Language")).toBe("cn");
+    expect(
+      (await chinese.json<{ history: { locale: string } }>()).history.locale,
+    ).toBe("cn");
+
+    for (const query of [
+      "range=unknown",
+      "range=custom&startDate=2026-07-10",
+      "range=custom&startDate=2026-07-11&endDate=2026-07-10",
+      "range=1y&startDate=2026-01-01",
+    ]) {
+      const invalid = await exports.default.fetch(
+        new Request(`http://local/api/portfolio/history?${query}`, {
+          headers: { Authorization: authorization },
+        }),
+      );
+      expect(invalid.status).toBe(422);
+    }
+  });
+
+  it("estimates a first buy, carries closed-market prices, and gaps missing open days", async () => {
+    await insertInstrument({
+      id: "history-coverage-instrument",
+      symbol: "COVERAGE",
+      currency: "USD",
+    });
+    await insertTransaction({
+      id: "history-coverage-buy",
+      instrumentId: "history-coverage-instrument",
+      date: "2026-07-02",
+      quantity: "2",
+      price: "12.5",
+    });
+    const estimated = await exports.default.fetch(
+      new Request(
+        "http://local/api/portfolio/history?range=custom&startDate=2026-07-02&endDate=2026-07-02",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(estimated.status).toBe(200);
+    const estimatedCurrency = (
+      await estimated.json<{
+        history: {
+          currencies: Array<{
+            points: Array<{ status: string; totalValueDecimal: string | null }>;
+            coverage: { status: string };
+          }>;
+        };
+      }>()
+    ).history.currencies[0];
+    expect(estimatedCurrency?.points[0]).toMatchObject({
+      status: "estimated",
+      totalValueDecimal: "25",
+    });
+    expect(estimatedCurrency?.coverage.status).toBe("estimated");
+
+    await insertFact({
+      id: "history-coverage-fact",
+      instrumentId: "history-coverage-instrument",
+      date: "2026-07-02",
+      previous: "12",
+      current: "13",
+      pct: "1",
+    });
+    await env.DB.prepare(
+      `INSERT INTO dividend_refresh_state
+       (instrument_id, requested_start_date, status, attempt_count,
+        next_attempt_at, created_at, updated_at)
+       VALUES ('history-coverage-instrument', '2026-07-02', 'pending', 0,
+               ?1, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    const pending = await exports.default.fetch(
+      new Request(
+        "http://local/api/portfolio/history?range=custom&startDate=2026-07-02&endDate=2026-07-05",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    const pendingCurrency = (
+      await pending.json<{
+        history: {
+          currencies: Array<{
+            points: Array<{ date: string; status: string }>;
+            coverage: { status: string };
+          }>;
+        };
+      }>()
+    ).history.currencies[0];
+    expect(pendingCurrency?.coverage.status).toBe("pending");
+    expect(pendingCurrency?.points).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ date: "2026-07-03", status: "complete" }),
+        expect.objectContaining({ date: "2026-07-04", status: "complete" }),
+        expect.objectContaining({ date: "2026-07-05", status: "complete" }),
+      ]),
+    );
+
+    const partial = await exports.default.fetch(
+      new Request(
+        "http://local/api/portfolio/history?range=custom&startDate=2026-07-02&endDate=2026-07-06",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    const partialCurrency = (
+      await partial.json<{
+        history: {
+          currencies: Array<{
+            points: Array<{ date: string; status: string }>;
+            coverage: { status: string; missingPrices: unknown[] };
+          }>;
+        };
+      }>()
+    ).history.currencies[0];
+    expect(partialCurrency?.points.at(-1)).toEqual({
+      date: "2026-07-06",
+      totalValueDecimal: null,
+      realizedGainsDecimal: "0",
+      unrealizedGainsDecimal: null,
+      dividendsDecimal: "0",
+      status: "partial",
+    });
+    expect(partialCurrency?.coverage.status).toBe("partial");
+    expect(partialCurrency?.coverage.missingPrices).toHaveLength(1);
   });
 
   it("scopes portfolio and calendar representations to an account", async () => {
@@ -229,6 +605,23 @@ describe("portfolio and calendar read models", () => {
         }>()
       ).portfolio.positions.map(({ symbol }) => symbol),
     ).toEqual(["SCOPE.ONE"]);
+
+    const scopedHistory = await exports.default.fetch(
+      new Request(
+        "http://local/api/portfolio/history?range=custom&startDate=2026-07-09&endDate=2026-07-09&scopeType=account&scopeId=scope-account-two",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(scopedHistory.status).toBe(200);
+    expect(
+      (
+        await scopedHistory.json<{
+          history: {
+            currencies: Array<{ positions: Array<{ symbol: string }> }>;
+          };
+        }>()
+      ).history.currencies.flatMap((currency) => currency.positions),
+    ).toEqual([expect.objectContaining({ symbol: "SCOPE.TWO" })]);
 
     const categoryCalendar = await exports.default.fetch(
       new Request(

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type AppRoute =
+  | "today"
   | "portfolio"
   | "events"
   | "calendar"
@@ -13,6 +14,7 @@ export interface AppRouteDefinition {
 }
 
 export const APP_ROUTES: readonly AppRouteDefinition[] = [
+  { id: "today", path: "/today" },
   { id: "portfolio", path: "/portfolio" },
   { id: "events", path: "/events" },
   { id: "calendar", path: "/calendar" },
@@ -31,19 +33,19 @@ const normalizePath = (pathname: string) => {
 };
 
 export const pathForRoute = (route: AppRoute): string =>
-  APP_ROUTES.find((candidate) => candidate.id === route)?.path ?? "/portfolio";
+  APP_ROUTES.find((candidate) => candidate.id === route)?.path ?? "/today";
 
 export const routeForPath = (pathname: string): AppRoute => {
   const normalizedPath = normalizePath(pathname);
   return (
     APP_ROUTES.find((candidate) => candidate.path === normalizedPath)?.id ??
-    "portfolio"
+    "today"
   );
 };
 
 export const readPathname = () =>
   typeof window === "undefined"
-    ? "/portfolio"
+    ? "/today"
     : `${window.location.pathname}${window.location.search}`;
 
 export const isPlainLeftClick = (event: {
@@ -65,6 +67,17 @@ export interface AppRouter {
   navigate: (route: AppRoute) => void;
 }
 
+export const sharedScopeSearch = (search: string): string => {
+  const shared = new URLSearchParams();
+  const current = new URLSearchParams(search);
+  const scopeType = current.get("scopeType");
+  const scopeId = current.get("scopeId");
+  if (scopeType) shared.set("scopeType", scopeType);
+  if (scopeId) shared.set("scopeId", scopeId);
+  const query = shared.toString();
+  return query ? `?${query}` : "";
+};
+
 export const useAppRouter = (initialPath?: string): AppRouter => {
   const [pathname, setPathname] = useState(() => initialPath ?? readPathname());
 
@@ -77,14 +90,16 @@ export const useAppRouter = (initialPath?: string): AppRouter => {
   }, [initialPath]);
 
   const navigate = useCallback((route: AppRoute) => {
-    const nextPath = `${pathForRoute(route)}${
-      typeof window === "undefined" ? "" : window.location.search
-    }`;
+    const query =
+      typeof window === "undefined"
+        ? ""
+        : sharedScopeSearch(window.location.search);
+    const nextPath = `${pathForRoute(route)}${query}`;
     if (typeof window === "undefined") {
       setPathname(nextPath);
       return;
     }
-    if (window.location.pathname !== nextPath) {
+    if (`${window.location.pathname}${window.location.search}` !== nextPath) {
       window.history.pushState({}, "", nextPath);
     }
     setPathname(nextPath);

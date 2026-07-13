@@ -131,11 +131,9 @@ CREATE TABLE ledger_mutations (
 CREATE TRIGGER ledger_mutations_revision_guard
 BEFORE INSERT ON ledger_mutations
 BEGIN
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM position_basis_state WHERE id = 1)
-      OR NEW.expected_revision IS NOT (SELECT revision FROM position_basis_state WHERE id = 1)
-    THEN RAISE(ABORT, 'ledger_conflict')
-  END;
+  SELECT RAISE(ABORT, 'ledger_conflict')
+  WHERE NOT EXISTS (SELECT 1 FROM position_basis_state WHERE id = 1)
+    OR NEW.expected_revision IS NOT (SELECT revision FROM position_basis_state WHERE id = 1);
 END;
 
 CREATE TRIGGER ledger_mutations_advance_revision
@@ -146,9 +144,7 @@ BEGIN
       updated_at = NEW.created_at,
       last_mutation_id = NEW.id
   WHERE id = 1;
-  SELECT CASE
-    WHEN changes() <> 1 THEN RAISE(ABORT, 'ledger_state_missing')
-  END;
+  SELECT RAISE(ABORT, 'ledger_state_missing') WHERE changes() <> 1;
 END;
 
 CREATE TABLE pipeline_jobs (

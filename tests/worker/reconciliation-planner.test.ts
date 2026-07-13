@@ -187,7 +187,7 @@ describe("incremental reconciliation planner", () => {
     expect(result.skippedCount).toBe(1);
   });
 
-  it("does not create work for a quantity-only positive-position edit", async () => {
+  it("does not analyze a valuation-only first-buy close", async () => {
     await insertInstrument();
     await insertTransaction({ id: "buy-1", tradeDate: "2026-07-01" });
     await insertTransaction({
@@ -195,6 +195,11 @@ describe("incremental reconciliation planner", () => {
       tradeDate: "2026-07-05",
       quantity: "2",
     });
+    await env.DB.batch([
+      new MarketFactRepository(env.DB).upsertStatement(
+        validFact({ id: "first-buy-close", date: "2026-07-01", movement: "8" }),
+      ),
+    ]);
     await createJob({ id: "quantity-only", intervals: [] });
 
     const result = await planner().planPage({
@@ -278,16 +283,16 @@ describe("incremental reconciliation planner", () => {
       previousCompletedTradingDate: previousDate,
     });
 
-    expect(first.globalWork).toHaveLength(2);
-    expect(second.globalWork).toHaveLength(2);
-    expect(await listGlobal()).toHaveLength(2);
+    expect(first.globalWork).toHaveLength(3);
+    expect(second.globalWork).toHaveLength(3);
+    expect(await listGlobal()).toHaveLength(3);
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM job_work_items WHERE work_item_id IN (SELECT id FROM work_items WHERE scope = 'global_fact')",
       ).first<{ count: number }>(),
-    ).toEqual({ count: 4 });
+    ).toEqual({ count: 6 });
     expect(second.createdCount).toBe(0);
-    expect(second.attachedCount).toBe(2);
+    expect(second.attachedCount).toBe(3);
   });
 
   it("resumes a long historical plan in bounded, idempotent pages", async () => {
@@ -378,6 +383,13 @@ describe("incremental reconciliation planner", () => {
       new MarketFactRepository(env.DB).upsertStatement(
         validFact({ id: "dividend-fact", date: "2026-07-02", movement: "1" }),
       ),
+      new MarketFactRepository(env.DB).upsertStatement(
+        validFact({
+          id: "dividend-first-buy-fact",
+          date: "2026-07-01",
+          movement: "1",
+        }),
+      ),
       new DividendRepository(env.DB).upsertStatement({
         id: "dividend-1",
         instrumentId: "instrument-1",
@@ -417,7 +429,7 @@ describe("incremental reconciliation planner", () => {
       await env.DB.prepare(
         "SELECT work_total, work_skipped FROM pipeline_jobs WHERE id = 'dividend-only'",
       ).first(),
-    ).toEqual({ work_total: 1, work_skipped: 1 });
+    ).toEqual({ work_total: 2, work_skipped: 2 });
 
     await createJob({
       id: "forced-backfill",
@@ -610,7 +622,7 @@ describe("incremental reconciliation planner", () => {
       pipelineJobId: "leased-owner",
       cursor: first.nextCursor,
       plannerLeaseUntil: expiredLease,
-      pageSize: 1,
+      pageSize: 2,
       latestCompletedTradingDate: latestDate,
       previousCompletedTradingDate: previousDate,
     });

@@ -1,0 +1,259 @@
+.portfolio-intro {
+  max-width: 52rem;
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.portfolio-content,
+.portfolio-skeleton {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+
+.portfolio-content.is-refreshing {
+  opacity: 0.68;
+}
+
+.portfolio-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-container);
+  background: var(--color-background-surface);
+}
+
+.portfolio-summary-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 6.5rem;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+  border: 0;
+  border-right: var(--border-width) solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.portfolio-summary-item:last-child {
+  border-right: 0;
+}
+
+.portfolio-summary-item::after {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0;
+  left: 0.75rem;
+  height: 2px;
+  background: transparent;
+  content: "";
+}
+
+.portfolio-summary-item[aria-pressed="true"] {
+  background: var(--color-background-muted);
+}
+
+.portfolio-summary-item[aria-pressed="true"]::after {
+  background: var(--color-accent);
+}
+
+.portfolio-summary-item:hover {
+  background: var(--color-overlay-hover);
+}
+
+.portfolio-summary-item:focus-visible,
+.portfolio-chart-panel:focus-visible,
+.portfolio-data-details > summary:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.portfolio-summary-label,
+.portfolio-summary-delta,
+.portfolio-company-name {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: var(--text-supporting-size);
+  line-height: var(--text-supporting-leading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-summary-value {
+  overflow: hidden;
+  font-size: clamp(1.1rem, 2vw, 1.45rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-summary-delta.is-positive {
+  color: var(--color-success);
+}
+
+.portfolio-summary-delta.is-negative {
+  color: var(--color-error);
+}
+
+.portfolio-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.portfolio-range-shortcuts {
+  display: flex;
+  flex: 1;
+  gap: 0.25rem;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  scrollbar-width: thin;
+}
+
+.portfolio-range-shortcuts > * {
+  flex: 0 0 auto;
+}
+
+.portfolio-control-end {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 0.75rem;
+}
+
+.portfolio-chart-panel {
+  width: 100%;
+  height: clamp(19rem, 42vw, 27rem);
+  min-width: 0;
+  padding: 0.5rem 0.5rem 0;
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-container);
+  background: var(--color-background-surface);
+}
+
+.portfolio-chart-tooltip {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.65rem 0.75rem;
+  border: var(--border-width) solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  color: var(--color-text-primary);
+  background: var(--color-background-surface);
+  box-shadow: var(--shadow-low);
+  font-size: var(--text-supporting-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.portfolio-chart-tooltip > span {
+  color: var(--color-text-secondary);
+}
+
+.portfolio-data-details {
+  border-bottom: var(--border-width) solid var(--color-border-subtle);
+}
+
+.portfolio-data-details > summary {
+  width: fit-content;
+  padding: 0.5rem 0;
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+}
+
+.portfolio-table-scroll {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.portfolio-holdings-table {
+  min-width: 74rem;
+}
+
+.portfolio-data-table {
+  min-width: 34rem;
+}
+
+.portfolio-numeric-cell {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.portfolio-company-name {
+  display: block;
+  max-width: 14rem;
+  margin-top: 0.15rem;
+}
+
+.portfolio-skeleton {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portfolio-content {
+    transition: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .portfolio-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .portfolio-summary-item:nth-child(2) {
+    border-right: 0;
+  }
+
+  .portfolio-summary-item:nth-child(-n + 2) {
+    border-bottom: var(--border-width) solid var(--color-border-subtle);
+  }
+
+  .portfolio-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .portfolio-control-end {
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 520px) {
+  .portfolio-summary-item {
+    min-height: 5.75rem;
+    padding: 0.75rem;
+  }
+
+  .portfolio-summary-value {
+    font-size: 1.05rem;
+  }
+
+  .portfolio-control-end {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .portfolio-chart-panel {
+    height: 18rem;
+    padding-inline: 0;
+  }
+}

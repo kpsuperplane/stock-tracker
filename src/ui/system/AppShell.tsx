@@ -30,6 +30,7 @@ import { CalendarPage } from "../pages/CalendarPage";
 import { EventsPage } from "../pages/EventsPage";
 import { PortfolioPage } from "../pages/PortfolioPage";
 import { StatusPage } from "../pages/StatusPage";
+import { TodayPage } from "../pages/TodayPage";
 import {
   APP_ROUTES,
   type AppRoute,
@@ -43,6 +44,11 @@ import {
 } from "./PageActionsContext";
 
 const routeCopy = {
+  today: {
+    title: "today",
+    pageTitle: "todayHeading",
+    description: "todayDescription",
+  },
   portfolio: {
     title: "portfolio",
     pageTitle: "portfolioHeading",
@@ -71,6 +77,7 @@ const routeCopy = {
 } as const;
 
 const routeIcons = {
+  today: "clock",
   portfolio: PortfolioIcon,
   events: EventsIcon,
   calendar: CalendarIcon,
@@ -136,6 +143,7 @@ const ProductNavigation = ({ activeRoute }: NavigationProps) => {
   const { t } = useI18n();
   const pageActions = useRegisteredPageActions();
   const hasAccountScope =
+    activeRoute === "today" ||
     activeRoute === "portfolio" ||
     activeRoute === "events" ||
     activeRoute === "calendar";
@@ -193,6 +201,7 @@ const ProductSideNavigation = ({
               topContent: (
                 <ProductSideNavMobileControls
                   hasAccountScope={
+                    activeRoute === "today" ||
                     activeRoute === "portfolio" ||
                     activeRoute === "events" ||
                     activeRoute === "calendar"
@@ -323,7 +332,9 @@ export const ProductApp = ({
             contentPadding={3}
           >
             {children ??
-              (router.route === "events" ? (
+              (router.route === "today" ? (
+                <TodayPage />
+              ) : router.route === "events" ? (
                 <EventsPage />
               ) : router.route === "portfolio" ? (
                 <PortfolioPage />

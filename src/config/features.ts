@@ -10,6 +10,7 @@ export interface FeatureFlagEnv {
   PORTFOLIO_DUAL_WRITE_ENABLED?: unknown;
   PORTFOLIO_MIGRATOR_ENABLED?: unknown;
   PORTFOLIO_NEW_READS_ENABLED?: unknown;
+  PORTFOLIO_HISTORY_ENABLED?: unknown;
   PORTFOLIO_NEW_WRITES_ENABLED?: unknown;
 }
 
@@ -17,6 +18,7 @@ export interface PortfolioFeatureFlags {
   dualWrite: boolean;
   migrator: boolean;
   newReads: boolean;
+  history: boolean;
   newWrites: boolean;
 }
 
@@ -24,6 +26,7 @@ export const defaultPortfolioFeatureFlags: PortfolioFeatureFlags = {
   dualWrite: false,
   migrator: false,
   newReads: false,
+  history: false,
   newWrites: false,
 };
 
@@ -37,5 +40,6 @@ export const readPortfolioFeatureFlags = (
   dualWrite: parseFeatureFlag(env.PORTFOLIO_DUAL_WRITE_ENABLED),
   migrator: parseFeatureFlag(env.PORTFOLIO_MIGRATOR_ENABLED),
   newReads: parseFeatureFlag(env.PORTFOLIO_NEW_READS_ENABLED),
+  history: parseFeatureFlag(env.PORTFOLIO_HISTORY_ENABLED),
   newWrites: parseFeatureFlag(env.PORTFOLIO_NEW_WRITES_ENABLED),
 });

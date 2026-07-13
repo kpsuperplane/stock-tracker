@@ -238,6 +238,94 @@ export interface PortfolioReadModelDto {
   nextCursor: string | null;
 }
 
+export type PortfolioRangePreset =
+  | "today"
+  | "1w"
+  | "30d"
+  | "3m"
+  | "ytd"
+  | "1y"
+  | "all"
+  | "custom";
+
+export type PortfolioMetric =
+  | "totalValue"
+  | "realizedGains"
+  | "unrealizedGains"
+  | "dividends";
+
+export type PortfolioHistoryCoverageStatus =
+  | "complete"
+  | "estimated"
+  | "partial"
+  | "pending";
+
+export interface PortfolioHistoryCoverageDto {
+  status: PortfolioHistoryCoverageStatus;
+  missingPrices: Array<{
+    instrumentId: string;
+    symbol: string;
+    date: string;
+  }>;
+  splitConflicts: PortfolioConflictDto[];
+  dividendRefresh: Array<{
+    instrumentId: string;
+    symbol: string;
+    status: string;
+    message: string | null;
+  }>;
+}
+
+export interface PortfolioHistoryPointDto {
+  date: string;
+  totalValueDecimal: string | null;
+  realizedGainsDecimal: string;
+  unrealizedGainsDecimal: string | null;
+  dividendsDecimal: string;
+  status: Exclude<PortfolioHistoryCoverageStatus, "pending">;
+}
+
+export interface PortfolioHistoryPositionDto {
+  instrumentId: string;
+  symbol: string;
+  companyName: string;
+  exchange: string;
+  currency: "USD" | "CAD";
+  quantityDecimal: string;
+  averageCostDecimal: string;
+  bookCostDecimal: string;
+  marketValueDecimal: string | null;
+  unrealizedGainDecimal: string | null;
+  realizedGainDecimal: string;
+  dividendsDecimal: string;
+  latestPriceDecimal: string | null;
+  latestPriceDate: string | null;
+  valuationStatus: "complete" | "estimated" | "partial";
+}
+
+export interface PortfolioHistorySummaryDto {
+  valueDecimal: string | null;
+  periodDeltaDecimal: string | null;
+}
+
+export interface PortfolioHistoryCurrencyDto {
+  currency: "USD" | "CAD";
+  summaries: Record<PortfolioMetric, PortfolioHistorySummaryDto>;
+  points: PortfolioHistoryPointDto[];
+  positions: PortfolioHistoryPositionDto[];
+  granularity: "daily" | "weekly" | "monthly";
+  coverage: PortfolioHistoryCoverageDto;
+}
+
+export interface PortfolioHistoryReadModelDto {
+  range: PortfolioRangePreset;
+  startDate: string;
+  endDate: string;
+  dataThrough: string | null;
+  locale: ReadModelLocale;
+  currencies: PortfolioHistoryCurrencyDto[];
+}
+
 export interface CalendarMoverDto extends PortfolioPositionDto {
   id: string;
   heldQuantityDecimal: string;

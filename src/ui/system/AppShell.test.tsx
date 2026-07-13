@@ -3,6 +3,23 @@ import { describe, expect, it } from "vitest";
 import { ProductApp } from "./AppShell";
 
 describe("product AppShell", () => {
+  it("makes Today the default and keeps Portfolio as a distinct destination", () => {
+    const todayMarkup = renderToStaticMarkup(
+      <ProductApp initialPath="/" initialLocale="en" />,
+    );
+    const portfolioMarkup = renderToStaticMarkup(
+      <ProductApp initialPath="/portfolio" initialLocale="en" />,
+    );
+
+    expect(todayMarkup).toContain('data-testid="today-page"');
+    expect(todayMarkup).toContain('href="/today"');
+    expect(todayMarkup.indexOf('href="/today"')).toBeLessThan(
+      todayMarkup.indexOf('href="/portfolio"'),
+    );
+    expect(portfolioMarkup).toContain('data-testid="portfolio-page"');
+    expect(portfolioMarkup).toContain("Track securities value");
+  });
+
   it("renders the calendar route with an active, keyboard-reachable nav item", () => {
     const markup = renderToStaticMarkup(
       <ProductApp initialPath="/calendar" initialLocale="en" />,
@@ -39,6 +56,7 @@ describe("product AppShell", () => {
     expect(markup).toContain('aria-label="Side navigation"');
     expect(markup).toContain('data-testid="product-side-nav"');
     expect(markup).toContain('href="/portfolio"');
+    expect(markup).toContain('href="/today"');
     expect(markup).toContain('href="/events"');
     expect(markup).toContain('href="/calendar"');
     expect(markup).toContain('href="/status"');

@@ -6,7 +6,7 @@ interface RevisionRow {
 }
 
 export interface ReadModelTagInput {
-  model: "portfolio" | "calendar";
+  model: "portfolio" | "portfolio_history" | "calendar";
   locale: ReadModelLocale;
   positionBasisRevision: number;
   accountStructureRevision?: number;

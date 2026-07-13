@@ -5,353 +5,167 @@ import {
   HStack,
   Icon,
   Link,
-  Popover,
-  Table,
-  TableBody,
-  TableCell,
-  TableHeader,
-  TableHeaderCell,
-  TableRow,
   VStack,
 } from "@astryxdesign/core";
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  PortfolioMovementDto,
-  PortfolioPositionDto,
-  PortfolioReadModelDto,
+  PortfolioHistoryReadModelDto,
+  PortfolioRangePreset,
 } from "../../shared/contracts";
 import { useAccountScope } from "../accounts/AccountScopeContext";
-import {
-  ApiClientError,
-  type PortfolioApiClient,
-  type PortfolioReadOptions,
-  portfolioApi,
-} from "../api";
+import { ApiClientError } from "../api";
 import { RefreshIcon } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
 import {
-  formatDate,
-  formatDecimalString,
-  formatNativeCurrency,
-} from "../system/formatters";
+  type PortfolioHistoryApiClient,
+  portfolioHistoryApi,
+} from "../portfolio/history-api";
+import { PortfolioDataTable } from "../portfolio/PortfolioDataTable";
+import { PortfolioHoldingsTable } from "../portfolio/PortfolioHoldingsTable";
+import { PortfolioPerformanceChart } from "../portfolio/PortfolioPerformanceChart";
+import { PortfolioRangeControls } from "../portfolio/PortfolioRangeControls";
+import { PortfolioSkeleton } from "../portfolio/PortfolioSkeleton";
+import { PortfolioSummaryStrip } from "../portfolio/PortfolioSummaryStrip";
+import {
+  type PortfolioUrlState,
+  parsePortfolioUrlState,
+  writePortfolioUrlState,
+} from "../portfolio/state";
+import { formatDate } from "../system/formatters";
 import { usePageActions } from "../system/PageActionsContext";
 
 export interface PortfolioPageProps {
-  apiClient?: PortfolioApiClient;
-  initialPortfolio?: PortfolioReadModelDto;
-  today?: string;
+  apiClient?: PortfolioHistoryApiClient;
+  initialHistory?: PortfolioHistoryReadModelDto;
+  initialState?: PortfolioUrlState;
 }
 
-const numericStyle = {
-  textAlign: "end" as const,
-  fontVariantNumeric: "tabular-nums",
-  whiteSpace: "nowrap" as const,
-};
-
-const safeDecimal = (
-  value: string | null,
-  locale: "en" | "cn",
-  maximumFractionDigits?: number,
-): string => {
-  if (value === null) return "—";
-  try {
-    return formatDecimalString(value, locale, maximumFractionDigits);
-  } catch {
-    return "—";
-  }
-};
-
-const safeCurrency = (
-  value: string | null,
-  currency: "CAD" | "USD",
-  locale: "en" | "cn",
-): string => {
-  if (value === null) return "—";
-  try {
-    return formatNativeCurrency(value, currency, locale);
-  } catch {
-    return "—";
-  }
-};
-
-const formatSignedCurrency = (
-  value: string | null,
-  currency: "CAD" | "USD",
-  locale: "en" | "cn",
-): string => {
-  if (value === null) return "—";
-  const trimmed = value.trim();
-  const sign = trimmed.startsWith("-") ? "-" : "+";
-  const absolute = trimmed.replace(/^[+-]/, "");
-  if (/^0(?:\.0*)?$/.test(absolute)) {
-    return safeCurrency("0", currency, locale);
-  }
-  return `${sign}${safeCurrency(absolute, currency, locale)}`;
-};
-
-export const formatSignedDecimal = (
-  value: string | null,
-  locale: "en" | "cn",
-  maximumFractionDigits = 2,
-): string => {
-  if (value === null) return "—";
-  if (/^[+-]?0(?:\.0*)?$/.test(value.trim())) {
-    const zero =
-      maximumFractionDigits > 0
-        ? `0.${"0".repeat(maximumFractionDigits)}`
-        : "0";
-    return safeDecimal(zero, locale, maximumFractionDigits);
-  }
-  const formatted = safeDecimal(value, locale, maximumFractionDigits);
-  if (formatted === "—" || formatted.startsWith("-")) return formatted;
-  return `+${formatted}`;
-};
-
-export const movementTone = (
-  movement: PortfolioMovementDto | null,
-): "positive" | "negative" | "neutral" => {
-  if (!movement?.movementPercentDecimal) return "neutral";
-  const value = movement.movementPercentDecimal.trim();
-  if (!/^[+-]?\d+(?:\.\d+)?$/.test(value)) return "neutral";
-  if (/^[+-]?0(?:\.0*)?$/.test(value)) return "neutral";
-  return value.startsWith("-") ? "negative" : "positive";
-};
-
-export const portfolioErrorMessageKey = (
+export const portfolioHistoryErrorMessageKey = (
   error: unknown,
-): "portfolioReadModelDisabled" | "portfolioLoadError" =>
-  error instanceof ApiClientError && error.code === "read_model_disabled"
-    ? "portfolioReadModelDisabled"
-    : "portfolioLoadError";
+): "portfolioHistoryDisabled" | "portfolioHistoryLoadError" =>
+  error instanceof ApiClientError &&
+  (error.code === "portfolio_history_disabled" ||
+    error.code === "read_model_disabled")
+    ? "portfolioHistoryDisabled"
+    : "portfolioHistoryLoadError";
 
-const movementColor = {
-  positive: "var(--color-success)",
-  negative: "var(--color-error)",
-  neutral: "var(--color-text-secondary)",
-} as const;
-
-const movementLabel = (
-  movement: PortfolioMovementDto | null,
-  currency: "CAD" | "USD",
-  locale: "en" | "cn",
-  emptyLabel: string,
-) => {
-  if (!movement) return emptyLabel;
-  const amount = formatSignedCurrency(
-    movement.movementAmountDecimal,
-    currency,
-    locale,
-  );
-  const percent = formatSignedDecimal(
-    movement.movementPercentDecimal,
-    locale,
-    2,
-  );
-  return { amount, percent };
-};
-
-const movementPercentValue = (
-  position: PortfolioPositionDto,
-): number | null => {
-  const raw = position.movement?.movementPercentDecimal?.trim();
-  if (!raw || !/^[+-]?\d+(?:\.\d+)?$/.test(raw)) return null;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : null;
-};
-
-export const sortPortfolioPositions = (
-  positions: PortfolioPositionDto[],
-): PortfolioPositionDto[] =>
-  [...positions].sort((left, right) => {
-    const leftValue = movementPercentValue(left);
-    const rightValue = movementPercentValue(right);
-    if (leftValue === null) return rightValue === null ? 0 : 1;
-    if (rightValue === null) return -1;
-    return rightValue - leftValue;
-  });
-
-type PositionSource = PortfolioPositionDto["sources"][number] & {
-  sourceUrl: string;
-};
-
-const sourcesForPosition = (position: PortfolioPositionDto): PositionSource[] =>
-  position.sources.filter(
-    (source): source is PositionSource => source.sourceUrl !== null,
-  );
-
-const SourceLinks = ({ sources }: { sources: PositionSource[] }) => {
-  return (
-    <VStack gap={0.5}>
-      {sources.map((source) => (
-        <Link
-          key={source.sourceUrl}
-          href={source.sourceUrl}
-          hasUnderline
-          isExternalLink
-          weight="semibold"
-        >
-          {source.title}
-          {source.publisher ? ` · ${source.publisher}` : ""}
-        </Link>
-      ))}
-    </VStack>
-  );
-};
-
-const SourcesButton = ({ position }: { position: PortfolioPositionDto }) => {
-  const { t } = useI18n();
-  const sources = sourcesForPosition(position);
-  if (sources.length === 0) return null;
-  return (
-    <Popover
-      label={t("sources")}
-      width="min(28rem, calc(100vw - 2rem))"
-      hasCloseButton={false}
-      content={<SourceLinks sources={sources} />}
-    >
-      <Button
-        variant="ghost"
-        size="sm"
-        label={t("sources")}
-        tooltip={t("sources")}
-        icon={<Icon icon="externalLink" size="sm" />}
-      />
-    </Popover>
-  );
-};
-
-const PositionRow = ({
-  position,
-  locale,
-}: {
-  position: PortfolioPositionDto;
-  locale: "en" | "cn";
-}) => {
-  const { t } = useI18n();
-  const tone = movementTone(position.movement);
-  const movement = movementLabel(
-    position.movement,
-    position.currency,
-    locale,
-    t("unavailable"),
-  );
-  const summary = position.summaryZhCn?.trim();
-  const hasAnalysis = Boolean(summary);
-  return (
-    <Fragment key={position.instrumentId}>
-      <TableRow>
-        <TableCell>
-          <strong>{position.symbol}</strong>
-        </TableCell>
-        <TableCell style={numericStyle}>
-          {safeDecimal(position.quantityDecimal, locale)}
-        </TableCell>
-        <TableCell style={numericStyle}>
-          {safeCurrency(
-            position.currentRawCloseDecimal,
-            position.currency,
-            locale,
-          )}
-        </TableCell>
-        <TableCell style={numericStyle}>
-          {safeCurrency(position.valuationDecimal, position.currency, locale)}
-        </TableCell>
-        <TableCell style={{ ...numericStyle, color: movementColor[tone] }}>
-          {typeof movement === "string" ? (
-            movement
-          ) : (
-            <HStack gap={1} justify="end" wrap="nowrap">
-              <strong>{movement.percent}%</strong>
-              <span>{movement.amount}</span>
-            </HStack>
-          )}
-        </TableCell>
-      </TableRow>
-      {hasAnalysis && (
-        <TableRow>
-          <TableCell
-            className="portfolio-summary-cell"
-            colSpan={5}
-            style={{
-              color: "var(--color-text-secondary)",
-              background: "var(--color-background-muted)",
-            }}
-          >
-            <HStack gap={2} align="start" wrap="wrap">
-              <span>{summary}</span>
-              <SourcesButton position={position} />
-            </HStack>
-          </TableCell>
-        </TableRow>
-      )}
-    </Fragment>
-  );
-};
+const currenciesFor = (
+  history: PortfolioHistoryReadModelDto | null,
+): ("CAD" | "USD")[] =>
+  history?.currencies.map((result) => result.currency) ?? [];
 
 export const PortfolioPage = ({
-  apiClient = portfolioApi,
-  initialPortfolio,
-  today,
+  apiClient = portfolioHistoryApi,
+  initialHistory,
+  initialState,
 }: PortfolioPageProps) => {
   const { locale, t } = useI18n();
   const { selection } = useAccountScope();
-  const [portfolio, setPortfolio] = useState<PortfolioReadModelDto | null>(
-    initialPortfolio ?? null,
+  const [state, setState] = useState<PortfolioUrlState>(
+    initialState ?? parsePortfolioUrlState,
   );
-  const portfolioRef = useRef<PortfolioReadModelDto | null>(portfolio);
-  const requestIdRef = useRef(0);
-  const [loading, setLoading] = useState(initialPortfolio === undefined);
+  const [history, setHistory] = useState<PortfolioHistoryReadModelDto | null>(
+    initialHistory ?? null,
+  );
+  const historyRef = useRef(history);
+  const requestId = useRef(0);
+  const [loading, setLoading] = useState(initialHistory === undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [readModelDisabled, setReadModelDisabled] = useState(false);
+  const [disabled, setDisabled] = useState(false);
 
   useEffect(() => {
-    portfolioRef.current = portfolio;
-  }, [portfolio]);
+    historyRef.current = history;
+  }, [history]);
+
+  useEffect(() => {
+    if (initialState || typeof window === "undefined") return;
+    const onPopState = () => setState(parsePortfolioUrlState());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [initialState]);
+
+  const canLoad =
+    state.range !== "custom" || Boolean(state.startDate && state.endDate);
 
   const load = useCallback(async () => {
-    const requestId = ++requestIdRef.current;
-    const hadCachedPortfolio = portfolioRef.current !== null;
-    setLoading(!hadCachedPortfolio);
-    setRefreshing(hadCachedPortfolio);
+    if (!canLoad) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+    const currentRequest = ++requestId.current;
+    const hasCachedHistory = historyRef.current !== null;
+    setLoading(!hasCachedHistory);
+    setRefreshing(hasCachedHistory);
     setError(null);
-    setReadModelDisabled(false);
-    const options: PortfolioReadOptions = {
-      locale,
-      scope: selection,
-      ...(today ? { today } : {}),
-    };
+    setDisabled(false);
     try {
-      const result = await apiClient.read(options);
-      if (requestId !== requestIdRef.current) return;
-      if (result.portfolio) {
-        portfolioRef.current = result.portfolio;
-        setPortfolio(result.portfolio);
+      const result = await apiClient.read({
+        locale,
+        scope: selection,
+        range: state.range,
+        ...(state.range === "custom" && state.startDate && state.endDate
+          ? { startDate: state.startDate, endDate: state.endDate }
+          : {}),
+      });
+      if (currentRequest !== requestId.current) return;
+      if (result.history) {
+        historyRef.current = result.history;
+        setHistory(result.history);
       }
     } catch (caught) {
-      if (requestId === requestIdRef.current) {
-        const messageKey = portfolioErrorMessageKey(caught);
-        setReadModelDisabled(messageKey === "portfolioReadModelDisabled");
-        setError(t(messageKey));
-      }
+      if (currentRequest !== requestId.current) return;
+      const key = portfolioHistoryErrorMessageKey(caught);
+      setDisabled(key === "portfolioHistoryDisabled");
+      setError(t(key));
     } finally {
-      if (requestId === requestIdRef.current) {
+      if (currentRequest === requestId.current) {
         setLoading(false);
         setRefreshing(false);
       }
     }
-  }, [apiClient, locale, selection, t, today]);
+  }, [
+    apiClient,
+    canLoad,
+    locale,
+    selection,
+    state.endDate,
+    state.range,
+    state.startDate,
+    t,
+  ]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const updateState = useCallback(
+    (next: PortfolioUrlState, mode: "push" | "replace" = "push") => {
+      setState(next);
+      writePortfolioUrlState(next, mode);
+    },
+    [],
+  );
+
+  const currencies = currenciesFor(history);
+  const selectedCurrency =
+    (state.currency && currencies.includes(state.currency)
+      ? state.currency
+      : currencies.includes("CAD")
+        ? "CAD"
+        : currencies[0]) ?? null;
+
+  useEffect(() => {
+    if (selectedCurrency && selectedCurrency !== state.currency) {
+      updateState({ ...state, currency: selectedCurrency }, "replace");
+    }
+  }, [selectedCurrency, state, updateState]);
+
+  const currencyResult =
+    history?.currencies.find(
+      (result) => result.currency === selectedCurrency,
+    ) ?? null;
 
   const retry = useCallback(() => void load(), [load]);
   const pageActions = useMemo(
@@ -359,8 +173,8 @@ export const PortfolioPage = ({
       <Button
         variant="secondary"
         size="sm"
-        label={refreshing ? t("portfolioRefreshing") : t("refresh")}
-        tooltip={refreshing ? t("portfolioRefreshing") : t("refresh")}
+        label={refreshing ? t("portfolioHistoryRefreshing") : t("refresh")}
+        tooltip={refreshing ? t("portfolioHistoryRefreshing") : t("refresh")}
         icon={<Icon icon={RefreshIcon} size="sm" />}
         isIconOnly
         isLoading={refreshing}
@@ -371,6 +185,30 @@ export const PortfolioPage = ({
   );
   const hasTopNavActions = usePageActions(pageActions);
 
+  const eventsHref = useMemo(() => {
+    const query = new URLSearchParams();
+    if (selection.scopeType !== "all") {
+      query.set("scopeType", selection.scopeType);
+      if (selection.scopeId) query.set("scopeId", selection.scopeId);
+    }
+    const suffix = query.toString();
+    return `/events${suffix ? `?${suffix}` : ""}`;
+  }, [selection]);
+
+  const changeRange = useCallback(
+    (range: PortfolioRangePreset) => {
+      updateState({
+        metric: state.metric,
+        range,
+        ...(state.currency ? { currency: state.currency } : {}),
+        ...(range === "custom" && state.startDate && state.endDate
+          ? { startDate: state.startDate, endDate: state.endDate }
+          : {}),
+      });
+    },
+    [state, updateState],
+  );
+
   return (
     <VStack gap={3} data-testid="portfolio-page">
       <HStack gap={3} justify="between" align="start" wrap="wrap">
@@ -378,26 +216,36 @@ export const PortfolioPage = ({
           <Heading level={1} className="product-page-title-hidden">
             {t("portfolioHeading")}
           </Heading>
-          {portfolio && (
+          <p className="portfolio-intro">{t("portfolioPerformanceIntro")}</p>
+          {history && (
             <div className="product-page-meta">
-              {formatDate(portfolio.asOfDate, locale)} · {t("latestClose")}{" "}
-              {portfolio.latestTradingDate
-                ? formatDate(portfolio.latestTradingDate, locale)
+              {t("dataThrough")}{" "}
+              {history.dataThrough
+                ? formatDate(history.dataThrough, locale)
                 : "—"}
+              {currencyResult ? ` · ${t(currencyResult.granularity)}` : ""}
             </div>
           )}
         </VStack>
         {!hasTopNavActions && pageActions}
       </HStack>
 
+      <PortfolioRangeControls
+        state={state}
+        currencies={currencies}
+        onRangeChange={changeRange}
+        onCustomRangeChange={(startDate, endDate) =>
+          updateState({ ...state, range: "custom", startDate, endDate })
+        }
+        onCurrencyChange={(currency) => updateState({ ...state, currency })}
+      />
+
       {error && (
         <Banner
           status="error"
           title={error}
-          {...(readModelDisabled
-            ? {
-                description: t("portfolioReadModelDisabledDescription"),
-              }
+          {...(disabled
+            ? { description: t("portfolioHistoryDisabledDescription") }
             : {})}
           endContent={
             <Button variant="ghost" label={t("retry")} onClick={retry} />
@@ -405,78 +253,82 @@ export const PortfolioPage = ({
         />
       )}
 
-      {loading && !portfolio && (
-        <Banner status="info" title={t("loadingPortfolio")} />
+      {!canLoad && <Banner status="info" title={t("chooseCustomDateRange")} />}
+
+      {loading && !history && (
+        <div role="status" aria-live="polite">
+          <span className="product-page-title-hidden">
+            {t("portfolioHistoryLoading")}
+          </span>
+          <PortfolioSkeleton />
+        </div>
       )}
 
-      {!loading && !portfolio && !error && (
-        <Banner status="info" title={t("noPositions")} />
+      {refreshing && (
+        <span
+          className="product-page-title-hidden"
+          role="status"
+          aria-live="polite"
+        >
+          {t("portfolioHistoryRefreshing")}
+        </span>
       )}
 
-      {portfolio && (
-        <VStack gap={2}>
-          {portfolio.conflicts.length > 0 && (
+      {!loading && history && history.currencies.length === 0 && (
+        <Banner
+          status="info"
+          title={t("noPortfolioTransactions")}
+          description={t("noPortfolioTransactionsDescription")}
+          endContent={
+            <Link href={eventsHref} weight="semibold" hasUnderline>
+              {t("openEvents")}
+            </Link>
+          }
+        />
+      )}
+
+      {canLoad && currencyResult && (
+        <div
+          className={
+            refreshing ? "portfolio-content is-refreshing" : "portfolio-content"
+          }
+        >
+          {currencyResult.coverage.status !== "complete" && (
             <Banner
-              status="warning"
-              title={t("portfolioConflict")}
-              defaultIsExpanded
-            >
-              <VStack gap={1}>
-                {portfolio.conflicts.map((conflict, index) => (
-                  <div
-                    key={`${conflict.code}-${conflict.instrumentId ?? index}`}
-                  >
-                    {conflict.message}
-                  </div>
-                ))}
-              </VStack>
-            </Banner>
+              status={
+                currencyResult.coverage.status === "pending"
+                  ? "info"
+                  : "warning"
+              }
+              title={t(
+                currencyResult.coverage.status === "partial"
+                  ? "portfolioPartialData"
+                  : currencyResult.coverage.status === "pending"
+                    ? "portfolioPendingData"
+                    : "portfolioEstimatedData",
+              )}
+              description={t("portfolioCoverageDescription")}
+            />
           )}
-
-          {portfolio.positions.length === 0 ? (
-            <Banner status="info" title={t("noPositions")} />
-          ) : (
-            <section aria-label={t("positions")}>
-              <Table
-                tableProps={{ className: "product-portfolio-table" }}
-                density="compact"
-                dividers="rows"
-                hasHover
-                textOverflow="truncate"
-                aria-label={t("positions")}
-              >
-                <TableHeader>
-                  <TableRow isHeaderRow>
-                    <TableHeaderCell>{t("instrument")}</TableHeaderCell>
-                    <TableHeaderCell style={numericStyle}>
-                      {t("quantity")}
-                    </TableHeaderCell>
-                    <TableHeaderCell style={numericStyle}>
-                      {t("rawClose")}
-                    </TableHeaderCell>
-                    <TableHeaderCell style={numericStyle}>
-                      {t("valuation")}
-                    </TableHeaderCell>
-                    <TableHeaderCell style={numericStyle}>
-                      {t("movement")}
-                    </TableHeaderCell>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {sortPortfolioPositions(portfolio.positions).map(
-                    (position) => (
-                      <PositionRow
-                        key={position.instrumentId}
-                        position={position}
-                        locale={locale}
-                      />
-                    ),
-                  )}
-                </TableBody>
-              </Table>
-            </section>
+          <PortfolioSummaryStrip
+            currency={currencyResult}
+            selectedMetric={state.metric}
+            onSelectMetric={(metric) => updateState({ ...state, metric })}
+          />
+          <PortfolioPerformanceChart
+            points={currencyResult.points}
+            metric={state.metric}
+            currency={currencyResult.currency}
+          />
+          <PortfolioDataTable
+            points={currencyResult.points}
+            metric={state.metric}
+            currency={currencyResult.currency}
+          />
+          {currencyResult.positions.length > 0 && (
+            <PortfolioHoldingsTable positions={currencyResult.positions} />
           )}
-        </VStack>
+        </div>
       )}
     </VStack>
   );

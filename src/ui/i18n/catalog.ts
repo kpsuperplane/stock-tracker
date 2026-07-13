@@ -1,3 +1,5 @@
+import { portfolioMessages } from "./portfolio-messages";
+
 export type Locale = "en" | "cn";
 
 export const messageCatalog = {
@@ -99,7 +101,8 @@ export const messageCatalog = {
     chinese: "中文",
     collapseSidebar: "Collapse sidebar",
     expandSidebar: "Expand sidebar",
-    portfolioDescription: "Today’s holdings and movements",
+    todayDescription: "Completed close-to-close holdings and market movers",
+    portfolioDescription: "Long-term value, gains, and dividend performance",
     eventsDescription: "Historical buy and sell events",
     calendarDescription: "Movers, dividends, and earnings dates",
     calendarHeading: "Market calendar",
@@ -300,8 +303,7 @@ export const messageCatalog = {
     rowErrorUnknownSymbol: "The symbol is not in the ticker list.",
     rowErrorNegativeHoldings: "This row would create negative holdings.",
     rowErrorInvalidStaged: "The staged row is invalid.",
-    portfolioHeading: "Portfolio",
-    portfolioIntro: "Today’s derived holdings and completed market movement.",
+    ...portfolioMessages.en,
     asOfDate: "As of",
     latestTradingDate: "Latest completed close",
     actualTradingDate: "Trading date",
@@ -435,7 +437,8 @@ export const messageCatalog = {
     chinese: "中文",
     collapseSidebar: "折叠侧边栏",
     expandSidebar: "展开侧边栏",
-    portfolioDescription: "今日持仓与涨跌",
+    todayDescription: "已完成收盘之间的持仓与市场异动",
+    portfolioDescription: "长期市值、收益与股息表现",
     eventsDescription: "历史买入与卖出事件",
     calendarDescription: "异动、股息与财报日期",
     calendarHeading: "市场日历",
@@ -625,8 +628,7 @@ export const messageCatalog = {
     rowErrorUnknownSymbol: "股票代码不在标的列表中。",
     rowErrorNegativeHoldings: "此行会造成负持仓。",
     rowErrorInvalidStaged: "暂存行无效。",
-    portfolioHeading: "投资组合",
-    portfolioIntro: "今日推导持仓与已完成交易日涨跌。",
+    ...portfolioMessages.cn,
     asOfDate: "截至",
     latestTradingDate: "最新完成收盘",
     actualTradingDate: "交易日期",

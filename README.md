@@ -15,25 +15,33 @@ npm run dev
 
 Open <http://127.0.0.1:5173> and use the credentials from `.dev.vars`. Never commit `.dev.vars`.
 
-The Portfolio/Events/Calendar/Backfill shell is the only UI. Its derived read
-models remain server-side gates: copy the commented `READ_MODELS_ENABLED=true`
-line into `.dev.vars` before previewing Portfolio, Calendar, or normalized
-reconciliation jobs, then run:
+The Today/Portfolio/Events/Calendar/Backfill shell is the only UI. Its derived
+read models remain server-side gates: copy the commented
+`READ_MODELS_ENABLED=true` line into `.dev.vars` before previewing Today,
+Portfolio, Calendar, or normalized reconciliation jobs. Portfolio performance
+also has the independent `PORTFOLIO_HISTORY_ENABLED=true` rollout flag, with
+the umbrella read-model flag retained as a local fallback. Then run:
 
 ```bash
 npm run dev
 ```
 
-If the read models are disabled, Portfolio and Calendar show an explicit
-read-model-disabled message instead of silently treating a 404 as empty data.
+If the read models are disabled, Today, Portfolio, and Calendar show an
+explicit read-model-disabled message instead of silently treating a 404 as
+empty data.
 
 ### Application UI
 
-The persistent navigation links to four stable destinations:
+The persistent navigation links to five stable destinations:
 
-- **Portfolio** shows today’s derived holdings, quantity, native-currency
-  valuation, latest completed close movement, and Chinese analysis/source links
-  for qualifying movers.
+- **Today** is the default route and shows the latest derived holdings,
+  quantity, native-currency valuation, completed close-to-close movement, and
+  Chinese analysis/source links for qualifying movers. The compatible
+  `GET /api/portfolio` read model continues to back this page.
+- **Portfolio** shows long-term performance in CAD and USD independently. Its
+  selectable total value, realized gain, unrealized gain, and gross-dividend
+  series support Today, 1W, 30D, 3M, YTD, 1Y, All, and custom ranges, with
+  end-of-range holdings and an accessible exact-value table beneath the chart.
 - **Events** is the source of truth for holdings. Add, edit, or delete a buy or
   sell, or use **Import CSV** to preview rows, review projected holdings, confirm
   provider split history, and commit the staged batch. A successful commit
@@ -46,6 +54,12 @@ The persistent navigation links to four stable destinations:
   background continuation remain visible after navigation. The page merges the
   normalized pipeline list with the legacy backfill list, so turning the
   normalized Backfill flag off does not make older manual runs disappear.
+
+The history endpoint is `GET /api/portfolio/history`. It accepts `range`, the
+optional custom `startDate` and `endDate`, `locale`, and the existing account,
+owner, or category scope. Responses include ETags, exact decimal strings,
+bounded sampled chart points, range-end holdings, and explicit complete,
+estimated, partial, or pending coverage.
 
 The sidebar language control switches static labels between **EN** and **中文**
 and persists the choice locally. Stored LLM summaries remain Simplified Chinese
@@ -71,8 +85,8 @@ Worker integration tests use the local-only `wrangler.test.jsonc`. Keep that tes
 
 ## Portfolio-events foundation (development notes)
 
-The ledger API backs the Events and Portfolio experience and remains available
-to integration tests and external clients.
+The ledger API backs the Events, Today, and Portfolio experiences and remains
+available to integration tests and external clients.
 
 - `GET /api/events` returns the reverse-chronological transaction/split timeline
   and its position-basis revision. It accepts bounded `limit`, `cursor`,

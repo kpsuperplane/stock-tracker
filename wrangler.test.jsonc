@@ -8,6 +8,7 @@
     "PORTFOLIO_DUAL_WRITE_ENABLED": "false",
     "PORTFOLIO_MIGRATOR_ENABLED": "false",
     "PORTFOLIO_NEW_READS_ENABLED": "false",
+    "PORTFOLIO_HISTORY_ENABLED": "false",
     "PORTFOLIO_NEW_WRITES_ENABLED": "false"
   },
   "d1_databases": [

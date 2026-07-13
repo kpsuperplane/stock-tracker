@@ -147,6 +147,7 @@ const probeRequest = async <T>(
       ...(env as unknown as Env),
       DB: traceDatabase(database, statementMetrics),
       READ_MODELS_ENABLED: "true",
+      PORTFOLIO_HISTORY_ENABLED: "true",
     },
   );
   const body = await response.text();
@@ -375,6 +376,41 @@ describe("portfolio performance budgets", () => {
     expect(portfolio.metrics.durationMs).toBeLessThanOrEqual(1_000);
     expect(portfolio.bytes).toBeLessThanOrEqual(500_000);
     expect(portfolio.wallMs).toBeLessThan(10_000);
+
+    const history = await probeRequest<{
+      history: {
+        currencies: Array<{ points: unknown[]; positions: unknown[] }>;
+      };
+    }>(app, "/api/portfolio/history?range=all&locale=en", env.DB, json);
+    expect(history.value.history.currencies).toHaveLength(2);
+    expect(
+      history.value.history.currencies.every(
+        (currency) => currency.points.length <= 600,
+      ),
+    ).toBe(true);
+    expect(
+      history.value.history.currencies.reduce(
+        (total, currency) => total + currency.positions.length,
+        0,
+      ),
+    ).toBe(100);
+    expect(history.metrics.rowsRead).toBeLessThanOrEqual(250_000);
+    expect(history.metrics.durationMs).toBeLessThanOrEqual(1_000);
+    expect(history.bytes).toBeLessThanOrEqual(500_000);
+    expect(history.wallMs).toBeLessThan(10_000);
+
+    const historyTag = history.headers.get("ETag");
+    const unchangedHistory = await probeRequest(
+      app,
+      "/api/portfolio/history?range=all&locale=en",
+      env.DB,
+      (body) => body,
+      { "If-None-Match": historyTag ?? "" },
+    );
+    expect(unchangedHistory.value).toBe("");
+    expect(unchangedHistory.metrics.rowsRead).toBeLessThanOrEqual(20_000);
+    expect(unchangedHistory.metrics.durationMs).toBeLessThanOrEqual(1_000);
+    expect(unchangedHistory.bytes).toBe(0);
 
     const calendarMonth = await probeRequest<{
       calendar: { events: unknown[] };

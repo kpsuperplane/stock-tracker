@@ -115,6 +115,29 @@ describe("ledger reconciliation lifecycle", () => {
         createdAt,
         updatedAt: createdAt,
       }),
+      new MarketFactRepository(env.DB).upsertStatement({
+        id: "ledger-filled-first-buy-fact",
+        instrumentId,
+        tradingDate: "2026-07-01",
+        previousTradingDate: "2026-06-30",
+        previousRawCloseDecimal: "99",
+        currentRawCloseDecimal: "100",
+        crossingSplitNumerator: "1",
+        crossingSplitDenominator: "1",
+        splitAdjustedPreviousCloseDecimal: "99",
+        movementAmountDecimal: "1",
+        movementPercentDecimal: "1.010101",
+        rawCloseDifferenceDecimal: "1",
+        movementBasis: "split_adjusted_price_return",
+        provider: "yahoo-chart-v8",
+        providerRevision: "r1",
+        retrievedAt: createdAt,
+        status: "valid",
+        errorCode: null,
+        errorMessage: null,
+        createdAt,
+        updatedAt: createdAt,
+      }),
       new MovementAnalysisRepository(env.DB).upsertStatement({
         id: "ledger-filled-analysis",
         dailyMarketFactId: "ledger-filled-fact",
@@ -169,8 +192,9 @@ describe("ledger reconciliation lifecycle", () => {
       .bind(globalWork.results[0]?.id)
       .first<{ count: number }>();
 
-    expect(result).toEqual({ jobs: 2, pages: 2, workItems: 2 });
+    expect(result).toEqual({ jobs: 2, pages: 2, workItems: 4 });
     expect(globalWork.results).toEqual([
+      expect.objectContaining({ effectiveDate: "2026-07-01" }),
       expect.objectContaining({ effectiveDate: requestedDate }),
     ]);
     expect(linkedJobs).toEqual({ count: 2 });

@@ -5,8 +5,11 @@ ALPHA_VANTAGE_API_KEY=replace-with-alpha-vantage-key
 # SEC requires an identifiable User-Agent for automated EDGAR access.
 SEC_USER_AGENT=Stock Tracker contact@example.com
 # Keep the derived read models disabled by default. Set this to true when
-# previewing the feature-flagged Portfolio/Calendar pages.
+# previewing the feature-flagged Today/Portfolio/Calendar pages.
 # READ_MODELS_ENABLED=true
+# Portfolio performance can be rolled out independently from the Today read
+# model. The umbrella flag above remains a local convenience fallback.
+# PORTFOLIO_HISTORY_ENABLED=true
 # The Backfill page also lists legacy backfills when this normalized pipeline
 # flag is off; enable it only when you want automatic reconciliation jobs.
 # BACKFILL_RECONCILIATION_PIPELINE_ENABLED=true

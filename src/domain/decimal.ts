@@ -218,6 +218,25 @@ export class RationalValue {
     );
   }
 
+  divide(value: RationalValue): RationalValue {
+    if (value.numerator === 0n)
+      throw new DecimalDomainError("rational division by zero");
+    return RationalValue.normalize(
+      this.numerator * value.denominator,
+      this.denominator * value.numerator,
+    );
+  }
+
+  compare(value: RationalValue): -1 | 0 | 1 {
+    const difference =
+      this.numerator * value.denominator - value.numerator * this.denominator;
+    return difference < 0n ? -1 : difference > 0n ? 1 : 0;
+  }
+
+  isZero(): boolean {
+    return this.numerator === 0n;
+  }
+
   isNegative(): boolean {
     return this.numerator < 0n;
   }

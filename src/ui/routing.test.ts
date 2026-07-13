@@ -5,11 +5,13 @@ import {
   isPlainLeftClick,
   pathForRoute,
   routeForPath,
+  sharedScopeSearch,
 } from "./routing";
 
 describe("product routing", () => {
   it("exposes stable destinations for each product page", () => {
     const expected: Record<AppRoute, string> = {
+      today: "/today",
       portfolio: "/portfolio",
       events: "/events",
       calendar: "/calendar",
@@ -18,6 +20,7 @@ describe("product routing", () => {
     };
 
     expect(APP_ROUTES.map((route) => route.id)).toEqual([
+      "today",
       "portfolio",
       "events",
       "calendar",
@@ -34,11 +37,11 @@ describe("product routing", () => {
     }
   });
 
-  it("falls back to Portfolio for the root and unknown paths", () => {
-    expect(routeForPath("/")).toBe("portfolio");
-    expect(routeForPath("/backfill")).toBe("portfolio");
-    expect(routeForPath("/unknown")).toBe("portfolio");
-    expect(routeForPath("not-a-path")).toBe("portfolio");
+  it("falls back to Today for the root and unknown paths", () => {
+    expect(routeForPath("/")).toBe("today");
+    expect(routeForPath("/backfill")).toBe("today");
+    expect(routeForPath("/unknown")).toBe("today");
+    expect(routeForPath("not-a-path")).toBe("today");
   });
 
   it("only intercepts unmodified primary-button clicks", () => {
@@ -55,5 +58,14 @@ describe("product routing", () => {
     expect(isPlainLeftClick({ ...plain, ctrlKey: true })).toBe(false);
     expect(isPlainLeftClick({ ...plain, shiftKey: true })).toBe(false);
     expect(isPlainLeftClick({ ...plain, altKey: true })).toBe(false);
+  });
+
+  it("carries only shared account scope between product routes", () => {
+    expect(
+      sharedScopeSearch(
+        "?scopeType=account&scopeId=brokerage&range=1y&metric=dividends&currency=CAD",
+      ),
+    ).toBe("?scopeType=account&scopeId=brokerage");
+    expect(sharedScopeSearch("?range=30d&metric=totalValue")).toBe("");
   });
 });

@@ -617,11 +617,14 @@ export class ReconciliationPlannerService {
       });
     }
     const requestedDates = new Map<string, Set<string>>();
+    const screeningDates = new Set<string>();
+    const valuationOnlyDates = new Set<string>();
     const calendarSkipped = new Set<string>();
     const addDate = (
       instrumentId: string,
       date: string,
       allowBeforeRangeStart = false,
+      purpose: "screening" | "valuation" = "screening",
     ) => {
       const timeline = timelines.get(instrumentId);
       if (!timeline) return;
@@ -638,6 +641,11 @@ export class ReconciliationPlannerService {
       const dates = requestedDates.get(instrumentId) ?? new Set<string>();
       dates.add(date);
       requestedDates.set(instrumentId, dates);
+      const key = `${instrumentId}:${date}`;
+      if (purpose === "screening") {
+        screeningDates.add(key);
+        valuationOnlyDates.delete(key);
+      } else if (!screeningDates.has(key)) valuationOnlyDates.add(key);
     };
     const intervalsByInstrument = new Map<string, EligibilityInterval[]>();
     for (const interval of intervals) {
@@ -684,8 +692,27 @@ export class ReconciliationPlannerService {
         timeline.holdings.currentQuantity() !== "0" &&
         (reconciliationTouchesCurrentDay || firstCurrentBuy)
       ) {
-        addDate(instrumentId, latestCompleted);
-        addDate(instrumentId, previousCompleted, firstCurrentBuy);
+        addDate(
+          instrumentId,
+          latestCompleted,
+          false,
+          firstCurrentBuy ? "valuation" : "screening",
+        );
+        if (firstCurrentBuy) {
+          addDate(instrumentId, previousCompleted, true, "valuation");
+        }
+      }
+      if (job.triggerType === "ledger_reconciliation") {
+        for (const transaction of transactions.get(instrumentId) ?? []) {
+          if (
+            transaction.side === "buy" &&
+            timeline.holdings.quantityAtStartOfDay(transaction.tradeDate) ===
+              "0" &&
+            timeline.holdings.quantityOn(transaction.tradeDate) !== "0"
+          ) {
+            addDate(instrumentId, transaction.tradeDate, true, "valuation");
+          }
+        }
       }
     }
     const forcedGeneration =
@@ -749,6 +776,10 @@ export class ReconciliationPlannerService {
             forcedRefreshGeneration: forcedGeneration,
             priority: currentPriority,
           });
+          continue;
+        }
+        if (valuationOnlyDates.has(`${instrumentId}:${date}`)) {
+          skippedCount += 1;
           continue;
         }
         if (!fact || !isQualifiedMovement(fact)) {

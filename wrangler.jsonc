@@ -16,6 +16,7 @@
     "PORTFOLIO_DUAL_WRITE_ENABLED": "false",
     "PORTFOLIO_MIGRATOR_ENABLED": "false",
     "PORTFOLIO_NEW_READS_ENABLED": "true",
+    "PORTFOLIO_HISTORY_ENABLED": "true",
     "CALENDAR_READ_MODELS_ENABLED": "true",
     "JOB_READ_MODELS_ENABLED": "true",
     "PORTFOLIO_NEW_WRITES_ENABLED": "true"
@@ -29,7 +30,7 @@
     {
       "binding": "DB",
       "database_name": "stock-tracker",
-      "database_id": "9c1c3bfe-44af-4a9e-acd9-df4104ae3200",
+      "database_id": "6ab627d4-873c-4525-a86b-4b99d245bde7",
       "migrations_dir": "migrations"
     }
   ],

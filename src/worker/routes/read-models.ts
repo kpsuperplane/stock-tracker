@@ -4,6 +4,8 @@ import { AccountRepository } from "../../db/accounts";
 import { AccountService } from "../../services/accounts";
 import { CalendarReadModelService } from "../../services/calendar-read-model";
 import { JobReadModelService } from "../../services/job-read-model";
+import { resolvePortfolioHistoryRange } from "../../services/portfolio-history-range";
+import { PortfolioHistoryReadModelService } from "../../services/portfolio-history-read-model";
 import { PortfolioReadModelService } from "../../services/portfolio-read-model";
 import {
   matchesIfNoneMatch,
@@ -17,6 +19,16 @@ import { ApiError } from "../errors";
 
 const isoDate = z.iso.date();
 const localeSchema = z.enum(["en", "cn"]);
+const portfolioRangeSchema = z.enum([
+  "today",
+  "1w",
+  "30d",
+  "3m",
+  "ytd",
+  "1y",
+  "all",
+  "custom",
+]);
 
 const resolveScope = async (db: D1Database, query: Record<string, string>) => {
   const scopeType = query.scopeType ?? "all";
@@ -78,6 +90,20 @@ const requireEnabled = (env: Env, model: "portfolio" | "calendar" | "job") => {
       404,
       "read_model_disabled",
       "This read model is not enabled.",
+    );
+  }
+};
+
+const requireHistoryEnabled = (env: Env) => {
+  const value = env.PORTFOLIO_HISTORY_ENABLED ?? env.READ_MODELS_ENABLED;
+  if (
+    value === undefined ||
+    !["1", "true", "on", "enabled"].includes(value.toLowerCase())
+  ) {
+    throw new ApiError(
+      404,
+      "portfolio_history_disabled",
+      "Portfolio history is not enabled.",
     );
   }
 };
@@ -243,6 +269,108 @@ portfolioRoutes.get("/", async (context) => {
   });
   context.header("Content-Language", locale);
   return context.json({ portfolio });
+});
+
+portfolioRoutes.get("/history", async (context) => {
+  requireHistoryEnabled(context.env);
+  const query = context.req.query();
+  const parsedRange = portfolioRangeSchema.safeParse(query.range ?? "1y");
+  if (!parsedRange.success) {
+    throw new ApiError(
+      422,
+      "portfolio_range",
+      "The portfolio range is unsupported.",
+    );
+  }
+  const rangePreset = parsedRange.data;
+  const asOfDate = easternMarketDate(new Date());
+  let customStartDate: string | undefined;
+  let customEndDate: string | undefined;
+  if (rangePreset === "custom") {
+    if (!query.startDate || !query.endDate) {
+      throw new ApiError(
+        422,
+        "portfolio_range",
+        "Custom portfolio ranges require both dates.",
+      );
+    }
+    customStartDate = parseDate(query.startDate, "startDate");
+    customEndDate = parseDate(query.endDate, "endDate");
+    if (customStartDate > customEndDate) {
+      throw new ApiError(
+        422,
+        "portfolio_range",
+        "The portfolio range is reversed.",
+      );
+    }
+    if (customEndDate > asOfDate) {
+      throw new ApiError(
+        422,
+        "portfolio_range",
+        "Portfolio ranges cannot end in the future.",
+      );
+    }
+  } else if (query.startDate || query.endDate) {
+    throw new ApiError(
+      422,
+      "portfolio_range",
+      "Explicit dates are supported only for custom ranges.",
+    );
+  }
+  const locale = parseLocale(query.locale);
+  const scope = await resolveScope(context.env.DB, query);
+  const range = await resolvePortfolioHistoryRange(context.env.DB, {
+    range: rangePreset,
+    asOfDate,
+    accountIds: scope.accountIds,
+    ...(customStartDate === undefined ? {} : { customStartDate }),
+    ...(customEndDate === undefined ? {} : { customEndDate }),
+  });
+  const accountStructure = await new AccountService(
+    new AccountRepository(context.env.DB),
+  ).structure();
+  const positionRevision = await basisRevision(context.env.DB);
+  const earliestDate =
+    (
+      await context.env.DB.prepare(
+        `SELECT MIN(trade_date) AS trade_date FROM transactions
+          WHERE account_id IN (SELECT value FROM json_each(?1))`,
+      )
+        .bind(JSON.stringify(scope.accountIds))
+        .first<{ trade_date: string | null }>()
+    )?.trade_date ?? range.startDate;
+  const latestDate = await latestFactDate(context.env.DB, asOfDate);
+  const includeLatest =
+    range.endDate >= (latestDate ?? asOfDate) || range.endDate >= asOfDate;
+  const tag = await readModelTag(context.env.DB, {
+    model: "portfolio_history",
+    locale,
+    positionBasisRevision: positionRevision,
+    accountStructureRevision: accountStructure.revision,
+    representationKey: JSON.stringify({
+      range: range.range,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      scope: scope.fingerprint,
+    }),
+    bucketKeys: [
+      ...(includeLatest ? ["latest"] : []),
+      ...monthKeysForRange(earliestDate, range.endDate),
+    ],
+  });
+  setTagHeaders(context, tag.etag, positionRevision);
+  if (matchesIfNoneMatch(context.req.header("If-None-Match"), tag.etag)) {
+    return context.body(null, 304);
+  }
+  const history = await new PortfolioHistoryReadModelService(
+    context.env.DB,
+  ).read({
+    ...range,
+    locale,
+    accountIds: scope.accountIds,
+  });
+  context.header("Content-Language", locale);
+  return context.json({ history });
 });
 
 calendarRoutes.get("/", async (context) => {
