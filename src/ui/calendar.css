@@ -5,6 +5,20 @@
   overscroll-behavior-inline: contain;
 }
 
+.calendar-page__content {
+  transition:
+    filter 120ms ease,
+    opacity 120ms ease;
+}
+
+.calendar-page__content--loading {
+  cursor: wait;
+  filter: grayscale(0.8);
+  opacity: 0.5;
+  pointer-events: none;
+  user-select: none;
+}
+
 .calendar-grid {
   display: grid;
   min-width: 826px;
@@ -176,8 +190,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .calendar-page__content,
   .calendar-page__grid {
     scroll-behavior: auto;
+    transition: none;
   }
 
   .calendar-event-chip,

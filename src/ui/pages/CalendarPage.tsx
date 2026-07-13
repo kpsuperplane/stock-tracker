@@ -219,6 +219,26 @@ export const CalendarPage = ({
     () => calendar?.pending.filter((item) => !item.date) ?? [],
     [calendar],
   );
+  const loadingCalendar = useMemo<CalendarReadModelDto>(() => {
+    const range = rangeForView(anchorDate, view);
+    return {
+      ...range,
+      asOfDate: todayDate,
+      locale,
+      actualTradingDates: [],
+      movers: [],
+      dividends: [],
+      events: [],
+      pending: [],
+      pendingFacts: [],
+      splitReview: [],
+      futureDividendStatus: "known",
+      conflicts: [],
+      nextCursor: null,
+    };
+  }, [anchorDate, locale, todayDate, view]);
+  const displayedCalendar = calendar ?? (loading ? loadingCalendar : null);
+  const calendarBusy = loading || refreshing;
 
   const pageActions = useMemo(
     () =>
@@ -358,46 +378,59 @@ export const CalendarPage = ({
         />
       )}
 
-      {loading && !calendar && (
-        <Banner status="info" title={t("calendarLoading")} />
-      )}
-      {refreshing && calendar && (
-        <Banner status="info" title={t("calendarRefreshing")} />
+      {calendarBusy && (
+        <span
+          className="product-page-title-hidden"
+          role="status"
+          aria-live="polite"
+        >
+          {calendar ? t("calendarRefreshing") : t("calendarLoading")}
+        </span>
       )}
 
-      {calendar && (
-        <VStack gap={3}>
-          {calendar.events.length === 0 && calendar.pending.length === 0 && (
-            <Banner status="info" title={t("noCalendarEvents")} />
-          )}
-          <MarketCalendar
-            calendar={calendar}
-            view={view}
-            anchorDate={anchorDate}
-            today={todayDate}
-            onNavigate={setAnchorDate}
-            onSelect={setSelection}
-          />
-          {calendar.nextCursor && (
-            <HStack gap={2} align="center" wrap="wrap">
-              <Button
-                variant="secondary"
-                label={
-                  loadingMore ? t("calendarLoadingMore") : t("calendarLoadMore")
-                }
-                isLoading={loadingMore}
-                isDisabled={calendarLoadMoreDisabled(
-                  loading,
-                  refreshing,
-                  loadingMore,
-                  error !== null,
-                )}
-                onClick={loadMore}
-              />
-              <span>{t("calendarMoreAvailable")}</span>
-            </HStack>
-          )}
-        </VStack>
+      {displayedCalendar && (
+        <div
+          className={`calendar-page__content${calendarBusy ? " calendar-page__content--loading" : ""}`}
+          aria-busy={calendarBusy}
+          inert={calendarBusy ? true : undefined}
+        >
+          <VStack gap={3}>
+            {calendar &&
+              calendar.events.length === 0 &&
+              calendar.pending.length === 0 && (
+                <Banner status="info" title={t("noCalendarEvents")} />
+              )}
+            <MarketCalendar
+              calendar={displayedCalendar}
+              view={view}
+              anchorDate={anchorDate}
+              today={todayDate}
+              onNavigate={setAnchorDate}
+              onSelect={setSelection}
+            />
+            {calendar?.nextCursor && (
+              <HStack gap={2} align="center" wrap="wrap">
+                <Button
+                  variant="secondary"
+                  label={
+                    loadingMore
+                      ? t("calendarLoadingMore")
+                      : t("calendarLoadMore")
+                  }
+                  isLoading={loadingMore}
+                  isDisabled={calendarLoadMoreDisabled(
+                    loading,
+                    refreshing,
+                    loadingMore,
+                    error !== null,
+                  )}
+                  onClick={loadMore}
+                />
+                <span>{t("calendarMoreAvailable")}</span>
+              </HStack>
+            )}
+          </VStack>
+        </div>
       )}
 
       <MoverDialog

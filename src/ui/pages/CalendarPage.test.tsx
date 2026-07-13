@@ -94,6 +94,22 @@ const calendar: CalendarReadModelDto = {
 };
 
 describe("CalendarPage", () => {
+  it("keeps a dimmed calendar shell in place during the initial load", () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <CalendarPage today="2026-07-11" initialAnchorDate="2026-07-11" />
+      </I18nProvider>,
+    );
+
+    expect(markup).toContain(
+      'class="calendar-page__content calendar-page__content--loading"',
+    );
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain("calendar-grid calendar-grid--month");
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain("Loading calendar…");
+  });
+
   it("renders dense month cells, signed movers, dividends, and dialog-ready buttons", () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">
