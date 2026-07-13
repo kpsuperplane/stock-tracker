@@ -15,7 +15,6 @@ export interface MarketCalendarProps {
   view: CalendarView;
   anchorDate: string;
   today: string;
-  onViewChange: (view: CalendarView) => void;
   onNavigate: (date: string) => void;
   onSelect: (selection: CalendarSelection) => void;
 }
@@ -47,7 +46,6 @@ export const MarketCalendar = ({
   view,
   anchorDate,
   today,
-  onViewChange,
   onNavigate,
   onSelect,
 }: MarketCalendarProps) => {
@@ -60,14 +58,15 @@ export const MarketCalendar = ({
         view={view}
         anchorDate={anchorDate}
         today={today}
-        onViewChange={onViewChange}
         onNavigate={onNavigate}
-      />
-      <PeriodDividendSummary
-        dividends={calendar.dividends}
-        view={view}
-        startDate={visibleRange.startDate}
-        endDate={visibleRange.endDate}
+        endContent={
+          <PeriodDividendSummary
+            dividends={calendar.dividends}
+            view={view}
+            startDate={visibleRange.startDate}
+            endDate={visibleRange.endDate}
+          />
+        }
       />
       {view === "month" ? (
         <MonthGrid

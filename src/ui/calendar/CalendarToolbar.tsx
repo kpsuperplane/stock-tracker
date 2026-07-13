@@ -1,4 +1,5 @@
-import { Button, ButtonGroup, Heading, HStack } from "@astryxdesign/core";
+import { Button, Heading, HStack } from "@astryxdesign/core";
+import type { ReactNode } from "react";
 import { useI18n } from "../i18n/I18nProvider";
 import { formatDate } from "../system/formatters";
 import {
@@ -13,16 +14,16 @@ export interface CalendarToolbarProps {
   view: CalendarView;
   anchorDate: string;
   today: string;
-  onViewChange: (view: CalendarView) => void;
   onNavigate: (date: string) => void;
+  endContent?: ReactNode;
 }
 
 export const CalendarToolbar = ({
   view,
   anchorDate,
   today,
-  onViewChange,
   onNavigate,
+  endContent,
 }: CalendarToolbarProps) => {
   const { locale, t } = useI18n();
   const range = rangeForView(anchorDate, view);
@@ -71,20 +72,7 @@ export const CalendarToolbar = ({
         />
         <Heading level={2}>{title}</Heading>
       </HStack>
-      <ButtonGroup label={t("calendarView")} size="sm">
-        <Button
-          label={t("month")}
-          variant={view === "month" ? "secondary" : "ghost"}
-          aria-pressed={view === "month"}
-          onClick={() => onViewChange("month")}
-        />
-        <Button
-          label={t("week")}
-          variant={view === "week" ? "secondary" : "ghost"}
-          aria-pressed={view === "week"}
-          onClick={() => onViewChange("week")}
-        />
-      </ButtonGroup>
+      {endContent}
     </HStack>
   );
 };

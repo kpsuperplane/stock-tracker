@@ -1,6 +1,7 @@
 import {
   Banner,
   Button,
+  ButtonGroup,
   Heading,
   HStack,
   Icon,
@@ -223,6 +224,20 @@ export const CalendarPage = ({
     () =>
       calendar ? (
         <HStack gap={1} wrap="nowrap">
+          <ButtonGroup label={t("calendarView")} size="sm">
+            <Button
+              label={t("month")}
+              variant={view === "month" ? "secondary" : "ghost"}
+              aria-pressed={view === "month"}
+              onClick={() => setView("month")}
+            />
+            <Button
+              label={t("week")}
+              variant={view === "week" ? "secondary" : "ghost"}
+              aria-pressed={view === "week"}
+              onClick={() => setView("week")}
+            />
+          </ButtonGroup>
           {calendar.futureDividendStatus === "not_currently_known" && (
             <Popover
               label={t("futureDividendsUnknown")}
@@ -317,7 +332,7 @@ export const CalendarPage = ({
           )}
         </HStack>
       ) : null,
-    [calendar, pendingWithoutDate, t],
+    [calendar, pendingWithoutDate, t, view],
   );
   const hasTopNavActions = usePageActions(pageActions);
 
@@ -360,7 +375,6 @@ export const CalendarPage = ({
             view={view}
             anchorDate={anchorDate}
             today={todayDate}
-            onViewChange={setView}
             onNavigate={setAnchorDate}
             onSelect={setSelection}
           />
