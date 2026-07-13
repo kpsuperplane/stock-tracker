@@ -19,6 +19,27 @@
   user-select: none;
 }
 
+.calendar-page__load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 48rem;
+  color: var(--color-error);
+}
+
+.calendar-page__load-error > div > div {
+  margin-top: 0.2rem;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
+.calendar-page__empty {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
 .calendar-grid {
   display: grid;
   min-width: 826px;

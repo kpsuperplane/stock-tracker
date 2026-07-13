@@ -25,6 +25,7 @@ describe("product AppShell", () => {
     expect(markup).toContain("投资组合");
     expect(markup).toContain("事件");
     expect(markup).toContain("日历");
+    expect(markup).toContain("状态");
     expect(markup).toContain("账户");
     expect(markup).toContain('aria-label="导航"');
     expect(markup).not.toContain(">Portfolio<");
@@ -40,6 +41,7 @@ describe("product AppShell", () => {
     expect(markup).toContain('href="/portfolio"');
     expect(markup).toContain('href="/events"');
     expect(markup).toContain('href="/calendar"');
+    expect(markup).toContain('href="/status"');
     expect(markup).toContain('href="/accounts"');
     expect(markup).not.toContain('href="/backfill"');
     expect(markup).toContain('aria-label="Navigation"');

@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 
-export type AppRoute = "portfolio" | "events" | "calendar" | "accounts";
+export type AppRoute =
+  | "portfolio"
+  | "events"
+  | "calendar"
+  | "status"
+  | "accounts";
 
 export interface AppRouteDefinition {
   id: AppRoute;
@@ -11,6 +16,7 @@ export const APP_ROUTES: readonly AppRouteDefinition[] = [
   { id: "portfolio", path: "/portfolio" },
   { id: "events", path: "/events" },
   { id: "calendar", path: "/calendar" },
+  { id: "status", path: "/status" },
   { id: "accounts", path: "/accounts" },
 ];
 

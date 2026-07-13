@@ -13,6 +13,7 @@ describe("product routing", () => {
       portfolio: "/portfolio",
       events: "/events",
       calendar: "/calendar",
+      status: "/status",
       accounts: "/accounts",
     };
 
@@ -20,6 +21,7 @@ describe("product routing", () => {
       "portfolio",
       "events",
       "calendar",
+      "status",
       "accounts",
     ]);
     for (const [route, path] of Object.entries(expected) as Array<

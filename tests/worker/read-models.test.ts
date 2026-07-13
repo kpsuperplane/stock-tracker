@@ -1273,4 +1273,44 @@ describe("portfolio and calendar read models", () => {
     );
     expect(tooWide.status).toBe(422);
   });
+
+  it("returns provider coverage and recent jobs on the status read model", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO earnings_calendar_coverage
+         (provider, coverage_start_date, coverage_end_date, horizon,
+          provider_revision, observed_at, status, updated_at)
+         VALUES ('alpha-vantage-earnings', '2026-07-01', '2026-10-01',
+                 '3month', 'coverage-r1', ?1, 'current', ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO pipeline_jobs
+         (id, trigger_type, priority, status, work_total, work_processed,
+          created_at, updated_at)
+         VALUES ('status-job', 'scheduled', 1, 'complete', 3, 3, ?1, ?1)`,
+      ).bind(now),
+    ]);
+
+    const response = await exports.default.fetch(
+      new Request("http://local/api/status?limit=10", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(response.status).toBe(200);
+    const payload = await response.json<{
+      status: {
+        earningsCoverage: { status: string; coverageEndDate: string };
+        jobs: Array<{ id: string; status: string }>;
+      };
+    }>();
+    expect(payload.status.earningsCoverage).toMatchObject({
+      status: "current",
+      coverageEndDate: "2026-10-01",
+    });
+    expect(payload.status.jobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "status-job", status: "complete" }),
+      ]),
+    );
+  });
 });

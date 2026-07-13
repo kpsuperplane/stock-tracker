@@ -2,25 +2,34 @@ import { AppShell as AstryxAppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { ButtonGroup } from "@astryxdesign/core/ButtonGroup";
 import { Icon } from "@astryxdesign/core/Icon";
-import { MobileNavToggle } from "@astryxdesign/core/MobileNav";
+import { MobileNav, MobileNavToggle } from "@astryxdesign/core/MobileNav";
 import {
   SideNav,
   SideNavItem,
+  SideNavRenderContext,
   SideNavSection,
   useSideNavRenderMode,
 } from "@astryxdesign/core/SideNav";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect } from "react";
 import {
   AccountScopeBar,
   AccountScopeProvider,
 } from "../accounts/AccountScopeContext";
+import {
+  AccountsIcon,
+  CalendarIcon,
+  EventsIcon,
+  PortfolioIcon,
+  StatusIcon,
+} from "../components/ProductIcons";
 import type { Locale } from "../i18n/catalog";
 import { I18nProvider, useI18n } from "../i18n/I18nProvider";
 import { AccountsPage } from "../pages/AccountsPage";
 import { CalendarPage } from "../pages/CalendarPage";
 import { EventsPage } from "../pages/EventsPage";
 import { PortfolioPage } from "../pages/PortfolioPage";
+import { StatusPage } from "../pages/StatusPage";
 import {
   APP_ROUTES,
   type AppRoute,
@@ -49,6 +58,11 @@ const routeCopy = {
     pageTitle: "calendarHeading",
     description: "calendarDescription",
   },
+  status: {
+    title: "statusPage",
+    pageTitle: "statusHeading",
+    description: "statusDescription",
+  },
   accounts: {
     title: "accounts",
     pageTitle: "accountsHeading",
@@ -57,10 +71,11 @@ const routeCopy = {
 } as const;
 
 const routeIcons = {
-  portfolio: "viewColumns",
-  events: "copy",
-  calendar: "calendar",
-  accounts: "wrench",
+  portfolio: PortfolioIcon,
+  events: EventsIcon,
+  calendar: CalendarIcon,
+  status: StatusIcon,
+  accounts: AccountsIcon,
 } as const;
 
 interface NavigationProps {
@@ -162,28 +177,15 @@ const ProductSideNavigation = ({
 }: NavigationProps) => {
   const { t } = useI18n();
   const renderMode = useSideNavRenderMode();
-  const [isCollapsed, setIsCollapsed] = useState(true);
   const hasMobileControls = renderMode !== "default" && renderMode !== "topbar";
 
   return (
-    <div
-      className="product-side-nav-hover-zone"
-      data-testid="product-side-nav-hover-zone"
-    >
+    <div className="product-side-nav-rail" data-testid="product-side-nav-rail">
       <SideNav
         className="product-side-nav"
         data-testid="product-side-nav"
-        onMouseEnter={() => setIsCollapsed(false)}
-        onMouseLeave={() => setIsCollapsed(true)}
-        onFocus={() => setIsCollapsed(false)}
-        onBlur={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget)) {
-            setIsCollapsed(true);
-          }
-        }}
         collapsible={{
-          isCollapsed,
-          onCollapsedChange: setIsCollapsed,
+          isCollapsed: renderMode === "default",
           hasButton: false,
         }}
         {...(hasMobileControls
@@ -218,6 +220,24 @@ const ProductSideNavigation = ({
         </SideNavSection>
       </SideNav>
     </div>
+  );
+};
+
+const ProductMobileNavigation = ({
+  activeRoute,
+  onNavigate,
+}: NavigationProps) => {
+  const { t } = useI18n();
+
+  return (
+    <MobileNav side="start" header={t("navigation")} label={t("navigation")}>
+      <SideNavRenderContext value="drawer-content">
+        <ProductSideNavigation
+          activeRoute={activeRoute}
+          onNavigate={onNavigate}
+        />
+      </SideNavRenderContext>
+    </MobileNav>
   );
 };
 
@@ -288,7 +308,16 @@ export const ProductApp = ({
                 onNavigate={navigate}
               />
             }
-            mobileNav={{ breakpoint: "md", hasToggle: false }}
+            mobileNav={{
+              breakpoint: "md",
+              hasToggle: false,
+              content: (
+                <ProductMobileNavigation
+                  activeRoute={router.route}
+                  onNavigate={navigate}
+                />
+              ),
+            }}
             variant="section"
             height="auto"
             contentPadding={3}
@@ -300,6 +329,8 @@ export const ProductApp = ({
                 <PortfolioPage />
               ) : router.route === "calendar" ? (
                 <CalendarPage />
+              ) : router.route === "status" ? (
+                <StatusPage />
               ) : router.route === "accounts" ? (
                 <AccountsPage />
               ) : (

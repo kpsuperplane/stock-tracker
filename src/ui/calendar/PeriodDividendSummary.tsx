@@ -85,6 +85,7 @@ export const PeriodDividendSummary = ({
       <Popover
         label={t("dividendBreakdown")}
         width="min(30rem, calc(100vw - 2rem))"
+        hasCloseButton={false}
         content={
           <VStack gap={2}>
             <strong>{t("dividendBreakdown")}</strong>

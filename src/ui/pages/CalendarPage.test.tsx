@@ -12,7 +12,6 @@ import { summarizePeriodDividends } from "../calendar/PeriodDividendSummary";
 import { I18nProvider } from "../i18n/I18nProvider";
 import {
   CalendarPage,
-  calendarConflictBannerStatus,
   calendarErrorMessageKey,
   calendarLoadMoreDisabled,
   mergeCalendarPages,
@@ -149,9 +148,10 @@ describe("CalendarPage", () => {
     expect(markup).toContain("Dividend breakdown");
     expect(markup).toContain('aria-label="AAPL, Dividend, AAPL $0.50"');
     expect(markup).toContain('aria-label="AAPL, Earnings, AAPL · Earnings"');
-    expect(markup).toContain(
+    expect(markup).not.toContain(
       "Future dividend coverage is not currently known.",
     );
+    expect(markup).not.toContain("Earnings coverage is not current.");
     expect(markup).toContain('type="button"');
     expect(markup).toContain('aria-label="AAPL, Mover, AAPL +5.32%"');
   });
@@ -379,7 +379,7 @@ describe("CalendarPage", () => {
     expect(calendarLoadMoreDisabled(false, false, false, true)).toBe(true);
   });
 
-  it("shows a visible warning when earnings coverage is unavailable", () => {
+  it("keeps sync warnings and banners off the calendar", () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">
         <CalendarPage
@@ -391,10 +391,12 @@ describe("CalendarPage", () => {
         />
       </I18nProvider>,
     );
-    expect(markup).toContain("Earnings coverage is not current.");
-    expect(markup).toContain(
+    expect(markup).not.toContain("Earnings coverage is not current.");
+    expect(markup).not.toContain(
       "Scheduled earnings dates may be incomplete until the next successful Alpha Vantage refresh.",
     );
+    expect(markup).not.toContain('role="alert"');
+    expect(markup).not.toContain("Close popover");
   });
 
   it("uses error severity for failed facts and conflict codes", () => {
@@ -436,16 +438,6 @@ describe("CalendarPage", () => {
     );
     expect(cnDividendMarkup).toContain(">错误<");
     expect(cnDividendMarkup).not.toContain(">error<");
-    expect(
-      calendarConflictBannerStatus([
-        { code: "legacy_movement_basis", message: "legacy" },
-      ]),
-    ).toBe("warning");
-    expect(
-      calendarConflictBannerStatus([
-        { code: "market_fact_error", message: "failed" },
-      ]),
-    ).toBe("error");
   });
 
   it("maps read-model failures to explicit copy", () => {

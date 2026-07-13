@@ -344,3 +344,20 @@ export interface JobReadModelDto {
   }>;
   nextCursor: string | null;
 }
+
+export interface EarningsSyncStatusDto {
+  provider: string;
+  coverageStartDate: string | null;
+  coverageEndDate: string | null;
+  observedAt: string | null;
+  status: "current" | "stale" | "unavailable";
+  errorCode: string | null;
+  errorMessage: string | null;
+  updatedAt: string;
+}
+
+export interface StatusReadModelDto {
+  earningsCoverage: EarningsSyncStatusDto | null;
+  jobs: JobReadModelDto[];
+  nextCursor: string | null;
+}

@@ -8,6 +8,7 @@ import type {
   ReportDto,
   ReportSummaryDto,
   SplitConfirmationDto,
+  StatusReadModelDto,
   TransactionEventDto,
 } from "../shared/contracts";
 
@@ -561,6 +562,15 @@ export const api = {
     }),
   removeTicker: (id: string) =>
     request<void>(`/api/tickers/${id}`, { method: "DELETE" }),
+  status: (limit?: number, cursor?: string) => {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (cursor) params.set("cursor", cursor);
+    const query = params.toString();
+    return request<{ status: StatusReadModelDto }>(
+      `/api/status${query ? `?${query}` : ""}`,
+    );
+  },
   jobs: (limit?: number, cursor?: string) => {
     const params = new URLSearchParams();
     if (limit !== undefined) params.set("limit", String(limit));

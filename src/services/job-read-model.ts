@@ -50,6 +50,7 @@ export interface JobReadModelListResult {
 }
 
 const MAX_WORK_DETAIL = 100;
+const MAX_ERROR_DETAIL = 100;
 const DEFAULT_LIST_LIMIT = 25;
 const MAX_LIST_LIMIT = 50;
 
@@ -134,20 +135,38 @@ export class JobReadModelService {
       .first<JobRow>();
     if (!job) return null;
     const limit = Math.min(Math.max(input.limit ?? 50, 1), MAX_WORK_DETAIL);
-    const work = await this.db
-      .prepare(
-        `SELECT work.id, work.work_type, work.instrument_id,
-                work.effective_date, work.state, link.outcome,
-                work.terminal_error_code, work.terminal_error_message
-         FROM job_work_items link JOIN work_items work
-           ON work.id = link.work_item_id
-         WHERE link.pipeline_job_id = ?1
-           AND (?2 IS NULL OR work.id > ?2)
-         ORDER BY work.id
-         LIMIT ?3`,
-      )
-      .bind(id, input.cursor ?? null, limit + 1)
-      .all<WorkRow>();
+    const [work, errorRows] = await Promise.all([
+      this.db
+        .prepare(
+          `SELECT work.id, work.work_type, work.instrument_id,
+                  work.effective_date, work.state, link.outcome,
+                  work.terminal_error_code, work.terminal_error_message
+           FROM job_work_items link JOIN work_items work
+             ON work.id = link.work_item_id
+           WHERE link.pipeline_job_id = ?1
+             AND (?2 IS NULL OR work.id > ?2)
+           ORDER BY work.id
+           LIMIT ?3`,
+        )
+        .bind(id, input.cursor ?? null, limit + 1)
+        .all<WorkRow>(),
+      this.db
+        .prepare(
+          `SELECT work.id, work.work_type, work.instrument_id,
+                  work.effective_date, work.state, link.outcome,
+                  work.terminal_error_code, work.terminal_error_message
+           FROM job_work_items link JOIN work_items work
+             ON work.id = link.work_item_id
+           WHERE link.pipeline_job_id = ?1
+             AND (link.outcome = 'failed'
+               OR work.terminal_error_code IS NOT NULL
+               OR work.terminal_error_message IS NOT NULL)
+           ORDER BY work.id
+           LIMIT ?2`,
+        )
+        .bind(id, MAX_ERROR_DETAIL)
+        .all<WorkRow>(),
+    ]);
     const hasMore = work.results.length > limit;
     const mappedWork = work.results.slice(0, limit).map((row) => ({
       id: row.id,
@@ -178,14 +197,12 @@ export class JobReadModelService {
         workFailed: job.work_failed,
       },
       work: mappedWork,
-      errors: mappedWork
-        .filter((row) => row.terminalErrorCode || row.terminalErrorMessage)
-        .map((row) => ({
-          workItemId: row.id,
-          code: row.terminalErrorCode,
-          message: row.terminalErrorMessage,
-          effectiveDate: row.effectiveDate,
-        })),
+      errors: errorRows.results.map((row) => ({
+        workItemId: row.id,
+        code: row.terminal_error_code,
+        message: row.terminal_error_message,
+        effectiveDate: row.effective_date,
+      })),
       nextCursor:
         hasMore && mappedWork.length > 0
           ? btoa(JSON.stringify({ id: mappedWork.at(-1)?.id }))

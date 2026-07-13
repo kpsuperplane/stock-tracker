@@ -134,3 +134,10 @@ export const formatDate = (date: string | Date, locale: Locale) => {
     timeZone: "UTC",
   }).format(value);
 };
+
+export const formatDateTime = (date: string | Date, locale: Locale) =>
+  new Intl.DateTimeFormat(intlLocale(locale), {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "America/Toronto",
+  }).format(typeof date === "string" ? new Date(date) : date);

@@ -16,6 +16,7 @@ import {
   calendarRoutes,
   jobRoutes,
   portfolioRoutes,
+  statusRoutes,
 } from "./routes/read-models";
 import { reportRoutes } from "./routes/reports";
 import { retryRoutes } from "./routes/retries";
@@ -126,6 +127,7 @@ export const createApp = () => {
   app.route("/api/reports", reportRoutes);
   app.route("/api/portfolio", portfolioRoutes);
   app.route("/api/calendar", calendarRoutes);
+  app.route("/api/status", statusRoutes);
   app.route("/api/jobs", jobRoutes);
   app.route("/api/pipeline-jobs", jobRoutes);
   app.route("/api/screenings", retryRoutes);

@@ -325,4 +325,28 @@ describe("product event API clients", () => {
       expect.objectContaining({ headers: expect.any(Headers) }),
     );
   });
+
+  it("reads sync status and recent jobs together", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: {
+            earningsCoverage: null,
+            jobs: [],
+            nextCursor: "next-page",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.status(25, "cursor-2");
+
+    expect(result.status.nextCursor).toBe("next-page");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/status?limit=25&cursor=cursor-2",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+  });
 });

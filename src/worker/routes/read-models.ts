@@ -10,6 +10,7 @@ import {
   monthKeysForRange,
   readModelTag,
 } from "../../services/read-model-etags";
+import { StatusReadModelService } from "../../services/status-read-model";
 import { easternMarketDate } from "../../shared/dates";
 import type { Env } from "../env";
 import { ApiError } from "../errors";
@@ -182,6 +183,7 @@ const monthRange = (date: string): { start: string; end: string } => {
 export const portfolioRoutes = new Hono<{ Bindings: Env }>();
 export const calendarRoutes = new Hono<{ Bindings: Env }>();
 export const jobRoutes = new Hono<{ Bindings: Env }>();
+export const statusRoutes = new Hono<{ Bindings: Env }>();
 
 portfolioRoutes.get("/", async (context) => {
   requireEnabled(context.env, "portfolio");
@@ -350,6 +352,31 @@ calendarRoutes.get("/", async (context) => {
   });
   context.header("Content-Language", locale);
   return context.json({ calendar });
+});
+
+statusRoutes.get("/", async (context) => {
+  requireEnabled(context.env, "job");
+  const query = context.req.query();
+  const limit = parseLimit(query.limit, 25, 50);
+  const cursor = decodeCursor(
+    query.cursor,
+    "cursor",
+    z
+      .object({
+        id: z.string().min(1).max(128),
+        createdAt: z.string().min(1).max(64).optional(),
+      })
+      .strict(),
+  );
+  const status = await new StatusReadModelService(context.env.DB).read({
+    limit,
+    cursor: cursor
+      ? cursor.createdAt
+        ? { id: cursor.id, createdAt: cursor.createdAt }
+        : cursor.id
+      : null,
+  });
+  return context.json({ status });
 });
 
 jobRoutes.get("/", async (context) => {

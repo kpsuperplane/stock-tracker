@@ -52,3 +52,46 @@ export const TrashIcon: IconType = (props) => (
     <path d="M9 7V4h6v3M6 7l1 14h10l1-14" />
   </svg>
 );
+
+export const PortfolioIcon: IconType = (props) => (
+  // biome-ignore lint/a11y/noSvgWithoutTitle: The parent link provides the localized label.
+  <svg {...svgProps} {...props}>
+    <path d="M4 5v14h16" />
+    <path d="m7 15 4-4 3 2 5-6" />
+  </svg>
+);
+
+export const EventsIcon: IconType = (props) => (
+  // biome-ignore lint/a11y/noSvgWithoutTitle: The parent link provides the localized label.
+  <svg {...svgProps} {...props}>
+    <path d="M4 8h14" />
+    <path d="m15 5 3 3-3 3" />
+    <path d="M20 16H6" />
+    <path d="m9 13-3 3 3 3" />
+  </svg>
+);
+
+export const CalendarIcon: IconType = (props) => (
+  // biome-ignore lint/a11y/noSvgWithoutTitle: The parent link provides the localized label.
+  <svg {...svgProps} {...props}>
+    <rect x="3.5" y="5.5" width="17" height="15" rx="2" />
+    <path d="M8 3.5v4M16 3.5v4M3.5 10h17" />
+    <path d="M8 14h.01M12 14h.01M16 14h.01M8 17h.01M12 17h.01" />
+  </svg>
+);
+
+export const StatusIcon: IconType = (props) => (
+  // biome-ignore lint/a11y/noSvgWithoutTitle: The parent link provides the localized label.
+  <svg {...svgProps} {...props}>
+    <path d="M4 17h3l2-5 3 8 3-13 2 7h3" />
+  </svg>
+);
+
+export const AccountsIcon: IconType = (props) => (
+  // biome-ignore lint/a11y/noSvgWithoutTitle: The parent link provides the localized label.
+  <svg {...svgProps} {...props}>
+    <path d="m5 7.5 10-3.4a2 2 0 0 1 2.5 1.3l.7 2.1" />
+    <path d="M6 7.5h12a2 2 0 0 1 2 2V19H6a2 2 0 0 1-2-2V7.5Z" />
+    <path d="M15 11h5v4h-5a2 2 0 0 1 0-4Z" />
+  </svg>
+);
