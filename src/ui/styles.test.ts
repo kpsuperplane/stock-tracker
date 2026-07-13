@@ -46,4 +46,14 @@ describe("product stylesheet", () => {
       expect(rule?.[1] ?? "").not.toContain("min-width");
     }
   });
+
+  it("gives earnings events their own purple calendar palette", () => {
+    const rule = calendarStyles.match(
+      /\.calendar-event-chip--earnings\s*\{([^}]*)\}/,
+    );
+
+    expect(rule?.[1] ?? "").toContain("var(--color-text-purple)");
+    expect(rule?.[1] ?? "").toContain("var(--color-background-purple)");
+    expect(rule?.[1] ?? "").toContain("var(--color-border-purple)");
+  });
 });

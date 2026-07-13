@@ -176,9 +176,9 @@
 }
 
 .calendar-event-chip--earnings {
-  color: var(--color-warning);
-  background: var(--color-background-muted);
-  border-inline-start-color: var(--color-warning);
+  color: var(--color-text-purple);
+  background: var(--color-background-purple);
+  border-inline-start-color: var(--color-border-purple);
 }
 
 .calendar-more {
