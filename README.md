@@ -98,15 +98,18 @@ to integration tests and external clients.
 
 `public/templates/portfolio-events.csv` is the only supported UTF-8 import
 shape. Its exact header is
-`trade_date,symbol,side,quantity,price`; dates are `YYYY-MM-DD`, sides are
-case-insensitive `BUY`/`SELL`, and quantity/price are positive canonical
-decimals with at most six fractional digits. Preview accepts at most 5 MiB,
-10,000 data rows, and 40 distinct symbols. The symbol cap keeps synchronous
-split-history checks within a Worker request budget; split larger imports into
-separate files.
+`trade_date,symbol,side,quantity,price,category,account`; dates are
+`YYYY-MM-DD`, sides are case-insensitive `BUY`/`SELL`, and quantity/price are
+positive canonical decimals with at most six fractional digits. Category and
+account names resolve to an existing active account after trimming whitespace
+and ignoring case, and one file may target several accounts. Preview accepts
+at most 5 MiB, 10,000 data rows, and 40 distinct symbols. The symbol cap keeps
+synchronous split-history checks within a Worker request budget; split larger
+imports into separate files.
 
 Use `POST /api/event-imports/preview` as `multipart/form-data` with one `file`
-part. Preview stages normalized rows and returns any split histories needing
+part. Preview stages normalized rows and returns account-specific projected
+holdings plus any split histories needing
 review without changing transactions. Commit the returned batch with
 `POST /api/event-imports/:id/commit`, JSON confirmations, and the previewed
 `X-Position-Basis-Revision`. Commit reads staged rows rather than reparsing the

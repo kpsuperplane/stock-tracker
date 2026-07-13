@@ -52,7 +52,7 @@ export const productFlowFixture = {
   csv: {
     filename: "portfolio-events-fixture.csv",
     contents:
-      "trade_date,symbol,side,quantity,price\n2026-07-10,AAPL,BUY,2,180\n",
+      "trade_date,symbol,side,quantity,price,category,account\n2026-07-10,AAPL,BUY,2,180,Registered,TFSA\n",
   },
   importPreview: {
     kind: "preview" as const,
@@ -66,12 +66,23 @@ export const productFlowFixture = {
         side: "buy" as const,
         quantityDecimal: "2",
         priceDecimal: "180",
+        accountId: "account-tfsa",
+        categoryName: "Registered",
+        accountName: "TFSA",
         status: "valid" as const,
         errors: [],
       },
     ],
     reviews: [],
-    projectedHoldings: { "instrument-aapl": "2" },
+    projectedHoldings: [
+      {
+        accountId: "account-tfsa",
+        categoryName: "Registered",
+        accountName: "TFSA",
+        symbol: "AAPL",
+        quantityDecimal: "2",
+      },
+    ],
     expiresAt: "2026-07-11T23:59:59.000Z",
   } satisfies ImportPreviewResponse,
   portfolio: {

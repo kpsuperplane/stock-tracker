@@ -8,7 +8,6 @@ export type ImportRowStatus = "valid" | "invalid";
 export interface ImportBatchRecord {
   id: string;
   fileDigest: string;
-  accountId?: string;
   originalFilename: string;
   basePositionBasisRevision: number;
   projectedHoldingsJson: string | null;
@@ -29,6 +28,9 @@ export interface ImportRowRecord {
   side: "buy" | "sell" | null;
   quantityDecimal: string | null;
   priceDecimal: string | null;
+  accountId: string | null;
+  categoryName: string;
+  accountName: string;
   status: ImportRowStatus;
   validationErrorsJson: string | null;
   normalizedTransactionJson: string | null;
@@ -41,15 +43,14 @@ export class ImportRepository {
     return this.db
       .prepare(
         `INSERT INTO import_batches
-         (id, file_digest, account_id, original_filename, base_position_basis_revision,
+         (id, file_digest, original_filename, base_position_basis_revision,
           projected_holdings_json, status, result_pipeline_job_id, expires_at,
           committed_at, created_at, updated_at)
-         VALUES (?1, ?2, COALESCE(?3, 'account-default'), ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
       )
       .bind(
         batch.id,
         batch.fileDigest,
-        batch.accountId ?? null,
         batch.originalFilename,
         batch.basePositionBasisRevision,
         batch.projectedHoldingsJson,
@@ -67,9 +68,10 @@ export class ImportRepository {
       .prepare(
         `INSERT INTO import_rows
          (id, import_batch_id, row_number, symbol, trade_date, side,
-          quantity_decimal, price_decimal, status, validation_errors_json,
+          quantity_decimal, price_decimal, account_id, category_name,
+          account_name, status, validation_errors_json,
           normalized_transaction_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`,
       )
       .bind(
         row.id,
@@ -80,6 +82,9 @@ export class ImportRepository {
         row.side,
         row.quantityDecimal,
         row.priceDecimal,
+        row.accountId,
+        row.categoryName,
+        row.accountName,
         row.status,
         row.validationErrorsJson,
         row.normalizedTransactionJson,
@@ -94,7 +99,8 @@ export class ImportRepository {
       .prepare(
         `INSERT INTO import_rows
          (id, import_batch_id, row_number, symbol, trade_date, side,
-          quantity_decimal, price_decimal, status, validation_errors_json,
+          quantity_decimal, price_decimal, account_id, category_name,
+          account_name, status, validation_errors_json,
           normalized_transaction_json)
          SELECT json_extract(value, '$.id'), ?1,
                 json_extract(value, '$.rowNumber'),
@@ -103,6 +109,9 @@ export class ImportRepository {
                 json_extract(value, '$.side'),
                 json_extract(value, '$.quantityDecimal'),
                 json_extract(value, '$.priceDecimal'),
+                json_extract(value, '$.accountId'),
+                json_extract(value, '$.categoryName'),
+                json_extract(value, '$.accountName'),
                 json_extract(value, '$.status'),
                 json_extract(value, '$.validationErrorsJson'),
                 json_extract(value, '$.normalizedTransactionJson')

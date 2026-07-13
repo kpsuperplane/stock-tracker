@@ -111,9 +111,10 @@ describe("scheduled handler", () => {
       ).bind(now),
       env.DB.prepare(
         `INSERT INTO import_rows
-         (id, import_batch_id, row_number, symbol, status)
+         (id, import_batch_id, row_number, symbol, category_name,
+          account_name, status)
          VALUES ('scheduled-stale-row', 'scheduled-stale-import', 2,
-                 'AAPL', 'invalid')`,
+                 'AAPL', 'Uncategorized', 'Default Account', 'invalid')`,
       ),
     ]);
     const disabledEnv = new Proxy(env, {

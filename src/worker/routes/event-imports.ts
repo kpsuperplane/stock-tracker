@@ -186,18 +186,12 @@ const preview = async (context: ImportContext) => {
   )
     return error(context, 415, "content_type", "Use a CSV file.");
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const accountValue = form.get("accountId");
-  if (accountValue !== null && typeof accountValue !== "string")
-    return error(context, 422, "invalid_account", "Select a valid account.");
   const result = await new EventImportsService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
   }).preview({
     originalFilename: file.name,
     file: bytes,
-    ...(typeof accountValue === "string" && accountValue.trim()
-      ? { accountId: accountValue.trim() }
-      : {}),
   });
   return previewResponse(context, result);
 };

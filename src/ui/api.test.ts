@@ -53,7 +53,7 @@ describe("product event API clients", () => {
           basePositionBasisRevision: 1,
           rows: [],
           reviews: [],
-          projectedHoldings: {},
+          projectedHoldings: [],
           expiresAt: "2026-07-12T00:00:00.000Z",
         }),
         { status: 201, headers: { "Content-Type": "application/json" } },
@@ -61,7 +61,7 @@ describe("product event API clients", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const file = new File(
-      ["trade_date,symbol,side,quantity,price\n"],
+      ["trade_date,symbol,side,quantity,price,category,account\n"],
       "events.csv",
       {
         type: "text/csv",
@@ -74,6 +74,7 @@ describe("product event API clients", () => {
     expect(new Headers(init.headers).get("X-Stock-Tracker-Request")).toBe("1");
     expect(new Headers(init.headers).has("Content-Type")).toBe(false);
     expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get("accountId")).toBeNull();
   });
 
   it("retains conflict codes and response details for split review UI", async () => {

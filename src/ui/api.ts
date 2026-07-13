@@ -211,6 +211,9 @@ export type ImportPreviewRow = {
   side: "buy" | "sell" | null;
   quantityDecimal: string | null;
   priceDecimal: string | null;
+  accountId: string | null;
+  categoryName: string;
+  accountName: string;
   status: "valid" | "invalid";
   errors: string[];
 };
@@ -231,7 +234,13 @@ export type ImportPreviewResponse = {
   basePositionBasisRevision: number;
   rows: ImportPreviewRow[];
   reviews: ImportSplitReview[];
-  projectedHoldings: Record<string, string>;
+  projectedHoldings: Array<{
+    accountId: string;
+    categoryName: string;
+    accountName: string;
+    symbol: string;
+    quantityDecimal: string;
+  }>;
   expiresAt: string;
 };
 
@@ -272,7 +281,7 @@ export interface EventsApiClient {
 }
 
 export interface EventImportsApiClient {
-  preview: (file: File, accountId?: string) => Promise<ImportPreviewResponse>;
+  preview: (file: File) => Promise<ImportPreviewResponse>;
   commit: (
     batchId: string,
     positionBasisRevision: number,
@@ -341,10 +350,9 @@ export const eventsApi: EventsApiClient = {
 };
 
 export const eventImportsApi: EventImportsApiClient = {
-  preview: (file, accountId) => {
+  preview: (file) => {
     const form = new FormData();
     form.append("file", file);
-    if (accountId) form.append("accountId", accountId);
     return request<ImportPreviewResponse>("/api/event-imports/preview", {
       method: "POST",
       headers: { "X-Stock-Tracker-Request": "1" },

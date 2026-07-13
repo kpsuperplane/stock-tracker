@@ -1,7 +1,4 @@
-import type {
-  CorporateActionRecord,
-  CoverageRecord,
-} from "../db/corporate-actions";
+import type { CoverageRecord } from "../db/corporate-actions";
 import {
   type ImportBatchRecord,
   ImportRepository,
@@ -12,46 +9,56 @@ import { PipelineJobRepository } from "../db/pipeline-jobs";
 import { PositionBasisRepository } from "../db/position-basis";
 import { FactRevisionBucketRepository } from "../db/revision-buckets";
 import { WorkItemRepository } from "../db/work-items";
-import { canonicalizeDecimal, INPUT_DECIMAL_BOUNDS } from "../domain/decimal";
-import {
-  type ActiveSplit,
-  deriveHoldings,
-  type LedgerTransaction,
-} from "../domain/holdings";
+import { deriveHoldings } from "../domain/holdings";
 import type {
   CorporateActionProvider,
   SplitEventRange,
 } from "../providers/corporate-actions";
 import { parseCsv } from "../shared/csv";
 import { easternMarketDate } from "../shared/dates";
+import {
+  accountsByName,
+  activeAccountIds,
+  type ImportPreviewRow,
+  isIsoDate,
+  type NormalizedImportTransaction,
+  normalizeImportRow,
+  type PendingImportRow,
+  toImportRow,
+  toPreviewRow,
+} from "./event-import-csv";
+import {
+  activeActionsByInstrument,
+  assertProjectedHoldings,
+  instrumentsById,
+  instrumentsBySymbol,
+  toLedgerTransaction,
+  transactionsByInstrument,
+  withinPositionLimit,
+} from "./event-import-ledger";
+import {
+  confirmationMatches,
+  coverageMatches,
+  proposedSplits,
+  providerErrorCode,
+  reviewFor,
+  type SnapshotReview,
+  snapshotChangesActions,
+} from "./event-import-snapshots";
 import { cleanupImportStaging } from "./retention-cleanup";
 
-const HEADER = "trade_date,symbol,side,quantity,price";
+export type { ImportPreviewRow } from "./event-import-csv";
+
+const HEADER = "trade_date,symbol,side,quantity,price,category,account";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_ROWS = 10_000;
 const MAX_DISTINCT_SYMBOLS = 40;
-const MAX_CURRENT_POSITIONS = 100;
 const STAGING_WRITE_BATCH_SIZE = 500;
 const SNAPSHOT_SYNC_BATCH_SIZE = 1_000;
 const PREVIEW_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const PLANNING_WORK_TYPE = "ledger_reconciliation_plan";
 
 type Side = "buy" | "sell";
-
-interface NormalizedImportTransaction {
-  instrumentId: string;
-  symbol: string;
-  tradeDate: string;
-  side: Side;
-  quantityDecimal: string;
-  priceDecimal: string;
-  snapshot: {
-    provider: string;
-    requestedStartDate: string;
-    requestedEndDate: string;
-    providerRevision: string;
-  };
-}
 
 interface StagedRow {
   id: string;
@@ -61,6 +68,9 @@ interface StagedRow {
   side: Side | null;
   quantityDecimal: string | null;
   priceDecimal: string | null;
+  accountId: string | null;
+  categoryName: string;
+  accountName: string;
   status: "valid" | "invalid";
   validationErrorsJson: string | null;
   normalizedTransactionJson: string | null;
@@ -70,36 +80,24 @@ interface BatchRow extends ImportBatchRecord {
   rows: StagedRow[];
 }
 
-export interface ImportPreviewRow {
-  rowNumber: number;
+export interface ImportProjectedHolding {
+  accountId: string;
+  categoryName: string;
+  accountName: string;
   symbol: string;
-  tradeDate: string | null;
-  side: Side | null;
-  quantityDecimal: string | null;
-  priceDecimal: string | null;
-  status: "valid" | "invalid";
-  errors: string[];
+  quantityDecimal: string;
 }
 
-export interface ImportSplitReview {
-  instrumentId: string;
-  symbol: string;
-  requestedStartDate: string;
-  requestedEndDate: string;
-  provider: string;
-  providerRevision: string;
-  snapshot: SplitEventRange;
-}
+export type ImportSplitReview = SnapshotReview;
 
 export type ImportPreviewResult =
   | {
       kind: "preview";
       batchId: string;
-      accountId: string;
       basePositionBasisRevision: number;
       rows: ImportPreviewRow[];
       reviews: ImportSplitReview[];
-      projectedHoldings: Record<string, string>;
+      projectedHoldings: ImportProjectedHolding[];
       expiresAt: string;
     }
   | { kind: "invalid_file"; code: string }
@@ -130,34 +128,6 @@ export interface EventImportsServiceDependencies {
   newId?: () => string;
 }
 
-const toActiveSplit = (action: CorporateActionRecord): ActiveSplit => ({
-  id: action.id,
-  effectiveDate: action.effectiveDate,
-  numerator: action.splitNumerator,
-  denominator: action.splitDenominator,
-});
-
-const toLedgerTransaction = (
-  transaction: Pick<
-    NormalizedImportTransaction,
-    "instrumentId" | "tradeDate" | "side" | "quantityDecimal"
-  >,
-): LedgerTransaction => ({
-  id: `preview:${transaction.instrumentId}:${transaction.tradeDate}:${transaction.side}`,
-  tradeDate: transaction.tradeDate,
-  side: transaction.side,
-  quantityDecimal: transaction.quantityDecimal,
-});
-
-const isIsoDate = (value: string): boolean => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T12:00:00.000Z`);
-  return (
-    !Number.isNaN(parsed.valueOf()) &&
-    parsed.toISOString().slice(0, 10) === value
-  );
-};
-
 const hexDigest = async (bytes: Uint8Array): Promise<string> =>
   Array.from(
     new Uint8Array(
@@ -172,46 +142,6 @@ const hexDigest = async (bytes: Uint8Array): Promise<string> =>
   )
     .map((value) => value.toString(16).padStart(2, "0"))
     .join("");
-
-const errorList = (value: string | null): string[] => {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) &&
-      parsed.every((entry) => typeof entry === "string")
-      ? parsed
-      : ["invalid_staged_row"];
-  } catch {
-    return ["invalid_staged_row"];
-  }
-};
-
-const providerErrorCode = (error: unknown): string => {
-  const message =
-    error instanceof Error ? error.message : "provider_unavailable";
-  return message.startsWith("provider_") ? message : "provider_unavailable";
-};
-
-const coverageMatches = (
-  coverage: CoverageRecord | null,
-  snapshot: SplitEventRange,
-): boolean =>
-  coverage?.status === "confirmed" &&
-  coverage.requestedStartDate === snapshot.range.requestedStartDate &&
-  coverage.requestedEndDate === snapshot.range.requestedEndDate &&
-  coverage.snapshotProviderRevision === snapshot.range.providerRevision &&
-  coverage.confirmedStartDate === snapshot.range.requestedStartDate &&
-  coverage.confirmedEndDate === snapshot.range.requestedEndDate &&
-  coverage.confirmedProviderRevision === snapshot.range.providerRevision &&
-  coverage.confirmedAt !== null;
-
-const confirmationMatches = (
-  confirmation: ImportConfirmation | undefined,
-  snapshot: SplitEventRange,
-): boolean =>
-  confirmation?.requestedStartDate === snapshot.range.requestedStartDate &&
-  confirmation.requestedEndDate === snapshot.range.requestedEndDate &&
-  confirmation.providerRevision === snapshot.range.providerRevision;
 
 export class EventImportsService {
   private readonly imports: ImportRepository;
@@ -239,7 +169,6 @@ export class EventImportsService {
   async preview(input: {
     originalFilename: string;
     file: Uint8Array;
-    accountId?: string;
   }): Promise<ImportPreviewResult> {
     if (!input.originalFilename || input.originalFilename.length > 255)
       return { kind: "invalid_file", code: "invalid_filename" };
@@ -255,8 +184,6 @@ export class EventImportsService {
     const parsed = parseCsv(text.replace(/^\uFEFF/, ""));
     if (!parsed || parsed.length === 0 || parsed[0]?.join(",") !== HEADER)
       return { kind: "invalid_file", code: "invalid_header" };
-    const accountId = await this.resolveAccountId(input.accountId);
-    if (!accountId) return { kind: "invalid_file", code: "account_not_found" };
     const sourceRows = parsed
       .slice(1)
       .filter((row) => row.some((cell) => cell.trim() !== ""));
@@ -270,11 +197,7 @@ export class EventImportsService {
 
     await this.cleanup();
 
-    // Keep the historical default-account digest stable so existing staged
-    // imports remain deduplicated. Explicit accounts get an account-scoped
-    // digest, allowing the same broker export to be imported into two
-    // accounts independently.
-    const digest = await this.accountDigest(input.file, accountId);
+    const digest = await hexDigest(input.file);
     const duplicate = await this.imports.findBatchByDigest(digest);
     if (duplicate)
       return {
@@ -285,16 +208,30 @@ export class EventImportsService {
 
     const timestamp = this.now().toISOString();
     const today = easternMarketDate(timestamp);
-    const instrumentsBySymbol = await this.instrumentsBySymbol(
+    const resolvedInstruments = await instrumentsBySymbol(
+      this.dependencies.db,
       sourceRows.map((row) => (row[1] ?? "").trim().toUpperCase()),
     );
+    const resolvedAccounts = await accountsByName(
+      this.dependencies.db,
+      sourceRows.map((row) => ({
+        categoryName: (row[5] ?? "").trim(),
+        accountName: (row[6] ?? "").trim(),
+      })),
+    );
     const preliminary = sourceRows.map((row, index) =>
-      this.normalizeRow(row, index + 2, today, instrumentsBySymbol),
+      normalizeImportRow(
+        row,
+        index + 2,
+        today,
+        resolvedInstruments,
+        resolvedAccounts,
+      ),
     );
 
     const validByInstrument = new Map<
       string,
-      { instrument: InstrumentRecord; rows: PendingRow[] }
+      { instrument: InstrumentRecord; rows: PendingImportRow[] }
     >();
     for (const row of preliminary) {
       if (!row.normalized || !row.instrument) continue;
@@ -307,15 +244,25 @@ export class EventImportsService {
     }
 
     const instrumentIds = [...validByInstrument.keys()];
-    const transactionsByInstrument = await this.transactionsByInstrument(
+    const accountIds = [
+      ...new Set(
+        preliminary.flatMap((row) =>
+          row.normalized ? [row.normalized.accountId] : [],
+        ),
+      ),
+    ];
+    const existingByInstrument = await transactionsByInstrument(
+      this.dependencies.db,
       instrumentIds,
-      accountId,
+      accountIds,
     );
-    const actionsByInstrument =
-      await this.activeActionsByInstrument(instrumentIds);
+    const actionsByInstrument = await activeActionsByInstrument(
+      this.dependencies.db,
+      instrumentIds,
+    );
     const snapshots = new Map<string, SplitEventRange>();
     for (const [instrumentId, group] of validByInstrument) {
-      const existing = transactionsByInstrument.get(instrumentId) ?? [];
+      const existing = existingByInstrument.get(instrumentId) ?? [];
       const startDate = [
         ...existing.map((row) => row.tradeDate),
         ...group.rows.map((row) => row.tradeDate),
@@ -345,7 +292,7 @@ export class EventImportsService {
       for (const row of group.rows) row.snapshot = snapshot;
     }
 
-    const projectedHoldings: Record<string, string> = {};
+    const projectedHoldings: ImportProjectedHolding[] = [];
     const coverageByKey = await this.coverageByInstrumentProvider(
       [...snapshots].map(([instrumentId, snapshot]) => ({
         instrumentId,
@@ -360,30 +307,59 @@ export class EventImportsService {
       const actions = actionsByInstrument.get(instrumentId) ?? [];
       const snapshot = snapshots.get(instrumentId);
       if (!snapshot) continue;
-      try {
-        const holdings = deriveHoldings({
-          today,
-          transactions: [
-            ...(transactionsByInstrument.get(instrumentId) ?? []),
-            ...group.rows.map(toLedgerTransaction),
-          ],
-          activeSplits: this.proposedSplits(actions, snapshot),
-        });
-        projectedHoldings[group.instrument.symbol] = holdings.currentQuantity();
-      } catch {
-        for (const row of group.rows) row.errors.push("negative_holdings");
-        const coverage =
-          coverageByKey.get(
-            this.coverageKey(instrumentId, snapshot.range.provider),
-          ) ?? null;
-        if (
-          !coverageMatches(coverage, snapshot) &&
-          this.snapshotChangesActions(actions, snapshot)
-        ) {
-          blockingSnapshots.push({ instrument: group.instrument, snapshot });
+      const rowsByAccount = new Map<string, PendingImportRow[]>();
+      for (const row of group.rows) {
+        const rows = rowsByAccount.get(row.accountId) ?? [];
+        rows.push(row);
+        rowsByAccount.set(row.accountId, rows);
+      }
+      for (const [rowAccountId, accountRows] of rowsByAccount) {
+        try {
+          const holdings = deriveHoldings({
+            today,
+            transactions: [
+              ...(existingByInstrument.get(instrumentId) ?? []).filter(
+                (transaction) => transaction.accountId === rowAccountId,
+              ),
+              ...accountRows.map(toLedgerTransaction),
+            ],
+            activeSplits: proposedSplits(actions, snapshot),
+          });
+          const first = accountRows[0];
+          if (first) {
+            projectedHoldings.push({
+              accountId: rowAccountId,
+              categoryName: first.categoryName,
+              accountName: first.accountName,
+              symbol: group.instrument.symbol,
+              quantityDecimal: holdings.currentQuantity(),
+            });
+          }
+        } catch {
+          for (const row of accountRows) row.errors.push("negative_holdings");
+          const coverage =
+            coverageByKey.get(
+              this.coverageKey(instrumentId, snapshot.range.provider),
+            ) ?? null;
+          if (
+            !coverageMatches(coverage, snapshot) &&
+            snapshotChangesActions(actions, snapshot) &&
+            !blockingSnapshots.some(
+              (entry) => entry.instrument.id === group.instrument.id,
+            )
+          ) {
+            blockingSnapshots.push({ instrument: group.instrument, snapshot });
+          }
         }
       }
     }
+    projectedHoldings.sort(
+      (left, right) =>
+        left.categoryName.localeCompare(right.categoryName) ||
+        left.accountName.localeCompare(right.accountName) ||
+        left.symbol.localeCompare(right.symbol) ||
+        left.accountId.localeCompare(right.accountId),
+    );
     const previousCoverageRanges = blockingSnapshots.flatMap(
       ({ instrument, snapshot }) => {
         const coverage =
@@ -410,11 +386,12 @@ export class EventImportsService {
     const expiresAt = new Date(
       this.now().valueOf() + PREVIEW_LIFETIME_MS,
     ).toISOString();
-    const rows = preliminary.map((row) => this.toImportRow(batchId, row));
+    const rows = preliminary.map((row) =>
+      toImportRow(batchId, row, this.newId),
+    );
     const batch: ImportBatchRecord = {
       id: batchId,
       fileDigest: digest,
-      accountId,
       originalFilename: input.originalFilename,
       basePositionBasisRevision,
       projectedHoldingsJson: JSON.stringify(projectedHoldings),
@@ -500,15 +477,14 @@ export class EventImportsService {
         ) ?? null;
       if (!coverageMatches(coverage, snapshot)) {
         const instrument = validByInstrument.get(instrumentId)?.instrument;
-        if (instrument) reviews.push(this.reviewFor(instrument, snapshot));
+        if (instrument) reviews.push(reviewFor(instrument, snapshot));
       }
     }
     return {
       kind: "preview",
       batchId,
-      accountId,
       basePositionBasisRevision,
-      rows: rows.map((row) => this.toPreviewRow(row)),
+      rows: rows.map(toPreviewRow),
       reviews,
       projectedHoldings,
       expiresAt,
@@ -530,8 +506,6 @@ export class EventImportsService {
       };
     const batch = await this.batch(input.batchId);
     if (!batch) return { kind: "not_found" };
-    if (!(await this.resolveAccountId(batch.accountId)))
-      return { kind: "validation_error", code: "account_not_found" };
     if (
       batch.status === "expired" ||
       batch.expiresAt <= this.now().toISOString()
@@ -555,6 +529,13 @@ export class EventImportsService {
     const normalized = this.normalizedRows(batch.rows);
     if (!normalized)
       return { kind: "validation_error", code: "invalid_import_rows" };
+    const accountIds = [...new Set(normalized.map((row) => row.accountId))];
+    const currentAccountIds = await activeAccountIds(
+      this.dependencies.db,
+      accountIds,
+    );
+    if (currentAccountIds.size !== accountIds.length)
+      return { kind: "validation_error", code: "account_not_found" };
     const byInstrument = new Map<string, NormalizedImportTransaction[]>();
     for (const row of normalized) {
       const group = byInstrument.get(row.instrumentId) ?? [];
@@ -572,20 +553,26 @@ export class EventImportsService {
       return { kind: "validation_error", code: "duplicate_confirmation" };
 
     const instrumentIds = [...byInstrument.keys()];
-    const instrumentsById = await this.instrumentsById(instrumentIds);
-    const transactionsByInstrument = await this.transactionsByInstrument(
+    const resolvedInstruments = await instrumentsById(
+      this.dependencies.db,
       instrumentIds,
-      batch.accountId,
     );
-    const actionsByInstrument =
-      await this.activeActionsByInstrument(instrumentIds);
+    const existingByInstrument = await transactionsByInstrument(
+      this.dependencies.db,
+      instrumentIds,
+      accountIds,
+    );
+    const actionsByInstrument = await activeActionsByInstrument(
+      this.dependencies.db,
+      instrumentIds,
+    );
 
     const refreshed: {
       instrument: InstrumentRecord;
       snapshot: SplitEventRange;
     }[] = [];
     for (const [instrumentId, group] of byInstrument) {
-      const instrument = instrumentsById.get(instrumentId) ?? null;
+      const instrument = resolvedInstruments.get(instrumentId) ?? null;
       if (!instrument)
         return { kind: "validation_error", code: "instrument_not_found" };
       const staged = group[0]?.snapshot;
@@ -610,7 +597,7 @@ export class EventImportsService {
       ) {
         return {
           kind: "review_required",
-          reviews: [this.reviewFor(instrument, snapshot)],
+          reviews: [reviewFor(instrument, snapshot)],
         };
       }
       refreshed.push({ instrument, snapshot });
@@ -649,28 +636,38 @@ export class EventImportsService {
       ) {
         return {
           kind: "review_required",
-          reviews: [this.reviewFor(instrument, snapshot)],
+          reviews: [reviewFor(instrument, snapshot)],
         };
       }
-      try {
-        await this.assertProjectedHoldings(
-          transactionsByInstrument.get(instrument.id) ?? [],
-          actionsByInstrument.get(instrument.id) ?? [],
-          group,
-          snapshot,
-          this.now().toISOString().slice(0, 10),
-        );
-      } catch {
-        return { kind: "validation_error", code: "negative_holdings" };
+      const rowsByAccount = new Map<string, NormalizedImportTransaction[]>();
+      for (const row of group) {
+        const rows = rowsByAccount.get(row.accountId) ?? [];
+        rows.push(row);
+        rowsByAccount.set(row.accountId, rows);
+      }
+      for (const [accountId, accountRows] of rowsByAccount) {
+        try {
+          assertProjectedHoldings(
+            (existingByInstrument.get(instrument.id) ?? []).filter(
+              (transaction) => transaction.accountId === accountId,
+            ),
+            actionsByInstrument.get(instrument.id) ?? [],
+            accountRows,
+            snapshot,
+            this.now().toISOString().slice(0, 10),
+          );
+        } catch {
+          return { kind: "validation_error", code: "negative_holdings" };
+        }
       }
     }
 
     if (
-      !(await this.withinPositionLimit(
+      !(await withinPositionLimit(
+        this.dependencies.db,
         byInstrument,
         refreshed,
         this.now().toISOString().slice(0, 10),
-        batch.accountId ?? "account-default",
       ))
     ) {
       return { kind: "validation_error", code: "position_limit" };
@@ -716,7 +713,7 @@ export class EventImportsService {
           price_decimal, revision, created_at, updated_at)
          SELECT ?1 || ':' || import_rows.row_number,
                 json_extract(import_rows.normalized_transaction_json, '$.instrumentId'),
-                import_batches.account_id,
+                import_rows.account_id,
                 json_extract(import_rows.normalized_transaction_json, '$.tradeDate'),
                 json_extract(import_rows.normalized_transaction_json, '$.side'),
                 json_extract(import_rows.normalized_transaction_json, '$.quantityDecimal'),
@@ -802,107 +799,6 @@ export class EventImportsService {
     };
   }
 
-  private normalizeRow(
-    values: string[],
-    rowNumber: number,
-    today: string,
-    instrumentsBySymbol: ReadonlyMap<string, InstrumentRecord>,
-  ): PreliminaryRow {
-    const errors: string[] = [];
-    if (values.length !== 5)
-      return {
-        rowNumber,
-        symbol: "",
-        tradeDate: null,
-        side: null,
-        quantityDecimal: null,
-        priceDecimal: null,
-        errors: ["column_count"],
-        normalized: null,
-        instrument: null,
-      };
-    const [
-      dateInput = "",
-      symbolInput = "",
-      sideInput = "",
-      quantityInput = "",
-      priceInput = "",
-    ] = values.map((value) => value.trim());
-    const symbol = symbolInput.toUpperCase();
-    const tradeDate = dateInput;
-    const side = sideInput.toLowerCase() as Side;
-    if (!/^[A-Z0-9.^-]{1,32}$/.test(symbol)) errors.push("invalid_symbol");
-    if (!isIsoDate(tradeDate) || tradeDate > today)
-      errors.push("invalid_trade_date");
-    if (side !== "buy" && side !== "sell") errors.push("invalid_side");
-    let quantityDecimal: string | null = null;
-    let priceDecimal: string | null = null;
-    try {
-      quantityDecimal = canonicalizeDecimal(
-        quantityInput,
-        INPUT_DECIMAL_BOUNDS,
-      );
-      if (quantityDecimal === "0" || quantityDecimal.startsWith("-"))
-        errors.push("invalid_quantity");
-    } catch {
-      errors.push("invalid_quantity");
-    }
-    try {
-      priceDecimal = canonicalizeDecimal(priceInput, INPUT_DECIMAL_BOUNDS);
-      if (priceDecimal === "0" || priceDecimal.startsWith("-"))
-        errors.push("invalid_price");
-    } catch {
-      errors.push("invalid_price");
-    }
-    const instrument =
-      errors.length === 0 ? (instrumentsBySymbol.get(symbol) ?? null) : null;
-    if (errors.length === 0 && !instrument) errors.push("unknown_symbol");
-    const normalized =
-      errors.length === 0 && instrument && quantityDecimal && priceDecimal
-        ? {
-            instrumentId: instrument.id,
-            symbol,
-            tradeDate,
-            side,
-            quantityDecimal,
-            priceDecimal,
-            errors,
-            snapshot: undefined as unknown as SplitEventRange,
-          }
-        : null;
-    return {
-      rowNumber,
-      symbol,
-      tradeDate: tradeDate || null,
-      side: side === "buy" || side === "sell" ? side : null,
-      quantityDecimal,
-      priceDecimal,
-      errors,
-      normalized,
-      instrument,
-    };
-  }
-
-  private toImportRow(batchId: string, row: PreliminaryRow): ImportRowRecord {
-    const valid = !!row.normalized && row.errors.length === 0;
-    const normalized = valid
-      ? this.asNormalized(row.normalized as PendingRow)
-      : null;
-    return {
-      id: this.newId(),
-      importBatchId: batchId,
-      rowNumber: row.rowNumber,
-      symbol: row.symbol || "INVALID",
-      tradeDate: row.tradeDate,
-      side: row.side,
-      quantityDecimal: row.quantityDecimal,
-      priceDecimal: row.priceDecimal,
-      status: valid ? "valid" : "invalid",
-      validationErrorsJson: valid ? null : JSON.stringify(row.errors),
-      normalizedTransactionJson: normalized ? JSON.stringify(normalized) : null,
-    };
-  }
-
   private stagingRowStatements(
     importBatchId: string,
     rows: readonly ImportRowRecord[],
@@ -921,163 +817,6 @@ export class EventImportsService {
       );
     }
     return statements;
-  }
-
-  private asNormalized(row: PendingRow): NormalizedImportTransaction {
-    if (!row.snapshot) throw new Error("missing_preview_snapshot");
-    return {
-      instrumentId: row.instrumentId,
-      symbol: row.symbol,
-      tradeDate: row.tradeDate,
-      side: row.side,
-      quantityDecimal: row.quantityDecimal,
-      priceDecimal: row.priceDecimal,
-      snapshot: {
-        provider: row.snapshot.range.provider,
-        requestedStartDate: row.snapshot.range.requestedStartDate,
-        requestedEndDate: row.snapshot.range.requestedEndDate,
-        providerRevision: row.snapshot.range.providerRevision,
-      },
-    };
-  }
-
-  private toPreviewRow(row: ImportRowRecord): ImportPreviewRow {
-    return {
-      rowNumber: row.rowNumber,
-      symbol: row.symbol,
-      tradeDate: row.tradeDate,
-      side: row.side,
-      quantityDecimal: row.quantityDecimal,
-      priceDecimal: row.priceDecimal,
-      status: row.status,
-      errors: errorList(row.validationErrorsJson),
-    };
-  }
-
-  private async instrumentsBySymbol(
-    symbols: readonly string[],
-  ): Promise<Map<string, InstrumentRecord>> {
-    const result = new Map<string, InstrumentRecord>();
-    const requestedSymbols = [...new Set(symbols.filter(Boolean))];
-    if (requestedSymbols.length === 0) return result;
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT instruments.id, instruments.symbol,
-                instruments.company_name AS companyName, instruments.exchange,
-                instruments.currency, instruments.instrument_type AS instrumentType,
-                instruments.provider, instruments.provider_symbol AS providerSymbol,
-                instruments.provider_metadata_json AS providerMetadataJson,
-                instruments.created_at AS createdAt, instruments.updated_at AS updatedAt
-         FROM instruments JOIN json_each(?1) AS requested
-           ON instruments.symbol = requested.value`,
-      )
-      .bind(JSON.stringify(requestedSymbols))
-      .all<InstrumentRecord>();
-    for (const row of rows.results) result.set(row.symbol, row);
-    return result;
-  }
-
-  private async instrumentsById(
-    instrumentIds: readonly string[],
-  ): Promise<Map<string, InstrumentRecord>> {
-    const result = new Map<string, InstrumentRecord>();
-    const requestedIds = [...new Set(instrumentIds)];
-    if (requestedIds.length === 0) return result;
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT instruments.id, instruments.symbol,
-                instruments.company_name AS companyName, instruments.exchange,
-                instruments.currency, instruments.instrument_type AS instrumentType,
-                instruments.provider, instruments.provider_symbol AS providerSymbol,
-                instruments.provider_metadata_json AS providerMetadataJson,
-                instruments.created_at AS createdAt, instruments.updated_at AS updatedAt
-         FROM instruments JOIN json_each(?1) AS requested
-           ON instruments.id = requested.value`,
-      )
-      .bind(JSON.stringify(requestedIds))
-      .all<InstrumentRecord>();
-    for (const row of rows.results) result.set(row.id, row);
-    return result;
-  }
-
-  private async transactionsByInstrument(
-    instrumentIds: readonly string[],
-    accountId?: string,
-  ): Promise<Map<string, Array<LedgerTransaction & { accountId: string }>>> {
-    const result = new Map<
-      string,
-      Array<LedgerTransaction & { accountId: string }>
-    >();
-    const requestedIds = [...new Set(instrumentIds)];
-    if (requestedIds.length === 0) return result;
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT transactions.id, transactions.instrument_id, transactions.account_id,
-                transactions.trade_date,
-                transactions.side, transactions.quantity_decimal
-         FROM transactions JOIN json_each(?1) AS requested
-           ON transactions.instrument_id = requested.value
-         WHERE (?2 IS NULL OR transactions.account_id = ?2)
-         ORDER BY transactions.instrument_id, transactions.trade_date, transactions.id`,
-      )
-      .bind(JSON.stringify(requestedIds), accountId ?? null)
-      .all<{
-        id: string;
-        instrument_id: string;
-        account_id: string | null;
-        trade_date: string;
-        side: Side;
-        quantity_decimal: string;
-      }>();
-    for (const row of rows.results) {
-      const transactions = result.get(row.instrument_id) ?? [];
-      transactions.push({
-        id: row.id,
-        accountId: row.account_id ?? "account-default",
-        tradeDate: row.trade_date,
-        side: row.side,
-        quantityDecimal: row.quantity_decimal,
-      });
-      result.set(row.instrument_id, transactions);
-    }
-    return result;
-  }
-
-  private async activeActionsByInstrument(
-    instrumentIds: readonly string[],
-  ): Promise<Map<string, CorporateActionRecord[]>> {
-    const result = new Map<string, CorporateActionRecord[]>();
-    const requestedIds = [...new Set(instrumentIds)];
-    if (requestedIds.length === 0) return result;
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT corporate_actions.id, corporate_actions.instrument_id AS instrumentId,
-                corporate_actions.effective_date AS effectiveDate,
-                corporate_actions.split_numerator AS splitNumerator,
-                corporate_actions.split_denominator AS splitDenominator,
-                corporate_actions.provider,
-                corporate_actions.provider_event_id AS providerEventId,
-                corporate_actions.provider_revision AS providerRevision,
-                corporate_actions.retrieved_at AS retrievedAt,
-                corporate_actions.revision, corporate_actions.status,
-                corporate_actions.conflict_code AS conflictCode,
-                corporate_actions.conflict_message AS conflictMessage,
-                corporate_actions.created_at AS createdAt,
-                corporate_actions.updated_at AS updatedAt
-         FROM corporate_actions JOIN json_each(?1) AS requested
-           ON corporate_actions.instrument_id = requested.value
-         WHERE corporate_actions.status = 'active'
-         ORDER BY corporate_actions.instrument_id, corporate_actions.effective_date,
-                  corporate_actions.id`,
-      )
-      .bind(JSON.stringify(requestedIds))
-      .all<CorporateActionRecord>();
-    for (const row of rows.results) {
-      const actions = result.get(row.instrumentId) ?? [];
-      actions.push(row);
-      result.set(row.instrumentId, actions);
-    }
-    return result;
   }
 
   private coverageKey(instrumentId: string, provider: string): string {
@@ -1148,47 +887,6 @@ export class EventImportsService {
     };
   }
 
-  private reviewFor(
-    instrument: InstrumentRecord,
-    snapshot: SplitEventRange,
-  ): ImportSplitReview {
-    return {
-      instrumentId: instrument.id,
-      symbol: instrument.symbol,
-      requestedStartDate: snapshot.range.requestedStartDate,
-      requestedEndDate: snapshot.range.requestedEndDate,
-      provider: snapshot.range.provider,
-      providerRevision: snapshot.range.providerRevision,
-      snapshot,
-    };
-  }
-
-  private async resolveAccountId(requested?: string): Promise<string | null> {
-    const normalized = requested?.trim();
-    if (!normalized) return "account-default";
-    const accountId = normalized;
-    const row = await this.dependencies.db
-      .prepare(
-        `SELECT id FROM accounts
-         WHERE id = ?1 AND archived_at IS NULL`,
-      )
-      .bind(accountId)
-      .first<{ id: string }>();
-    return row?.id ?? null;
-  }
-
-  private async accountDigest(
-    file: Uint8Array,
-    accountId: string,
-  ): Promise<string> {
-    if (accountId === "account-default") return hexDigest(file);
-    const prefix = new TextEncoder().encode(`${accountId}\u0000`);
-    const payload = new Uint8Array(prefix.byteLength + file.byteLength);
-    payload.set(prefix);
-    payload.set(file, prefix.byteLength);
-    return hexDigest(payload);
-  }
-
   private async batch(id: string): Promise<BatchRow | null> {
     const batch = await this.dependencies.db
       .prepare("SELECT * FROM import_batches WHERE id = ?1")
@@ -1196,7 +894,6 @@ export class EventImportsService {
       .first<{
         id: string;
         file_digest: string;
-        account_id: string | null;
         original_filename: string;
         base_position_basis_revision: number;
         projected_holdings_json: string | null;
@@ -1211,7 +908,8 @@ export class EventImportsService {
     const rows = await this.dependencies.db
       .prepare(
         `SELECT id, row_number, symbol, trade_date, side, quantity_decimal, price_decimal,
-              status, validation_errors_json, normalized_transaction_json
+              account_id, category_name, account_name, status,
+              validation_errors_json, normalized_transaction_json
        FROM import_rows WHERE import_batch_id = ?1 ORDER BY row_number`,
       )
       .bind(id)
@@ -1223,6 +921,9 @@ export class EventImportsService {
         side: Side | null;
         quantity_decimal: string | null;
         price_decimal: string | null;
+        account_id: string | null;
+        category_name: string;
+        account_name: string;
         status: "valid" | "invalid";
         validation_errors_json: string | null;
         normalized_transaction_json: string | null;
@@ -1230,7 +931,6 @@ export class EventImportsService {
     return {
       id: batch.id,
       fileDigest: batch.file_digest,
-      accountId: batch.account_id ?? "account-default",
       originalFilename: batch.original_filename,
       basePositionBasisRevision: batch.base_position_basis_revision,
       projectedHoldingsJson: batch.projected_holdings_json,
@@ -1248,6 +948,9 @@ export class EventImportsService {
         side: row.side,
         quantityDecimal: row.quantity_decimal,
         priceDecimal: row.price_decimal,
+        accountId: row.account_id,
+        categoryName: row.category_name,
+        accountName: row.account_name,
         status: row.status,
         validationErrorsJson: row.validation_errors_json,
         normalizedTransactionJson: row.normalized_transaction_json,
@@ -1263,32 +966,21 @@ export class EventImportsService {
         const parsed = JSON.parse(
           row.normalizedTransactionJson ?? "",
         ) as NormalizedImportTransaction;
+        const accountId = parsed.accountId || row.accountId;
         if (
           !parsed?.instrumentId ||
+          !accountId ||
+          (row.accountId !== null && row.accountId !== accountId) ||
           !isIsoDate(parsed.tradeDate) ||
           (parsed.side !== "buy" && parsed.side !== "sell") ||
           !parsed.snapshot?.providerRevision
         )
           throw new Error("invalid");
-        return parsed;
+        return { ...parsed, accountId };
       });
     } catch {
       return null;
     }
-  }
-
-  private assertProjectedHoldings(
-    existing: LedgerTransaction[],
-    active: CorporateActionRecord[],
-    rows: NormalizedImportTransaction[],
-    snapshot: SplitEventRange,
-    today: string,
-  ): void {
-    deriveHoldings({
-      today,
-      transactions: [...existing, ...rows.map(toLedgerTransaction)],
-      activeSplits: this.proposedSplits(active, snapshot),
-    });
   }
 
   private importMutationTokenStatement(input: {
@@ -1310,61 +1002,6 @@ export class EventImportsService {
            ?3 + 1, 'import_commit', ?4)`,
       )
       .bind(input.id, input.batchId, input.expectedRevision, input.createdAt);
-  }
-
-  private async withinPositionLimit(
-    imported: Map<string, NormalizedImportTransaction[]>,
-    refreshed: { instrument: InstrumentRecord; snapshot: SplitEventRange }[],
-    today: string,
-    importedAccountId: string,
-  ): Promise<boolean> {
-    const snapshots = new Map(
-      refreshed.map(({ instrument, snapshot }) => [instrument.id, snapshot]),
-    );
-    const instruments = await this.dependencies.db
-      .prepare("SELECT id FROM instruments ORDER BY id")
-      .all<{ id: string }>();
-    const instrumentIds = instruments.results.map(({ id }) => id);
-    const transactionsByInstrument =
-      await this.transactionsByInstrument(instrumentIds);
-    const actionsByInstrument =
-      await this.activeActionsByInstrument(instrumentIds);
-    let currentPositions = 0;
-    try {
-      for (const { id } of instruments.results) {
-        const actions = actionsByInstrument.get(id) ?? [];
-        const snapshot = snapshots.get(id);
-        const byAccount = new Map<string, LedgerTransaction[]>();
-        for (const transaction of transactionsByInstrument.get(id) ?? []) {
-          const rows = byAccount.get(transaction.accountId) ?? [];
-          rows.push(transaction);
-          byAccount.set(transaction.accountId, rows);
-        }
-        const importedRows = imported.get(id) ?? [];
-        if (importedRows.length > 0) {
-          const rows = byAccount.get(importedAccountId) ?? [];
-          rows.push(...importedRows.map(toLedgerTransaction));
-          byAccount.set(importedAccountId, rows);
-        }
-        const activeSplits = snapshot
-          ? this.proposedSplits(actions, snapshot)
-          : actions.map(toActiveSplit);
-        let instrumentHeld = false;
-        for (const transactions of byAccount.values()) {
-          const holdings = deriveHoldings({
-            today,
-            transactions,
-            activeSplits,
-          });
-          if (holdings.currentQuantity() !== "0") instrumentHeld = true;
-        }
-        if (instrumentHeld) currentPositions += 1;
-        if (currentPositions > MAX_CURRENT_POSITIONS) return false;
-      }
-    } catch {
-      return false;
-    }
-    return true;
   }
 
   private snapshotSyncStatements(
@@ -1597,79 +1234,4 @@ export class EventImportsService {
     );
     return statements;
   }
-
-  private snapshotChangesActions(
-    active: readonly CorporateActionRecord[],
-    snapshot: SplitEventRange,
-  ): boolean {
-    const activeInRange = active.filter(
-      (action) =>
-        action.provider === snapshot.range.provider &&
-        action.effectiveDate >= snapshot.range.requestedStartDate &&
-        action.effectiveDate <= snapshot.range.requestedEndDate,
-    );
-    const activeIdentities = new Map(
-      activeInRange.map((action) => [
-        `${action.providerEventId}@${action.providerRevision}`,
-        action,
-      ]),
-    );
-    if (activeInRange.length !== snapshot.events.length) return true;
-    return snapshot.events.some((event) => {
-      const activeAction = activeIdentities.get(
-        `${event.providerEventId}@${event.providerRevision}`,
-      );
-      return (
-        !activeAction ||
-        activeAction.effectiveDate !== event.effectiveDate ||
-        activeAction.splitNumerator !== event.numerator ||
-        activeAction.splitDenominator !== event.denominator
-      );
-    });
-  }
-
-  private proposedSplits(
-    actions: CorporateActionRecord[],
-    snapshot: SplitEventRange,
-  ): ActiveSplit[] {
-    return [
-      ...actions
-        .filter(
-          (action) =>
-            action.provider !== snapshot.range.provider ||
-            action.effectiveDate < snapshot.range.requestedStartDate ||
-            action.effectiveDate > snapshot.range.requestedEndDate,
-        )
-        .map(toActiveSplit),
-      ...snapshot.events.map((event) => ({
-        id: `${event.providerEventId}@${event.providerRevision}`,
-        effectiveDate: event.effectiveDate,
-        numerator: event.numerator,
-        denominator: event.denominator,
-      })),
-    ];
-  }
-}
-
-interface PendingRow {
-  instrumentId: string;
-  symbol: string;
-  tradeDate: string;
-  side: Side;
-  quantityDecimal: string;
-  priceDecimal: string;
-  errors: string[];
-  snapshot?: SplitEventRange;
-}
-
-interface PreliminaryRow {
-  rowNumber: number;
-  symbol: string;
-  tradeDate: string | null;
-  side: Side | null;
-  quantityDecimal: string | null;
-  priceDecimal: string | null;
-  errors: string[];
-  normalized: PendingRow | null;
-  instrument: InstrumentRecord | null;
 }

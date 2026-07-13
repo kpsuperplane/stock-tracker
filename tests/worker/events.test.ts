@@ -297,9 +297,11 @@ describe("portfolio ledger migration", () => {
     await env.DB.prepare(
       `INSERT INTO import_rows
        (id, import_batch_id, row_number, symbol, trade_date, side,
-        quantity_decimal, price_decimal, status)
+        quantity_decimal, price_decimal, account_id, category_name,
+        account_name, status)
        VALUES ('row-1', 'batch-1', 2, 'SHOP.TO', '2026-01-02', 'buy',
-               '1', '10', 'valid')`,
+               '1', '10', 'account-default', 'Uncategorized',
+               'Default Account', 'valid')`,
     ).run();
     await expect(
       env.DB.prepare(

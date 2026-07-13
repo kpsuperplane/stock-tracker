@@ -227,7 +227,7 @@ describe("accounts and categories", () => {
     });
   });
 
-  it("rejects writes to archived accounts while preserving the default fallback", async () => {
+  it("rejects staged import rows assigned to archived accounts", async () => {
     const service = new AccountService(repository(), () => "generated-id");
     const category = await service.createCategory({
       name: "Archive Test",
@@ -245,30 +245,25 @@ describe("accounts and categories", () => {
       now,
     );
     expect(archived.archivedAt).toBe(now);
-    await expect(
-      env.DB.prepare(
-        `INSERT INTO import_batches
-         (id, file_digest, original_filename, account_id,
-          base_position_basis_revision, status, expires_at, created_at, updated_at)
-         VALUES ('archived-import', 'archived-digest', 'x.csv', ?1, 0,
-                 'preview', ?2, ?2, ?2)`,
-      )
-        .bind(account.id, now)
-        .run(),
-    ).rejects.toThrow(/account_required/);
-
     await env.DB.prepare(
       `INSERT INTO import_batches
        (id, file_digest, original_filename, base_position_basis_revision,
         status, expires_at, created_at, updated_at)
-       VALUES ('default-import', 'default-digest', 'x.csv', 0,
+       VALUES ('archived-import', 'archived-digest', 'x.csv', 0,
                'preview', ?1, ?1, ?1)`,
     )
       .bind(now)
       .run();
-    const defaultAccount = await env.DB.prepare(
-      "SELECT account_id FROM import_batches WHERE id = 'default-import'",
-    ).first<{ account_id: string }>();
-    expect(defaultAccount?.account_id).toBe("account-default");
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO import_rows
+         (id, import_batch_id, row_number, symbol, account_id, category_name,
+          account_name, status)
+         VALUES ('archived-row', 'archived-import', 2, 'SHOP.TO', ?1,
+                 'Archive Test', 'Empty', 'invalid')`,
+      )
+        .bind(account.id)
+        .run(),
+    ).rejects.toThrow(/account_required/);
   });
 });

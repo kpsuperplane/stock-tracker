@@ -70,7 +70,6 @@ describe("EventsPage", () => {
     expect(markup).not.toContain(">Status<");
     expect(markup).not.toContain(">Revision<");
     expect(markup).toContain("Import CSV");
-    expect(markup).toContain("Select...");
   });
 
   it("keeps empty states explicit and bilingual", () => {
@@ -114,6 +113,9 @@ describe("EventImportDialog", () => {
     expect(markup).toContain("Import portfolio events");
     expect(markup).toContain("Download template");
     expect(markup).toContain("Preview import");
-    expect(markup).toContain("trade_date,symbol,side,quantity,price");
+    expect(markup).not.toContain(">Account</label>");
+    expect(markup).toContain(
+      "trade_date,symbol,side,quantity,price,category,account",
+    );
   });
 });

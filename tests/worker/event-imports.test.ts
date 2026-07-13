@@ -9,7 +9,7 @@ import type {
 import { EventImportsService } from "../../src/services/event-imports";
 
 const now = "2026-07-10T12:00:00.000Z";
-const header = "trade_date,symbol,side,quantity,price";
+const header = "trade_date,symbol,side,quantity,price,category,account";
 
 const provider = (revision = "snapshot-r1"): CorporateActionProvider => ({
   getSplits: async (symbol, startDate, endDate): Promise<SplitEventRange> => ({
@@ -69,7 +69,29 @@ async function insertInstrument(): Promise<void> {
     .run();
 }
 
-const csv = (rows: string[]) => `${header}\n${rows.join("\n")}\n`;
+async function insertAccount(input: {
+  categoryId: string;
+  categoryName: string;
+  accountId: string;
+  accountName: string;
+}): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO account_categories
+       (id, name, sort_order, revision, created_at, updated_at)
+       VALUES (?1, ?2, 10, 1, ?3, ?3)`,
+    ).bind(input.categoryId, input.categoryName, now),
+    env.DB.prepare(
+      `INSERT INTO accounts
+       (id, category_id, name, sort_order, revision, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 10, 1, ?4, ?4)`,
+    ).bind(input.accountId, input.categoryId, input.accountName, now),
+  ]);
+}
+
+const csv = (rows: string[]) =>
+  `${header}\n${rows.map((row) => `${row},Uncategorized,Default Account`).join("\n")}\n`;
+const multiAccountCsv = (rows: string[]) => `${header}\n${rows.join("\n")}\n`;
 const confirmation = (revision = "snapshot-r1") => ({
   instrumentId: "instrument-1",
   requestedStartDate: "2024-01-02",
@@ -119,6 +141,160 @@ describe("EventImportsService", () => {
         '"instrumentId":"instrument-1"',
       ),
     });
+  });
+
+  it("previews and commits one file across multiple active accounts", async () => {
+    await insertAccount({
+      categoryId: "category-registered",
+      categoryName: "Registered",
+      accountId: "account-tfsa",
+      accountName: "TFSA",
+    });
+    const getSplits = vi.fn(provider().getSplits);
+    const importService = service({ getSplits });
+    const preview = await importService.preview({
+      originalFilename: "multi-account.csv",
+      file: new TextEncoder().encode(
+        multiAccountCsv([
+          "2024-01-02,SHOP.TO,buy,2,10, registered , tfsa ",
+          "2024-01-03,SHOP.TO,buy,3,11,Uncategorized,Default Account",
+        ]),
+      ),
+    });
+
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    expect(preview.rows).toEqual([
+      expect.objectContaining({
+        accountId: "account-tfsa",
+        categoryName: "Registered",
+        accountName: "TFSA",
+        status: "valid",
+      }),
+      expect.objectContaining({
+        accountId: "account-default",
+        categoryName: "Uncategorized",
+        accountName: "Default Account",
+        status: "valid",
+      }),
+    ]);
+    expect(preview.projectedHoldings).toEqual([
+      {
+        accountId: "account-tfsa",
+        categoryName: "Registered",
+        accountName: "TFSA",
+        symbol: "SHOP.TO",
+        quantityDecimal: "2",
+      },
+      {
+        accountId: "account-default",
+        categoryName: "Uncategorized",
+        accountName: "Default Account",
+        symbol: "SHOP.TO",
+        quantityDecimal: "3",
+      },
+    ]);
+    expect(preview.reviews).toHaveLength(1);
+    expect(getSplits).toHaveBeenCalledTimes(1);
+
+    const committed = await importService.commit({
+      batchId: preview.batchId,
+      expectedPositionBasisRevision: preview.basePositionBasisRevision,
+      confirmations: [confirmation()],
+    });
+    expect(committed.kind).toBe("committed");
+    expect(
+      await env.DB.prepare(
+        "SELECT account_id, quantity_decimal FROM transactions ORDER BY account_id",
+      ).all(),
+    ).toEqual(
+      expect.objectContaining({
+        results: [
+          { account_id: "account-default", quantity_decimal: "3" },
+          { account_id: "account-tfsa", quantity_decimal: "2" },
+        ],
+      }),
+    );
+  });
+
+  it("uses category names to disambiguate accounts and rejects invalid account references", async () => {
+    await insertAccount({
+      categoryId: "category-one",
+      categoryName: "Category One",
+      accountId: "account-one",
+      accountName: "Shared",
+    });
+    await insertAccount({
+      categoryId: "category-two",
+      categoryName: "Category Two",
+      accountId: "account-two",
+      accountName: "Shared",
+    });
+    const preview = await service().preview({
+      originalFilename: "account-validation.csv",
+      file: new TextEncoder().encode(
+        multiAccountCsv([
+          "2024-01-02,SHOP.TO,buy,1,1,Category One,Shared",
+          "2024-01-03,SHOP.TO,buy,1,1,Category Two,Shared",
+          "2024-01-04,SHOP.TO,buy,1,1,,Shared",
+          "2024-01-05,SHOP.TO,buy,1,1,Category One,",
+          "2024-01-06,SHOP.TO,buy,1,1,Missing,Shared",
+        ]),
+      ),
+    });
+
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    expect(preview.rows.map((row) => row.accountId)).toEqual([
+      "account-one",
+      "account-two",
+      null,
+      null,
+      null,
+    ]);
+    expect(preview.rows[2]?.errors).toContain("invalid_category");
+    expect(preview.rows[3]?.errors).toContain("invalid_account");
+    expect(preview.rows[4]?.errors).toContain("unknown_account");
+  });
+
+  it("marks negative holdings only on the affected account rows", async () => {
+    await insertAccount({
+      categoryId: "category-registered",
+      categoryName: "Registered",
+      accountId: "account-tfsa",
+      accountName: "TFSA",
+    });
+    await env.DB.prepare(
+      `INSERT INTO transactions
+       (id, instrument_id, account_id, trade_date, side, quantity_decimal,
+        price_decimal, revision, created_at, updated_at)
+       VALUES ('existing-default', 'instrument-1', 'account-default',
+               '2024-01-01', 'buy', '1', '1', 1, ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
+    const preview = await service().preview({
+      originalFilename: "account-negative.csv",
+      file: new TextEncoder().encode(
+        multiAccountCsv([
+          "2024-01-02,SHOP.TO,sell,2,1,Uncategorized,Default Account",
+          "2024-01-02,SHOP.TO,buy,2,1,Registered,TFSA",
+        ]),
+      ),
+    });
+
+    expect(preview.kind).toBe("preview");
+    if (preview.kind !== "preview") return;
+    expect(preview.rows[0]).toEqual(
+      expect.objectContaining({
+        accountId: "account-default",
+        status: "invalid",
+        errors: expect.arrayContaining(["negative_holdings"]),
+      }),
+    );
+    expect(preview.rows[1]).toEqual(
+      expect.objectContaining({ accountId: "account-tfsa", status: "valid" }),
+    );
   });
 
   it("rejects an inexact header and invalid date, side, decimal, and symbol rows without making them commit-ready", async () => {
@@ -235,7 +411,7 @@ describe("EventImportsService", () => {
       }),
     );
     if (result.kind === "preview") expect(result.rows).toHaveLength(10_000);
-    expect(databaseCalls.mock.calls).toHaveLength(29);
+    expect(databaseCalls.mock.calls).toHaveLength(30);
     expect(getSplits).toHaveBeenCalledTimes(40);
   }, 20_000);
 
@@ -322,8 +498,10 @@ describe("EventImportsService", () => {
       ).bind(now),
       env.DB.prepare(
         `INSERT INTO import_rows
-           (id, import_batch_id, row_number, symbol, status)
-           VALUES ('expired-row', 'expired-preview', 2, 'SHOP.TO', 'invalid')`,
+           (id, import_batch_id, row_number, symbol, category_name,
+            account_name, status)
+           VALUES ('expired-row', 'expired-preview', 2, 'SHOP.TO',
+                   'Uncategorized', 'Default Account', 'invalid')`,
       ),
     ]);
     const result = await service().preview({
@@ -365,9 +543,11 @@ describe("EventImportsService", () => {
         env.DB.prepare(
           `INSERT INTO import_rows
              (id, import_batch_id, row_number, symbol, trade_date, side,
-              quantity_decimal, price_decimal, status, normalized_transaction_json)
+              quantity_decimal, price_decimal, account_id, category_name,
+              account_name, status, normalized_transaction_json)
              VALUES (?1, 'malformed-batch', ?2, ?3, '2024-01-02', 'buy',
-                     '1', '1', 'valid', ?4)`,
+                     '1', '1', 'account-default', 'Uncategorized',
+                     'Default Account', 'valid', ?4)`,
         ).bind(
           `malformed-row-${index + 1}`,
           index + 2,
@@ -582,7 +762,7 @@ describe("EventImportsService", () => {
     const quoted = await service().preview({
       originalFilename: "quoted.csv",
       file: new TextEncoder().encode(
-        `${header}\n"2024-01-02","SHOP.TO","BUY","1","1"\n`,
+        `${header}\n"2024-01-02","SHOP.TO","BUY","1","1","Uncategorized","Default Account"\n`,
       ),
     });
     expect(quoted).toEqual(
@@ -595,14 +775,14 @@ describe("EventImportsService", () => {
       service().preview({
         originalFilename: "malformed.csv",
         file: new TextEncoder().encode(
-          `${header}\n2024-01-02,"SHOP.TO"junk,BUY,1,1\n`,
+          `${header}\n2024-01-02,"SHOP.TO"junk,BUY,1,1,Uncategorized,Default Account\n`,
         ),
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "invalid_file" }));
     const newline = await service().preview({
       originalFilename: "quoted-newline.csv",
       file: new TextEncoder().encode(
-        `${header}\n2024-01-02,"SHOP\n.TO",BUY,1,1\n`,
+        `${header}\n2024-01-02,"SHOP\n.TO",BUY,1,1,Uncategorized,Default Account\n`,
       ),
     });
     expect(newline).toEqual(
@@ -650,6 +830,54 @@ describe("EventImportsService", () => {
         .bind(preview.batchId)
         .first(),
     ).toEqual({ status: "committed" });
+  });
+
+  it("commits a migrated preview whose staged JSON predates row-level accounts", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO import_batches
+         (id, file_digest, original_filename, base_position_basis_revision,
+          status, expires_at, created_at, updated_at)
+         VALUES ('legacy-preview', 'legacy-preview-digest', 'legacy.csv', 0,
+                 'preview', '2026-07-11T12:00:00.000Z', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO import_rows
+         (id, import_batch_id, row_number, symbol, trade_date, side,
+          quantity_decimal, price_decimal, account_id, category_name,
+          account_name, status, normalized_transaction_json)
+         VALUES ('legacy-preview-row', 'legacy-preview', 2, 'SHOP.TO',
+                 '2024-01-02', 'buy', '1', '10', 'account-default',
+                 'Uncategorized', 'Default Account', 'valid', ?1)`,
+      ).bind(
+        JSON.stringify({
+          instrumentId: "instrument-1",
+          symbol: "SHOP.TO",
+          tradeDate: "2024-01-02",
+          side: "buy",
+          quantityDecimal: "1",
+          priceDecimal: "10",
+          snapshot: {
+            provider: "yahoo-chart-v8",
+            requestedStartDate: "2024-01-02",
+            requestedEndDate: "2026-07-10",
+            providerRevision: "snapshot-r1",
+          },
+        }),
+      ),
+    ]);
+
+    const result = await service().commit({
+      batchId: "legacy-preview",
+      expectedPositionBasisRevision: 0,
+      confirmations: [confirmation()],
+    });
+    expect(result.kind).toBe("committed");
+    expect(
+      await env.DB.prepare(
+        "SELECT account_id FROM transactions WHERE id = 'legacy-preview:2'",
+      ).first(),
+    ).toEqual({ account_id: "account-default" });
   });
 
   it("only promotes candidates that belong to the fresh confirmed snapshot", async () => {

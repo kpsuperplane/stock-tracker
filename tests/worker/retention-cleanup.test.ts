@@ -126,15 +126,17 @@ describe("retention cleanup", () => {
       ).bind(now),
       env.DB.prepare(
         `INSERT INTO import_rows
-         (id, import_batch_id, row_number, symbol, status)
+         (id, import_batch_id, row_number, symbol, category_name,
+          account_name, status)
          VALUES ('cleanup-staging-row-1', 'cleanup-staging-import', 2,
-                 'AAPL', 'invalid')`,
+                 'AAPL', 'Uncategorized', 'Default Account', 'invalid')`,
       ),
       env.DB.prepare(
         `INSERT INTO import_rows
-         (id, import_batch_id, row_number, symbol, status)
+         (id, import_batch_id, row_number, symbol, category_name,
+          account_name, status)
          VALUES ('cleanup-staging-row-2', 'cleanup-staging-import', 3,
-                 'MSFT', 'invalid')`,
+                 'MSFT', 'Uncategorized', 'Default Account', 'invalid')`,
       ),
     ]);
     const service = new RetentionCleanupService({

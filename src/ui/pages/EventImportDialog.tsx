@@ -8,7 +8,6 @@ import {
   FormLayout,
   HStack,
   Icon,
-  Selector,
   Table,
   TableBody,
   TableCell,
@@ -17,9 +16,7 @@ import {
   TableRow,
   VStack,
 } from "@astryxdesign/core";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useAccountScope } from "../accounts/AccountScopeContext";
-import { activeAccountsForScope } from "../accounts/scope";
+import { useRef, useState } from "react";
 import {
   ApiClientError,
   type EventImportsApiClient,
@@ -94,6 +91,9 @@ const rowErrorCopy: Record<string, MessageKey> = {
   invalid_side: "rowErrorInvalidSide",
   invalid_quantity: "rowErrorInvalidQuantity",
   invalid_price: "rowErrorInvalidPrice",
+  invalid_category: "rowErrorInvalidCategory",
+  invalid_account: "rowErrorInvalidAccount",
+  unknown_account: "rowErrorUnknownAccount",
   unknown_symbol: "rowErrorUnknownSymbol",
   negative_holdings: "rowErrorNegativeHoldings",
   invalid_staged_row: "rowErrorInvalidStaged",
@@ -194,16 +194,6 @@ export const EventImportDialog = ({
   initialPreview,
 }: EventImportDialogProps) => {
   const { t } = useI18n();
-  const { selection, categories } = useAccountScope();
-  const accountOptions = useMemo(
-    () =>
-      activeAccountsForScope(categories, selection).map((account) => ({
-        value: account.id,
-        label: `${categories.find((category) => category.id === account.categoryId)?.name ?? t("category")} / ${account.name}`,
-      })),
-    [categories, selection, t],
-  );
-  const [accountId, setAccountId] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<ImportPreviewResponse | null>(
     initialPreview ?? null,
@@ -216,15 +206,6 @@ export const EventImportDialog = ({
   const [isCommitting, setIsCommitting] = useState(false);
   const previewRequestId = useRef(0);
   const fileRef = useRef<File | null>(null);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    setAccountId((current) =>
-      accountOptions.some((option) => option.value === current)
-        ? current
-        : (accountOptions[0]?.value ?? ""),
-    );
-  }, [accountOptions, isOpen]);
 
   const clearPreview = () => {
     previewRequestId.current += 1;
@@ -247,10 +228,6 @@ export const EventImportDialog = ({
   };
 
   const handlePreview = async () => {
-    if (!accountId) {
-      setError(t("noActiveAccountsInScope"));
-      return;
-    }
     if (!file) {
       setError(t("chooseCsvFile"));
       return;
@@ -261,7 +238,7 @@ export const EventImportDialog = ({
     setIsPreviewing(true);
     setError(null);
     try {
-      const result = await apiClient.preview(requestFile, accountId);
+      const result = await apiClient.preview(requestFile);
       if (
         !isCurrentPreviewRequest(
           requestId,
@@ -389,23 +366,6 @@ export const EventImportDialog = ({
       />
       <VStack gap={4}>
         <FormLayout>
-          <Selector
-            label={t("account")}
-            aria-label={t("account")}
-            options={accountOptions}
-            value={accountId}
-            onChange={(next) => {
-              setAccountId(next);
-              clearPreview();
-              setError(null);
-            }}
-            isDisabled={
-              isPreviewing || isCommitting || accountOptions.length === 0
-            }
-          />
-          {accountOptions.length === 0 && (
-            <Banner status="warning" title={t("noActiveAccountsInScope")} />
-          )}
           <FileInput
             label={t("csvFile")}
             value={file}
@@ -429,7 +389,7 @@ export const EventImportDialog = ({
               variant="primary"
               label={isPreviewing ? t("previewingImport") : t("previewImport")}
               isLoading={isPreviewing}
-              isDisabled={!file || !accountId || isPreviewing || isCommitting}
+              isDisabled={!file || isPreviewing || isCommitting}
               onClick={handlePreview}
             />
             <Button
@@ -460,6 +420,8 @@ export const EventImportDialog = ({
               <TableHeader>
                 <TableRow isHeaderRow>
                   <TableHeaderCell>#</TableHeaderCell>
+                  <TableHeaderCell>{t("category")}</TableHeaderCell>
+                  <TableHeaderCell>{t("account")}</TableHeaderCell>
                   <TableHeaderCell>{t("date")}</TableHeaderCell>
                   <TableHeaderCell>{t("instrument")}</TableHeaderCell>
                   <TableHeaderCell>{t("side")}</TableHeaderCell>
@@ -473,6 +435,8 @@ export const EventImportDialog = ({
                 {preview.rows.map((row) => (
                   <TableRow key={row.rowNumber}>
                     <TableCell>{row.rowNumber}</TableCell>
+                    <TableCell>{row.categoryName || "—"}</TableCell>
+                    <TableCell>{row.accountName || "—"}</TableCell>
                     <TableCell>{row.tradeDate ?? "—"}</TableCell>
                     <TableCell>{row.symbol || "—"}</TableCell>
                     <TableCell>{row.side ? t(row.side) : "—"}</TableCell>
@@ -506,19 +470,21 @@ export const EventImportDialog = ({
               >
                 <TableHeader>
                   <TableRow isHeaderRow>
+                    <TableHeaderCell>{t("category")}</TableHeaderCell>
+                    <TableHeaderCell>{t("account")}</TableHeaderCell>
                     <TableHeaderCell>{t("instrument")}</TableHeaderCell>
                     <TableHeaderCell>{t("projectedQuantity")}</TableHeaderCell>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {Object.entries(preview.projectedHoldings).map(
-                    ([symbol, quantity]) => (
-                      <TableRow key={symbol}>
-                        <TableCell>{symbol}</TableCell>
-                        <TableCell>{quantity}</TableCell>
-                      </TableRow>
-                    ),
-                  )}
+                  {preview.projectedHoldings.map((holding) => (
+                    <TableRow key={`${holding.accountId}-${holding.symbol}`}>
+                      <TableCell>{holding.categoryName}</TableCell>
+                      <TableCell>{holding.accountName}</TableCell>
+                      <TableCell>{holding.symbol}</TableCell>
+                      <TableCell>{holding.quantityDecimal}</TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
             </VStack>

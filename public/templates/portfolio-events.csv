@@ -1,2 +1,2 @@
-trade_date,symbol,side,quantity,price
-2024-01-02,SHOP.TO,BUY,10,100.50
+trade_date,symbol,side,quantity,price,category,account
+2024-01-02,SHOP.TO,BUY,10,100.50,Uncategorized,Default Account
