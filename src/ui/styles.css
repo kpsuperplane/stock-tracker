@@ -128,7 +128,8 @@ body {
 /* Astryx's children-mode tables apply max-width: 0 to wrapping cells. */
 .product-portfolio-table,
 .product-events-table,
-.product-split-table {
+.product-split-table,
+.product-event-import-table {
   width: 100%;
   table-layout: auto;
 }
@@ -138,11 +139,70 @@ body {
 .product-events-table th,
 .product-events-table td,
 .product-split-table th,
-.product-split-table td {
+.product-split-table td,
+.product-event-import-table th,
+.product-event-import-table td {
   max-width: none;
   white-space: nowrap;
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.product-event-import-table {
+  min-width: 72rem;
+}
+
+.product-event-import-table th,
+.product-event-import-table td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.product-event-import-table th:nth-child(1),
+.product-event-import-table td:nth-child(1) {
+  width: 3rem;
+}
+
+.product-event-import-table th:nth-child(2),
+.product-event-import-table td:nth-child(2) {
+  width: 10rem;
+}
+
+.product-event-import-table th:nth-child(3),
+.product-event-import-table td:nth-child(3) {
+  width: 12rem;
+}
+
+.product-event-import-table th:nth-child(4),
+.product-event-import-table td:nth-child(4) {
+  width: 7rem;
+}
+
+.product-event-import-table th:nth-child(5),
+.product-event-import-table td:nth-child(5) {
+  width: 8rem;
+}
+
+.product-event-import-table th:nth-child(6),
+.product-event-import-table td:nth-child(6) {
+  width: 6rem;
+}
+
+.product-event-import-table th:nth-child(7),
+.product-event-import-table td:nth-child(7),
+.product-event-import-table th:nth-child(8),
+.product-event-import-table td:nth-child(8) {
+  width: 9rem;
+}
+
+.product-event-import-table th:nth-child(9),
+.product-event-import-table td:nth-child(9) {
+  width: 7rem;
+}
+
+.product-event-import-table th:nth-child(10),
+.product-event-import-table td:nth-child(10) {
+  width: 18rem;
 }
 
 .product-portfolio-table td.portfolio-summary-cell {

@@ -1,6 +1,7 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { YahooCorporateActionProvider } from "../../providers/yahoo-corporate-actions";
+import { YahooMarketDataProvider } from "../../providers/yahoo";
 import {
   EventImportsService,
   type ImportCommitResult,
@@ -168,6 +169,7 @@ const preview = async (context: ImportContext) => {
   const result = await new EventImportsService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
+    marketDataProvider: new YahooMarketDataProvider(),
   }).preview({
     originalFilename: file.name,
     file: bytes,
@@ -193,6 +195,7 @@ const commit = async (context: ImportContext) => {
   const result = await new EventImportsService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
+    marketDataProvider: new YahooMarketDataProvider(),
   }).commit({
     batchId,
     expectedPositionBasisRevision: revision,

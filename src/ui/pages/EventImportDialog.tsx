@@ -301,7 +301,7 @@ export const EventImportDialog = ({
       isOpen={isOpen}
       onOpenChange={close}
       purpose="form"
-      width="min(720px, calc(100vw - 2rem))"
+      width="min(1180px, calc(100vw - 2rem))"
       maxHeight="90vh"
       padding={4}
     >
@@ -360,7 +360,9 @@ export const EventImportDialog = ({
               density="compact"
               dividers="rows"
               hasHover
-              textOverflow="truncate"
+              textOverflow="wrap"
+              verticalAlign="top"
+              tableProps={{ className: "product-event-import-table" }}
               aria-label={t("csvImportTitle")}
             >
               <TableHeader>

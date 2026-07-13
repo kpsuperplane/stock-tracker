@@ -14,6 +14,7 @@ import type {
   CorporateActionProvider,
   SplitEventRange,
 } from "../providers/corporate-actions";
+import type { MarketDataProvider } from "../providers/market-data";
 import { parseCsv } from "../shared/csv";
 import { easternMarketDate } from "../shared/dates";
 import {
@@ -45,6 +46,7 @@ import {
   snapshotChangesActions,
 } from "./event-import-snapshots";
 import { cleanupImportStaging } from "./retention-cleanup";
+import { TransactionInstrumentService } from "./transaction-instrument";
 
 export type { ImportPreviewRow } from "./event-import-csv";
 
@@ -115,6 +117,7 @@ export type ImportCommitResult =
 export interface EventImportsServiceDependencies {
   db: D1Database;
   corporateActionProvider: CorporateActionProvider;
+  marketDataProvider?: MarketDataProvider;
   now?: () => Date;
   newId?: () => string;
 }
@@ -140,6 +143,7 @@ export class EventImportsService {
   private readonly positionBasis: PositionBasisRepository;
   private readonly revisions: FactRevisionBucketRepository;
   private readonly workItems: WorkItemRepository;
+  private readonly marketDataProvider: MarketDataProvider | undefined;
   private readonly now: () => Date;
   private readonly newId: () => string;
 
@@ -149,8 +153,36 @@ export class EventImportsService {
     this.positionBasis = new PositionBasisRepository(dependencies.db);
     this.revisions = new FactRevisionBucketRepository(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
+    this.marketDataProvider = dependencies.marketDataProvider;
     this.now = dependencies.now ?? (() => new Date());
     this.newId = dependencies.newId ?? (() => crypto.randomUUID());
+  }
+
+  private async resolveMissingInstruments(
+    symbols: readonly string[],
+    resolvedInstruments: Map<string, InstrumentRecord>,
+    timestamp: string,
+  ): Promise<void> {
+    if (!this.marketDataProvider || symbols.length === 0) return;
+
+    const resolver = new TransactionInstrumentService(
+      this.dependencies.db,
+      this.marketDataProvider,
+      this.newId,
+    );
+    for (const symbol of symbols) {
+      if (resolvedInstruments.has(symbol)) continue;
+      try {
+        const instrument = await resolver.resolve(symbol, timestamp);
+        if (!instrument) continue;
+        // Keep the source symbol as an alias for providers that canonicalize
+        // symbols such as BRK.B to BRK-B, matching individual event creation.
+        resolvedInstruments.set(symbol, instrument);
+        resolvedInstruments.set(instrument.symbol, instrument);
+      } catch {
+        // A rejected provider symbol remains a row-level unknown_symbol error.
+      }
+    }
   }
 
   async cleanup(): Promise<void> {
@@ -210,7 +242,7 @@ export class EventImportsService {
         accountName: (row[6] ?? "").trim(),
       })),
     );
-    const preliminary = sourceRows.map((row, index) =>
+    let preliminary = sourceRows.map((row, index) =>
       normalizeImportRow(
         row,
         index + 2,
@@ -219,6 +251,32 @@ export class EventImportsService {
         resolvedAccounts,
       ),
     );
+
+    const missingSymbols = [
+      ...new Set(
+        preliminary.flatMap((row) =>
+          row.errors.length === 1 && row.errors[0] === "unknown_symbol"
+            ? [row.symbol]
+            : [],
+        ),
+      ),
+    ];
+    await this.resolveMissingInstruments(
+      missingSymbols,
+      resolvedInstruments,
+      timestamp,
+    );
+    if (missingSymbols.some((symbol) => resolvedInstruments.has(symbol))) {
+      preliminary = sourceRows.map((row, index) =>
+        normalizeImportRow(
+          row,
+          index + 2,
+          today,
+          resolvedInstruments,
+          resolvedAccounts,
+        ),
+      );
+    }
 
     const validByInstrument = new Map<
       string,
