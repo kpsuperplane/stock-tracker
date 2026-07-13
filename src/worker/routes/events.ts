@@ -718,7 +718,7 @@ eventsRoutes.all("/", methodNotAllowed("GET, POST"));
 eventsRoutes.all("/*", methodNotAllowed("GET, POST, PATCH, DELETE"));
 
 // Some browser environments block generic `/api/*` reads before they reach
-// the Worker. Keep the read-only timeline available on a neutral data path for
-// the product UI; mutations remain under `/api/events`.
+// the Worker. Keep the product UI on neutral, purpose-specific paths while the
+// legacy `/api/events` contract remains available to external clients.
 export const ledgerReadRoutes = new Hono<{ Bindings: Env }>();
 ledgerReadRoutes.get("/", timeline);

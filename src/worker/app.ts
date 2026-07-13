@@ -117,6 +117,7 @@ export const createApp = () => {
   app.route("/api/backfills", backfillRoutes);
   app.route("/api/earnings", earningsRoutes);
   app.route("/api/events", eventsRoutes);
+  app.route("/api/transactions", eventsRoutes);
   app.route("/data/ledger", ledgerReadRoutes);
   app.route("/api/event-imports", eventImportRoutes);
   app.route("/api/reports", reportRoutes);

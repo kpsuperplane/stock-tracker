@@ -553,7 +553,7 @@ describe("portfolio event routes", () => {
     mockSplitProvider();
 
     const response = await exports.default.fetch(
-      new Request("http://local/api/events", {
+      new Request("http://local/api/transactions", {
         method: "POST",
         headers: mutationHeaders('"position-basis-0"'),
         body: JSON.stringify(createBody({ symbol: "shop.to" })),
@@ -860,16 +860,19 @@ describe("portfolio event routes", () => {
     ).toBe("negative_holdings");
 
     const staleEvent = await exports.default.fetch(
-      new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
-        method: "PATCH",
-        headers: mutationHeaders('"position-basis-1", "event-9"'),
-        body: JSON.stringify({
-          tradeDate: "2024-01-02",
-          side: "buy",
-          quantityDecimal: "2",
-          priceDecimal: "10.500000",
-        }),
-      }),
+      new Request(
+        `http://local/api/transactions/${createdPayload.transaction.id}`,
+        {
+          method: "PATCH",
+          headers: mutationHeaders('"position-basis-1", "event-9"'),
+          body: JSON.stringify({
+            tradeDate: "2024-01-02",
+            side: "buy",
+            quantityDecimal: "2",
+            priceDecimal: "10.500000",
+          }),
+        },
+      ),
     );
     expect(staleEvent.status).toBe(409);
     expect(

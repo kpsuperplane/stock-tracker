@@ -111,6 +111,7 @@ describe("product event API clients", () => {
       code: "ledger_conflict",
       details: { positionBasisRevision: 4 },
     });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/transactions");
   });
 
   it("deletes transactions without a split-confirmation payload", async () => {
@@ -129,6 +130,7 @@ describe("product event API clients", () => {
 
     await eventsApi.remove("tx-1", 4, 1);
 
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/transactions/tx-1");
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(init.body).toBeUndefined();
   });

@@ -94,16 +94,13 @@ available to integration tests and external clients.
 - The product UI reads the same authenticated timeline from
   `/data/ledger`; this neutral read path avoids browser environments that
   block generic `/api/*` fetches before they reach the Worker.
-- `POST /api/events` creates a transaction. `PATCH` and `DELETE`
-  `/api/events/:id` require both the current `X-Position-Basis-Revision` and
+- `POST /api/transactions` creates a transaction. `PATCH` and `DELETE`
+  `/api/transactions/:id` require both the current `X-Position-Basis-Revision` and
   the transaction `If-Match: "event-N"` revision. A create requires the basis
   revision; successful mutations return the new basis revision and reconciliation
-  job ID.
-- `POST /api/corporate-actions/confirm` and any transaction confirmation identify
-  only the server-fetched split snapshot by requested range and provider
-  revision. Clients never submit split rows. A historical mutation remains
-  blocked until that exact best-effort snapshot is explicitly confirmed; a
-  changed provider revision requires review again.
+  job ID. The legacy `/api/events` mutation routes remain available for external
+  clients, but the product UI avoids that path because privacy extensions often
+  classify it as analytics traffic.
 - Every mutation is authenticated and must include a same-origin `Origin`, the
   matching `Host`, and `X-Stock-Tracker-Request: 1`. Ordinary mutations use
   JSON and the 64 KiB API body limit.

@@ -312,22 +312,28 @@ export const eventsApi: EventsApiClient = {
       : response.data;
   },
   create: (input, positionBasisRevision) =>
-    request<EventMutationResponse>("/api/events", {
+    request<EventMutationResponse>("/api/transactions", {
       method: "POST",
       headers: mutationHeaders(positionBasisRevision),
       body: JSON.stringify(input),
     }),
   update: (id, input, positionBasisRevision, eventRevision) =>
-    request<EventMutationResponse>(`/api/events/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      headers: mutationHeaders(positionBasisRevision, eventRevision),
-      body: JSON.stringify(input),
-    }),
+    request<EventMutationResponse>(
+      `/api/transactions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: mutationHeaders(positionBasisRevision, eventRevision),
+        body: JSON.stringify(input),
+      },
+    ),
   remove: (id, positionBasisRevision, eventRevision) =>
-    request<EventMutationResponse>(`/api/events/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-      headers: mutationHeaders(positionBasisRevision, eventRevision),
-    }),
+    request<EventMutationResponse>(
+      `/api/transactions/${encodeURIComponent(id)}`,
+      {
+        method: "DELETE",
+        headers: mutationHeaders(positionBasisRevision, eventRevision),
+      },
+    ),
 };
 
 export const eventImportsApi: EventImportsApiClient = {
