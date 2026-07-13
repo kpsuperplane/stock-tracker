@@ -80,17 +80,6 @@ const previewResponse = (
       result.code,
       "The CSV file does not match the documented template.",
     );
-  if (result.kind === "duplicate")
-    return error(
-      context,
-      409,
-      "duplicate_import",
-      "This file was already imported.",
-      {
-        batchId: result.batchId,
-        status: result.status,
-      },
-    );
   if (result.kind === "provider_unavailable")
     return error(
       context,

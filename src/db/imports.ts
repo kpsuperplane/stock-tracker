@@ -119,13 +119,4 @@ export class ImportRepository {
       )
       .bind(importBatchId, JSON.stringify(rows));
   }
-
-  async findBatchByDigest(
-    digest: string,
-  ): Promise<{ id: string; status: ImportBatchStatus } | null> {
-    return this.db
-      .prepare("SELECT id, status FROM import_batches WHERE file_digest = ?1")
-      .bind(digest)
-      .first<{ id: string; status: ImportBatchStatus }>();
-  }
 }

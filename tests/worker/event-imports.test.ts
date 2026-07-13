@@ -370,7 +370,7 @@ describe("EventImportsService", () => {
     ).resolves.toEqual(expect.objectContaining({ kind: "validation_error" }));
   });
 
-  it("enforces file and row limits and retains a digest record when duplicate upload is rejected", async () => {
+  it("enforces file and row limits while allowing repeated uploads", async () => {
     const importService = service();
     const tooManyRows = Array.from(
       { length: 10_001 },
@@ -395,11 +395,26 @@ describe("EventImportsService", () => {
       file,
     });
     expect(first.kind).toBe("preview");
-    const duplicate = await importService.preview({
+    if (first.kind !== "preview") return;
+    const firstBatch = await env.DB.prepare(
+      "SELECT file_digest FROM import_batches WHERE id = ?1",
+    )
+      .bind(first.batchId)
+      .first<{ file_digest: string }>();
+    const repeated = await importService.preview({
       originalFilename: "renamed.csv",
       file,
     });
-    expect(duplicate).toEqual(expect.objectContaining({ kind: "duplicate" }));
+    expect(repeated.kind).toBe("preview");
+    if (repeated.kind !== "preview") return;
+    expect(repeated.batchId).not.toBe(first.batchId);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM import_batches WHERE file_digest = ?1",
+      )
+        .bind(firstBatch?.file_digest ?? "")
+        .first(),
+    ).toEqual({ count: 2 });
   });
 
   it("bulk-resolves repeated symbols rather than issuing one D1 lookup per CSV row", async () => {
@@ -453,7 +468,7 @@ describe("EventImportsService", () => {
       }),
     );
     if (result.kind === "preview") expect(result.rows).toHaveLength(10_000);
-    expect(databaseCalls.mock.calls).toHaveLength(30);
+    expect(databaseCalls.mock.calls).toHaveLength(29);
     expect(getSplits).toHaveBeenCalledTimes(40);
   }, 20_000);
 
@@ -1139,18 +1154,18 @@ describe("EventImportsService", () => {
     ).toEqual({ status: "preview" });
   });
 
-  it("allows only one simultaneous preview for the same digest to create staging", async () => {
+  it("allows simultaneous previews of the same file to create independent staging", async () => {
     const file = new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"]));
     const [left, right] = await Promise.all([
       service().preview({ originalFilename: "left.csv", file }),
       service().preview({ originalFilename: "right.csv", file }),
     ]);
-    expect([left.kind, right.kind].sort()).toEqual(["duplicate", "preview"]);
+    expect([left.kind, right.kind]).toEqual(["preview", "preview"]);
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM import_batches",
       ).first(),
-    ).toEqual({ count: 1 });
+    ).toEqual({ count: 2 });
   });
 
   it("allows exactly one of two simultaneous commits to advance the ledger", async () => {

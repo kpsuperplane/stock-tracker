@@ -59,15 +59,12 @@ const DialogCloseButton = ({
 const errorCopyKey = (
   error: unknown,
 ):
-  | "duplicateImport"
   | "invalidCsv"
   | "importExpired"
   | "importConflict"
   | "importProviderUnavailable" => {
   if (!(error instanceof ApiClientError)) return "invalidCsv";
   switch (error.code) {
-    case "duplicate_import":
-      return "duplicateImport";
     case "import_expired":
     case "import_not_found":
       return "importExpired";

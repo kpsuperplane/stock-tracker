@@ -102,7 +102,6 @@ export type ImportPreviewResult =
       expiresAt: string;
     }
   | { kind: "invalid_file"; code: string }
-  | { kind: "duplicate"; batchId: string; status: string }
   | { kind: "provider_unavailable"; code: string }
   | { kind: "conflict"; code: "ledger_conflict" };
 
@@ -221,13 +220,6 @@ export class EventImportsService {
     await this.cleanup();
 
     const digest = await hexDigest(input.file);
-    const duplicate = await this.imports.findBatchByDigest(digest);
-    if (duplicate)
-      return {
-        kind: "duplicate",
-        batchId: duplicate.id,
-        status: duplicate.status,
-      };
 
     const timestamp = this.now().toISOString();
     const today = easternMarketDate(timestamp);
@@ -500,19 +492,6 @@ export class EventImportsService {
           : []),
       ]);
     } catch (error) {
-      if (
-        String(error).includes(
-          "UNIQUE constraint failed: import_batches.file_digest",
-        )
-      ) {
-        const existing = await this.imports.findBatchByDigest(digest);
-        if (existing)
-          return {
-            kind: "duplicate",
-            batchId: existing.id,
-            status: existing.status,
-          };
-      }
       if (String(error).includes("ledger_conflict"))
         return { kind: "conflict", code: "ledger_conflict" };
       throw error;
