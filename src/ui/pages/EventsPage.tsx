@@ -128,6 +128,11 @@ const eventLoadErrorMessage = (copy: string, caught: unknown): string => {
   return copy;
 };
 
+const mutationErrorMessage = (copy: string, caught: unknown): string =>
+  caught instanceof ApiClientError
+    ? `${copy} (${caught.status}${caught.code ? `: ${caught.code}` : ""})`
+    : copy;
+
 const TransactionDialog = ({
   isOpen,
   onOpenChange,
@@ -411,7 +416,7 @@ export const EventsPage = ({
         setPositionBasisRevision(basis);
       }
     }
-    setMutationError(t(errorCopyKey(caught)));
+    setMutationError(mutationErrorMessage(t(errorCopyKey(caught)), caught));
     if (
       caught instanceof ApiClientError &&
       (caught.code === "ledger_conflict" || caught.code === "event_conflict")
