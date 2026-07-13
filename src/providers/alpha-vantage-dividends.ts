@@ -26,6 +26,11 @@ const dividendsSchema = z.object({
   data: z.array(dividendSchema),
 });
 
+const overviewSchema = z.object({
+  Symbol: z.string().min(1),
+  Currency: z.enum(["USD", "CAD"]),
+});
+
 function assertRange(startDate: string, endDate: string): void {
   if (
     !isIsoCalendarDate(startDate) ||
@@ -37,11 +42,12 @@ function assertRange(startDate: string, endDate: string): void {
 }
 
 function endpointUrl(
+  functionName: "DIVIDENDS" | "OVERVIEW",
   symbol: string,
   apiKey: string,
 ): URL {
   const url = new URL("https://www.alphavantage.co/query");
-  url.searchParams.set("function", "DIVIDENDS");
+  url.searchParams.set("function", functionName);
   url.searchParams.set("symbol", symbol);
   url.searchParams.set("apikey", apiKey);
   return url;
@@ -70,26 +76,43 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
     currency?: "USD" | "CAD",
   ): Promise<DividendEventRange> {
     assertRange(startDate, endDate);
-    if (!currency) throw new Error("provider_currency_unavailable");
-    const response = await this.fetcher(endpointUrl(symbol, this.apiKey), {
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new Error(`provider_http_${response.status}`);
-    const rawDividends = await readBoundedJson(response);
-    if (isEmptyObject(rawDividends)) {
+    const request = async (functionName: "DIVIDENDS" | "OVERVIEW") => {
+      const response = await this.fetcher(
+        endpointUrl(functionName, symbol, this.apiKey),
+        { signal: AbortSignal.timeout(10_000) },
+      );
+      if (!response.ok) throw new Error(`provider_http_${response.status}`);
+      return readBoundedJson(response);
+    };
+    const rawDividends = await request("DIVIDENDS");
+    const rawOverview = currency ? null : await request("OVERVIEW");
+    if (
+      isEmptyObject(rawDividends) ||
+      (rawOverview !== null && isEmptyObject(rawOverview))
+    ) {
       throw new Error("provider_symbol_unavailable");
     }
 
     let dividends: z.infer<typeof dividendsSchema>;
+    let resolvedCurrency = currency;
+    let overview: z.infer<typeof overviewSchema> | null = null;
     try {
       dividends = dividendsSchema.parse(rawDividends);
+      if (rawOverview !== null) {
+        overview = overviewSchema.parse(rawOverview);
+        resolvedCurrency = overview.Currency;
+      }
     } catch {
       throw new Error("provider_schema");
     }
     const normalizedSymbol = dividends.symbol.toUpperCase();
-    if (normalizedSymbol !== symbol.toUpperCase()) {
+    if (
+      normalizedSymbol !== symbol.toUpperCase() ||
+      (overview !== null && overview.Symbol.toUpperCase() !== normalizedSymbol)
+    ) {
       throw new Error("provider_symbol_mismatch");
     }
+    if (!resolvedCurrency) throw new Error("provider_currency_unavailable");
 
     const byIdentity = new Map<string, NormalizedDividendEvent>();
     for (const dividend of dividends.data) {
@@ -109,7 +132,7 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
         symbol: normalizedSymbol,
         exDate: dividend.ex_dividend_date,
         amount: dividend.amount,
-        currency,
+        currency: resolvedCurrency,
         provider,
         providerEventId,
         providerRevision: [
@@ -118,7 +141,7 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
           dividend.record_date,
           dividend.payment_date,
           dividend.amount,
-          currency,
+          resolvedCurrency,
         ].join("|"),
       };
       const existing = byIdentity.get(providerEventId);

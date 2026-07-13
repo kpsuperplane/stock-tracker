@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { canonicalizeDecimal } from "../domain/decimal";
+import {
+  alphaVantageEarningsProvider,
+  alphaVantageSymbol,
+} from "./alpha-vantage-earnings";
 import type {
   EarningsHistoryProvider,
   EarningsHistoryRange,
   EarningsInstrumentReference,
   NormalizedEarningsEvent,
 } from "./earnings";
-import { alphaVantageEarningsProvider } from "./alpha-vantage-earnings";
-import { alphaVantageSymbol } from "./alpha-vantage-earnings";
 import { isIsoCalendarDate, readBoundedJson } from "./provider-http";
 
 const decimal = z.string().refine((value) => {
@@ -81,8 +83,7 @@ export class AlphaVantageEarningsHistoryProvider
     }
     const events = payload.quarterlyEarnings
       .filter(
-        (row) =>
-          row.reportedDate >= startDate && row.reportedDate <= endDate,
+        (row) => row.reportedDate >= startDate && row.reportedDate <= endDate,
       )
       .map((row): NormalizedEarningsEvent => {
         const estimate =

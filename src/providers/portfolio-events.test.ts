@@ -345,6 +345,28 @@ describe("normalized portfolio event provider contracts", () => {
     );
   });
 
+  it("uses stored instrument currency without spending an overview request", async () => {
+    const { AlphaVantageDividendEventProvider } = await import(
+      "./alpha-vantage-dividends"
+    );
+    const cases = await fixture(
+      "tests/fixtures/providers/alpha-vantage-dividend-cases.json",
+    );
+    const fetcher = vi.fn(async (_input: RequestInfo | URL) =>
+      Response.json(cases.correctionAfter),
+    );
+    const result = await new AlphaVantageDividendEventProvider(
+      "key",
+      fetcher,
+    ).getDividends("CASE", "2026-01-01", "2026-12-31", "USD");
+
+    expect(result.events[0]?.currency).toBe("USD");
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(
+      new URL(String(fetcher.mock.calls[0]?.[0])).searchParams.get("function"),
+    ).toBe("DIVIDENDS");
+  });
+
   it("treats a missing future dividend row as no event known from this source", async () => {
     const { AlphaVantageDividendEventProvider } = await import(
       "./alpha-vantage-dividends"

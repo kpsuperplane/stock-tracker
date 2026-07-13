@@ -10,6 +10,7 @@ export interface Env extends Cloudflare.Env {
   EXA_API_KEY?: string;
   MARKETAUX_API_TOKEN?: string;
   ALPHA_VANTAGE_API_KEY: string;
+  SEC_USER_AGENT: string;
   READ_MODELS_ENABLED?: string;
   READ_MODEL_ENABLED?: string;
   PORTFOLIO_READ_MODELS_ENABLED?: string;

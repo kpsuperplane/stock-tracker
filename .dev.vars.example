@@ -2,6 +2,8 @@ BASIC_AUTH_USERNAME=local-owner
 BASIC_AUTH_PASSWORD=local-password
 # Required for scheduled dividends and earnings-calendar refreshes.
 ALPHA_VANTAGE_API_KEY=replace-with-alpha-vantage-key
+# SEC requires an identifiable User-Agent for automated EDGAR access.
+SEC_USER_AGENT=Stock Tracker contact@example.com
 # Keep the derived read models disabled by default. Set this to true when
 # previewing the feature-flagged Portfolio/Calendar pages.
 # READ_MODELS_ENABLED=true

@@ -113,6 +113,29 @@ export class EarningsRepository {
       );
   }
 
+  supersedeFiscalPeriodStatement(input: {
+    instrumentId: string;
+    fiscalDateEnding: string;
+    provider: string;
+    providerRevision: string;
+    updatedAt: string;
+  }): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE earnings_events SET status = 'superseded', updated_at = ?1
+         WHERE instrument_id = ?2 AND fiscal_date_ending = ?3
+           AND status IN ('active', 'stale')
+           AND (provider <> ?4 OR provider_revision <> ?5)`,
+      )
+      .bind(
+        input.updatedAt,
+        input.instrumentId,
+        input.fiscalDateEnding,
+        input.provider,
+        input.providerRevision,
+      );
+  }
+
   markStaleStatement(input: {
     id: string;
     updatedAt: string;

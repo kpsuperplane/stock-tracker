@@ -3,12 +3,16 @@ import { RunRepository } from "../db/runs";
 import { TickerRepository } from "../db/tickers";
 import { AlphaVantageDividendEventProvider } from "../providers/alpha-vantage-dividends";
 import { AlphaVantageEarningsProvider } from "../providers/alpha-vantage-earnings";
+import { AlphaVantageEarningsHistoryProvider } from "../providers/alpha-vantage-earnings-history";
+import { SecEarningsHistoryProvider } from "../providers/sec-earnings";
 import { YahooDividendEventProvider } from "../providers/yahoo-dividends";
+import { AlphaVantageRequestBudget } from "../services/alpha-vantage-budget";
 import {
   BackfillPipelineAdapter,
   backfillPipelineFlagEnabled,
 } from "../services/backfill-pipeline";
 import { ScheduledDividendRefreshService } from "../services/dividend-refresh";
+import { EarningsHistoryBackfillService } from "../services/earnings-history-backfill";
 import { ScheduledEarningsRefreshService } from "../services/earnings-refresh";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
@@ -20,6 +24,7 @@ import {
   ScheduledReconciliationService,
 } from "../services/scheduled-reconciliation";
 import { WorkDispatcherService } from "../services/work-dispatcher";
+import { easternMarketDate } from "../shared/dates";
 import type { Env } from "./env";
 import { safeErrorMessage } from "./errors";
 import { logEvent } from "./log";
@@ -29,9 +34,12 @@ export const LEGACY_SCREENING_CRON = "0 22 * * MON-FRI";
 const isNormalizedPlannerCron = (cron: string): boolean =>
   (NORMALIZED_PLANNER_CRONS as readonly string[]).includes(cron);
 
-const dividendProviderFor = (env: Env) =>
+const dividendProviderFor = (env: Env, budget: AlphaVantageRequestBudget) =>
   env.ALPHA_VANTAGE_API_KEY
-    ? new AlphaVantageDividendEventProvider(env.ALPHA_VANTAGE_API_KEY)
+    ? new AlphaVantageDividendEventProvider(
+        env.ALPHA_VANTAGE_API_KEY,
+        budget.fetcher("dividend"),
+      )
     : new YahooDividendEventProvider();
 
 const continueActiveBackfills = async (
@@ -112,29 +120,11 @@ export const handleScheduled = async (
   // is disabled (and available as the rollback path after enabling it).
   if (controller.cron !== LEGACY_SCREENING_CRON) return;
   const now = new Date(controller.scheduledTime).toISOString();
-  let dividendRefresh: string | null = null;
-  try {
-    dividendRefresh = JSON.stringify(
-      await new ScheduledDividendRefreshService({
-        db: env.DB,
-        provider: dividendProviderFor(env),
-        now: () => new Date(now),
-      }).refreshHeldInstruments(),
-    );
-    logEvent("dividend_refresh_scheduled", {
-      scheduledTime: now,
-      result: dividendRefresh,
-    });
-  } catch (error) {
-    dividendRefresh = JSON.stringify({
-      status: "failed",
-      message: safeErrorMessage(error),
-    });
-    logEvent("dividend_refresh_failed", {
-      scheduledTime: now,
-      message: safeErrorMessage(error),
-    });
-  }
+  const alphaBudget = new AlphaVantageRequestBudget(
+    env.DB,
+    easternMarketDate(now),
+    () => new Date(now),
+  );
   let earningsRefresh: string | null = null;
   try {
     earningsRefresh = JSON.stringify(
@@ -144,6 +134,7 @@ export const handleScheduled = async (
           ? {
               provider: new AlphaVantageEarningsProvider(
                 env.ALPHA_VANTAGE_API_KEY,
+                alphaBudget.fetcher("earnings_calendar"),
               ),
             }
           : {}),
@@ -160,6 +151,64 @@ export const handleScheduled = async (
       message: safeErrorMessage(error),
     });
     logEvent("earnings_refresh_failed", {
+      scheduledTime: now,
+      message: safeErrorMessage(error),
+    });
+  }
+  let earningsHistoryRefresh: string | null = null;
+  try {
+    earningsHistoryRefresh = JSON.stringify(
+      await new EarningsHistoryBackfillService({
+        db: env.DB,
+        ...(env.SEC_USER_AGENT
+          ? {
+              secProvider: new SecEarningsHistoryProvider(env.SEC_USER_AGENT),
+            }
+          : {}),
+        ...(env.ALPHA_VANTAGE_API_KEY
+          ? {
+              alphaProvider: new AlphaVantageEarningsHistoryProvider(
+                env.ALPHA_VANTAGE_API_KEY,
+                alphaBudget.fetcher("earnings_history"),
+              ),
+            }
+          : {}),
+        now: () => new Date(now),
+      }).refreshDue(),
+    );
+    logEvent("earnings_history_refresh_scheduled", {
+      scheduledTime: now,
+      result: earningsHistoryRefresh,
+    });
+  } catch (error) {
+    earningsHistoryRefresh = JSON.stringify({
+      status: "failed",
+      message: safeErrorMessage(error),
+    });
+    logEvent("earnings_history_refresh_failed", {
+      scheduledTime: now,
+      message: safeErrorMessage(error),
+    });
+  }
+  let dividendRefresh: string | null = null;
+  try {
+    dividendRefresh = JSON.stringify(
+      await new ScheduledDividendRefreshService({
+        db: env.DB,
+        provider: dividendProviderFor(env, alphaBudget),
+        now: () => new Date(now),
+      }).refreshHeldInstruments(),
+    );
+    logEvent("dividend_refresh_scheduled", {
+      scheduledTime: now,
+      result: dividendRefresh,
+    });
+  } catch (error) {
+    dividendRefresh = JSON.stringify({
+      status: "failed",
+      message: safeErrorMessage(error),
+    });
+    logEvent("dividend_refresh_failed", {
       scheduledTime: now,
       message: safeErrorMessage(error),
     });
@@ -220,5 +269,6 @@ export const handleScheduled = async (
     migration: migrationResult,
     dividends: dividendRefresh,
     earnings: earningsRefresh,
+    earningsHistory: earningsHistoryRefresh,
   });
 };

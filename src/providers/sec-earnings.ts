@@ -5,10 +5,7 @@ import type {
   EarningsInstrumentReference,
   NormalizedEarningsEvent,
 } from "./earnings";
-import {
-  isIsoCalendarDate,
-  readBoundedJson,
-} from "./provider-http";
+import { isIsoCalendarDate, readBoundedJson } from "./provider-http";
 
 export const secEarningsProvider = "sec-edgar-earnings";
 
@@ -204,7 +201,11 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
     }
 
     const rows = rowsFrom(payload.filings.recent);
-    const oldestRecent = rows.at(-1)?.filingDate;
+    const oldestRecent = rows.reduce<string | null>(
+      (oldest, row) =>
+        oldest === null || row.filingDate < oldest ? row.filingDate : oldest,
+      null,
+    );
     if (
       oldestRecent &&
       startDate < oldestRecent &&
@@ -245,6 +246,17 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
       if (!existing || event.reportDate < existing.reportDate) {
         byFiscalDate.set(fiscalDateEnding, event);
       }
+    }
+    const missingFiscalPeriod = periodic.some(
+      (row) =>
+        row.filingDate >= startDate &&
+        row.filingDate <= endDate &&
+        isIsoCalendarDate(row.reportDate) &&
+        row.reportDate < endDate &&
+        !byFiscalDate.has(row.reportDate),
+    );
+    if (missingFiscalPeriod) {
+      throw new Error("provider_history_unavailable");
     }
 
     const events = [...byFiscalDate.values()].sort((left, right) =>
