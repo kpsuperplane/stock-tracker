@@ -37,3 +37,23 @@ export interface EarningsProvider {
     endDate: string,
   ): Promise<EarningsEventRange>;
 }
+
+export interface EarningsHistoryRange {
+  range: {
+    requestedStartDate: string;
+    requestedEndDate: string;
+    provider: string;
+    observedAt: string;
+    providerRevision: string;
+    secCik: string | null;
+  };
+  events: NormalizedEarningsEvent[];
+}
+
+export interface EarningsHistoryProvider {
+  getEarningsHistory(
+    instrument: EarningsInstrumentReference & { currency: "USD" | "CAD" },
+    startDate: string,
+    endDate: string,
+  ): Promise<EarningsHistoryRange>;
+}

@@ -36,5 +36,6 @@ export interface DividendProvider {
     symbol: string,
     startDate: string,
     endDate: string,
+    currency?: "USD" | "CAD",
   ): Promise<DividendEventRange>;
 }

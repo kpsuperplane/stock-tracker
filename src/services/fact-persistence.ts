@@ -288,6 +288,7 @@ export class DividendFactsService {
   async refresh(input: {
     instrumentId: string;
     symbol: string;
+    currency?: "USD" | "CAD";
     startDate: string;
     endDate: string;
   }): Promise<DividendRefreshResult> {
@@ -297,6 +298,7 @@ export class DividendFactsService {
         input.symbol,
         input.startDate,
         input.endDate,
+        input.currency,
       );
     } catch (error) {
       const timestamp = this.now().toISOString();
