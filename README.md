@@ -133,7 +133,7 @@ duplicate detection, while staging rows expire.
 
 ## Architecture and guardrails
 
-One Cloudflare Worker protects the React static assets and Hono API with HTTP Basic Authentication. D1 retains ticker snapshots and published report generations, the legacy weekday Cron Trigger starts work at 22:00 UTC, Cloudflare Queues fan out per-ticker screening, and Workers AI is called at most once for each qualifying mover with news. The disabled-by-default portfolio cutover adds 20:30/21:30 UTC planner candidates (the two Toronto 4:30 p.m. DST offsets) and a separate 15-minute dispatcher trigger; later tasks will route those triggers.
+Cloudflare Zero Trust protects the React static assets and Hono API before requests reach the Worker. D1 retains ticker snapshots and published report generations, the legacy weekday Cron Trigger starts work at 22:00 UTC, Cloudflare Queues fan out per-ticker screening, and Workers AI is called at most once for each qualifying mover with news. The disabled-by-default portfolio cutover adds 20:30/21:30 UTC planner candidates (the two Toronto 4:30 p.m. DST offsets) and a separate 15-minute dispatcher trigger; later tasks will route those triggers.
 
 - Maximum 100 active tickers.
 - Maximum 30 inclusive calendar days per backfill.
@@ -159,8 +159,6 @@ npx wrangler queues create stock-tracker-normalized-work --message-retention-per
 npx wrangler queues create stock-tracker-normalized-work-dlq --message-retention-period-secs 1209600
 npm run types:worker
 npx wrangler d1 migrations apply DB --remote
-npx wrangler secret put BASIC_AUTH_USERNAME
-npx wrangler secret put BASIC_AUTH_PASSWORD
 npx wrangler secret put ALPHA_VANTAGE_API_KEY
 npm run deploy:production
 ```
@@ -199,7 +197,6 @@ Cloudflare remains the production deployer. The deploy script reruns local gates
   are five minutes, consumer processing leases are ten minutes, and queued
   envelopes are eligible for resend after ten minutes; the recurring
   15-minute dispatcher recovers each state from D1.
-- Rotate the two Basic Auth Worker secrets to revoke cached browser access.
 
 Useful production diagnostics:
 

@@ -4,6 +4,7 @@ import { PipelineJobRepository } from "../../src/db/pipeline-jobs";
 import { PositionBasisRepository } from "../../src/db/position-basis";
 import { TransactionRepository } from "../../src/db/transactions";
 import { WorkItemRepository } from "../../src/db/work-items";
+import { YahooMarketDataProvider } from "../../src/providers/yahoo";
 import { YahooCorporateActionProvider } from "../../src/providers/yahoo-corporate-actions";
 import { easternMarketDate } from "../../src/shared/dates";
 
@@ -465,12 +466,10 @@ describe("portfolio ledger migration", () => {
   });
 });
 
-const authorization = `Basic ${btoa("owner:password")}`;
 const mutationHeaders = (legacyRevisionTags?: string): HeadersInit => {
   const basis = /position-basis-(\d+)/.exec(legacyRevisionTags ?? "")?.[1];
   const event = /event-(\d+)/.exec(legacyRevisionTags ?? "")?.[1];
   return {
-    Authorization: authorization,
     "Content-Type": "application/json",
     Host: "local",
     Origin: "http://local",
@@ -528,14 +527,29 @@ const createBody = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("portfolio event routes", () => {
-  it("accepts a watchlist symbol in place of an opaque instrument ID", async () => {
-    await env.DB.prepare(
-      `INSERT INTO tickers
-       (id, symbol, company_name, exchange, currency, active, created_at, updated_at)
-       VALUES ('ticker-shop', 'SHOP.TO', 'Shopify', 'TSX', 'CAD', 1, ?1, ?1)`,
-    )
-      .bind(now)
-      .run();
+  it("adds a valid new symbol to the watchlist before creating its transaction", async () => {
+    vi.spyOn(
+      YahooMarketDataProvider.prototype,
+      "getInstrument",
+    ).mockResolvedValue({
+      metadata: {
+        symbol: "SHOP.TO",
+        companyName: "Shopify",
+        exchange: "TSX",
+        currency: "CAD",
+        instrumentType: "EQUITY",
+      },
+      bars: [
+        {
+          date: "2026-07-10",
+          close: 150,
+          adjustedClose: 150,
+          closeDecimal: "150",
+          adjustedCloseDecimal: "150",
+        },
+      ],
+      corporateActionDates: new Set<string>(),
+    });
     mockSplitProvider();
 
     const response = await exports.default.fetch(
@@ -559,6 +573,11 @@ describe("portfolio event routes", () => {
       symbol: "SHOP.TO",
       provider_symbol: "SHOP.TO",
     });
+    expect(
+      await env.DB.prepare(
+        "SELECT symbol, active FROM tickers WHERE symbol = 'SHOP.TO'",
+      ).first(),
+    ).toEqual({ symbol: "SHOP.TO", active: 1 });
   });
 
   it("returns a paginated combined timeline with canonical decimal strings and filters", async () => {
@@ -583,9 +602,7 @@ describe("portfolio event routes", () => {
     ]);
 
     const first = await exports.default.fetch(
-      new Request("http://local/api/events?limit=1", {
-        headers: { Authorization: authorization },
-      }),
+      "http://local/api/events?limit=1",
     );
     expect(first.status).toBe(200);
     const firstPayload = await first.json<{
@@ -606,9 +623,7 @@ describe("portfolio event routes", () => {
     expect(firstPayload.nextCursor).toEqual(expect.any(String));
 
     const neutralRead = await exports.default.fetch(
-      new Request("http://local/data/ledger?limit=1", {
-        headers: { Authorization: authorization },
-      }),
+      "http://local/data/ledger?limit=1",
     );
     expect(neutralRead.status).toBe(200);
     const neutralPayload = await neutralRead.json<{
@@ -624,7 +639,6 @@ describe("portfolio event routes", () => {
     const second = await exports.default.fetch(
       new Request(
         `http://local/api/events?limit=1&cursor=${encodeURIComponent(firstPayload.nextCursor ?? "")}`,
-        { headers: { Authorization: authorization } },
       ),
     );
     expect(
@@ -639,27 +653,24 @@ describe("portfolio event routes", () => {
     ]);
 
     const filtered = await exports.default.fetch(
-      new Request("http://local/api/events?symbol=shop.to&type=transaction", {
-        headers: { Authorization: authorization },
-      }),
+      "http://local/api/events?symbol=shop.to&type=transaction",
     );
     expect(
       (await filtered.json<{ events: Array<{ type: string }> }>()).events,
     ).toEqual([expect.objectContaining({ type: "transaction" })]);
   });
 
-  it("requires authentication and rejects cross-origin or non-simple mutation requests", async () => {
+  it("allows unauthenticated reads and rejects cross-origin or non-simple mutation requests", async () => {
     expect(
       (await exports.default.fetch(new Request("http://local/api/events")))
         .status,
-    ).toBe(401);
+    ).toBe(200);
 
     await insertInstrument();
     const missingCustomHeader = await exports.default.fetch(
       new Request("http://local/api/events", {
         method: "POST",
         headers: {
-          Authorization: authorization,
           "Content-Type": "application/json",
           Host: "local",
           Origin: "http://local",
@@ -1121,9 +1132,7 @@ describe("portfolio event routes", () => {
     expect(invalidJsonMime.status).toBe(415);
 
     const report = await exports.default.fetch(
-      new Request("http://local/api/reports/latest", {
-        headers: { Authorization: authorization },
-      }),
+      "http://local/api/reports/latest",
     );
     expect(report.status).toBe(200);
   });

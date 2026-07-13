@@ -71,9 +71,8 @@ export const requestWithMeta = async <T>(
   const response = await fetch(path, {
     ...init,
     headers,
-    // Keep the browser's HTTP authentication context on every API request.
-    // This is explicit because the app is protected by Basic Auth and may be
-    // served through a preview shell before it reaches the Worker.
+    // Keep same-origin session cookies, including Cloudflare Access, on API
+    // requests when the app is served through a preview shell.
     credentials: init?.credentials ?? "same-origin",
   });
   if (response.status === 304 && options.allowNotModified) {

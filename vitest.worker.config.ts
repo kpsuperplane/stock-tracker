@@ -13,8 +13,6 @@ export default defineConfig({
         ai: { binding: "AI" },
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations(path.resolve("migrations")),
-          BASIC_AUTH_USERNAME: "owner",
-          BASIC_AUTH_PASSWORD: "password",
         },
       },
     })),

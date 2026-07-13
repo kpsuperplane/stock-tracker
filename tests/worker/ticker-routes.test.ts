@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { YahooMarketDataProvider } from "../../src/providers/yahoo";
 
 const headers = {
-  Authorization: `Basic ${btoa("owner:password")}`,
   "Content-Type": "application/json",
   Host: "local",
   Origin: "http://local",
@@ -11,10 +10,10 @@ const headers = {
 };
 
 describe("ticker routes", () => {
-  it("blocks unauthenticated access", async () => {
+  it("allows access without application credentials", async () => {
     expect(
       (await exports.default.fetch("http://local/api/tickers")).status,
-    ).toBe(401);
+    ).toBe(200);
   });
 
   it("validates, inserts, disables, and lists SHOP.TO", async () => {
@@ -70,7 +69,6 @@ describe("ticker routes", () => {
     const response = await exports.default.fetch(
       new Request("http://local/api/tickers", {
         method: "POST",
-        headers: { Authorization: headers.Authorization },
         body: "symbol=AAPL",
       }),
     );

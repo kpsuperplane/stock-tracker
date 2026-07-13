@@ -96,8 +96,6 @@ describe("deployment safety", () => {
     expect(production.assets?.binding).toBe("ASSETS");
     expect(production.ai).toEqual({ binding: "AI", remote: true });
     expect(production.secrets?.required).toEqual([
-      "BASIC_AUTH_USERNAME",
-      "BASIC_AUTH_PASSWORD",
       "ALPHA_VANTAGE_API_KEY",
       "SEC_USER_AGENT",
     ]);

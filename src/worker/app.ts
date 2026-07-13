@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ZodError } from "zod";
-import { requireBasicAuth } from "./auth";
 import type { Env } from "./env";
 import { ApiError, safeErrorMessage } from "./errors";
 import { accountRoutes } from "./routes/accounts";
@@ -44,7 +43,6 @@ export const createApp = () => {
     onError: bodyTooLarge,
   });
 
-  app.use("*", requireBasicAuth());
   app.use("/api/*", (context, next) =>
     context.req.path === "/api/event-imports/preview"
       ? importPreviewBodyLimit(context, next)

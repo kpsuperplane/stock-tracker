@@ -1,12 +1,14 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { InstrumentRepository } from "../../db/instruments";
+import { YahooMarketDataProvider } from "../../providers/yahoo";
 import { YahooCorporateActionProvider } from "../../providers/yahoo-corporate-actions";
 import {
   type LedgerMutationResult,
   type LedgerProposal,
   LedgerService,
 } from "../../services/ledger";
+import { TransactionInstrumentService } from "../../services/transaction-instrument";
 import type {
   EventsTimelineDto,
   PortfolioEventDto,
@@ -633,17 +635,17 @@ const createTransaction = async (context: EventContext) => {
   const body = createSchema.parse(await context.req.json());
   const future = futureTrade(context, body.tradeDate);
   if (future) return future;
-  const instruments = new InstrumentRepository(context.env.DB);
-  const instrument = await instruments.ensureForSymbol(
-    body.symbol,
-    new Date().toISOString(),
-  );
+  const instrument = await new TransactionInstrumentService(
+    context.env.DB,
+    new YahooMarketDataProvider(),
+    () => crypto.randomUUID(),
+  ).resolve(body.symbol, new Date().toISOString());
   if (!instrument) {
     return error(
       context,
       422,
       "instrument_not_found",
-      "The selected symbol is not in the watchlist.",
+      "The selected symbol could not be resolved.",
     );
   }
   const result = await new LedgerService({
@@ -789,8 +791,8 @@ eventsRoutes.all("/", methodNotAllowed("GET, POST"));
 eventsRoutes.all("/*", methodNotAllowed("GET, POST, PATCH, DELETE"));
 
 // Some browser environments block generic `/api/*` reads before they reach
-// the Worker. Keep the authenticated, read-only timeline available on a
-// neutral data path for the product UI; mutations remain under `/api/events`.
+// the Worker. Keep the read-only timeline available on a neutral data path for
+// the product UI; mutations remain under `/api/events`.
 export const ledgerReadRoutes = new Hono<{ Bindings: Env }>();
 ledgerReadRoutes.get("/", timeline);
 
