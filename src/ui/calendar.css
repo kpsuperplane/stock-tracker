@@ -32,6 +32,7 @@
   font-weight: 600;
   line-height: 1.2;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .calendar-page__grid {

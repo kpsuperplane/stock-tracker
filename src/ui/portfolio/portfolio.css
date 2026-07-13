@@ -273,6 +273,7 @@
 }
 
 .product-top-nav-actions .portfolio-controls {
+  flex-direction: row;
   justify-content: flex-start;
   flex-wrap: wrap;
 }
@@ -285,6 +286,7 @@
 
 .product-top-nav-actions .portfolio-control-end {
   justify-content: flex-start;
+  flex-wrap: nowrap;
 }
 
 .product-top-nav-actions .portfolio-range-select {

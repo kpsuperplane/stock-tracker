@@ -142,8 +142,8 @@ describe("CalendarPage", () => {
     expect(markup).toContain('data-testid="calendar-page"');
     expect(markup).not.toContain("Market calendar");
     expect(markup).toContain("calendar-toolbar__date");
-    expect(markup).toContain("July 2026");
-    expect(markup).toContain('aria-label="July 2026, Today"');
+    expect(markup).toContain("Jul 26");
+    expect(markup).toContain('aria-label="Jul 26, Today"');
     expect(markup).toContain("+5.32%");
     expect(markup).toContain("AAPL $0.50");
     expect(markup).toContain("AAPL · Earnings");
@@ -269,6 +269,7 @@ describe("CalendarPage", () => {
     );
 
     expect(markup).toContain("Week");
+    expect(markup).toContain("Jul 5–11, 26");
     expect(markup).toContain("Dividends: $0.00");
     expect(markup).toContain('aria-checked="true" data-value="week"');
     expect(markup).toContain("Market data pending: Waiting for close.");

@@ -1,13 +1,13 @@
 import { Button, HStack } from "@astryxdesign/core";
 import type { Locale } from "../i18n/catalog";
 import { useI18n } from "../i18n/I18nProvider";
-import { formatDate } from "../system/formatters";
 import {
   addDays,
   type CalendarView,
   monthLabel,
   rangeForView,
   shiftMonth,
+  weekLabel,
 } from "./dateMath";
 
 export interface CalendarToolbarProps {
@@ -25,10 +25,7 @@ export const calendarPeriodTitle = (
   const range = rangeForView(anchorDate, view);
   return view === "month"
     ? monthLabel(anchorDate, locale)
-    : `${formatDate(range.startDate, locale)} – ${formatDate(
-        range.endDate,
-        locale,
-      )}`;
+    : weekLabel(range.startDate, range.endDate, locale);
 };
 
 export const CalendarToolbar = ({

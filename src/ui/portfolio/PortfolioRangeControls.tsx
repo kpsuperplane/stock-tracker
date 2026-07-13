@@ -75,26 +75,6 @@ export const PortfolioRangeControls = ({
   return (
     <div className="portfolio-controls">
       <div className="portfolio-range-cluster">
-        <div className="portfolio-range-select">
-          <Selector
-            label={t("selectRange")}
-            isLabelHidden
-            aria-label={t("selectRange")}
-            options={presets.map((preset) => ({
-              value: preset.value,
-              label: t(preset.labelKey),
-            }))}
-            value={state.range}
-            onChange={(value) => {
-              const nextPreset = presets.find(
-                (preset) => preset.value === value,
-              );
-              if (nextPreset) onRangeChange(nextPreset.value);
-            }}
-            size="sm"
-            width="100%"
-          />
-        </div>
         {coverage && coverage.status !== "complete" && (
           <Popover
             label={t("portfolioCoverageDetails")}
@@ -118,6 +98,26 @@ export const PortfolioRangeControls = ({
             />
           </Popover>
         )}
+        <div className="portfolio-range-select">
+          <Selector
+            label={t("selectRange")}
+            isLabelHidden
+            aria-label={t("selectRange")}
+            options={presets.map((preset) => ({
+              value: preset.value,
+              label: t(preset.labelKey),
+            }))}
+            value={state.range}
+            onChange={(value) => {
+              const nextPreset = presets.find(
+                (preset) => preset.value === value,
+              );
+              if (nextPreset) onRangeChange(nextPreset.value);
+            }}
+            size="sm"
+            width="100%"
+          />
+        </div>
       </div>
       <div className="portfolio-control-end">
         {state.range === "custom" && (

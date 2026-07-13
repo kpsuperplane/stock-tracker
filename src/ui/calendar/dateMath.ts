@@ -69,6 +69,23 @@ export const weekRange = (
   return { startDate, endDate: addDays(startDate, 6) };
 };
 
+const dateParts = (date: string) => {
+  const value = dateAtNoonUtc(date);
+  return {
+    year: value.getUTCFullYear(),
+    month: value.getUTCMonth() + 1,
+    day: value.getUTCDate(),
+  };
+};
+
+const shortYear = (year: number): string => String(year).slice(-2);
+
+const shortMonthName = (date: string, locale: "en" | "cn") =>
+  new Intl.DateTimeFormat(locale === "cn" ? "zh-CN" : "en-US", {
+    month: "short",
+    timeZone: "UTC",
+  }).format(dateAtNoonUtc(date));
+
 export const rangeForView = (
   date: string,
   view: CalendarView,
@@ -111,12 +128,41 @@ export const todayInToronto = (now = new Date()): string => {
   return `${values.year}-${values.month}-${values.day}`;
 };
 
-export const monthLabel = (date: string, locale: "en" | "cn"): string =>
-  new Intl.DateTimeFormat(locale === "cn" ? "zh-CN" : "en-US", {
-    year: "numeric",
-    month: "long",
-    timeZone: "UTC",
-  }).format(dateAtNoonUtc(date));
+export const monthLabel = (date: string, locale: "en" | "cn"): string => {
+  const parts = dateParts(date);
+  return locale === "cn"
+    ? `${shortYear(parts.year)}年${parts.month}月`
+    : `${shortMonthName(date, locale)} ${shortYear(parts.year)}`;
+};
+
+export const weekLabel = (
+  startDate: string,
+  endDate: string,
+  locale: "en" | "cn",
+): string => {
+  const start = dateParts(startDate);
+  const end = dateParts(endDate);
+
+  if (locale === "cn") {
+    if (start.year === end.year && start.month === end.month) {
+      return `${shortYear(start.year)}年${start.month}月${start.day}–${end.day}日`;
+    }
+    if (start.year === end.year) {
+      return `${shortYear(start.year)}年${start.month}月${start.day}日–${end.month}月${end.day}日`;
+    }
+    return `${shortYear(start.year)}年${start.month}月${start.day}日–${shortYear(end.year)}年${end.month}月${end.day}日`;
+  }
+
+  const startMonth = shortMonthName(startDate, locale);
+  const endMonth = shortMonthName(endDate, locale);
+  if (start.year === end.year && start.month === end.month) {
+    return `${startMonth} ${start.day}–${end.day}, ${shortYear(end.year)}`;
+  }
+  if (start.year === end.year) {
+    return `${startMonth} ${start.day}–${endMonth} ${end.day}, ${shortYear(end.year)}`;
+  }
+  return `${startMonth} ${start.day}, ${shortYear(start.year)}–${endMonth} ${end.day}, ${shortYear(end.year)}`;
+};
 
 export const shortDayLabel = (date: string, locale: "en" | "cn"): string =>
   new Intl.DateTimeFormat(locale === "cn" ? "zh-CN" : "en-US", {

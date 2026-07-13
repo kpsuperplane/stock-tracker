@@ -3,12 +3,14 @@ import {
   addDays,
   endOfWeekSaturday,
   monthGridDays,
+  monthLabel,
   monthRange,
   rangeForView,
   shiftMonth,
   startOfWeekSunday,
   todayInToronto,
   weekGridDays,
+  weekLabel,
   weekRange,
 } from "./dateMath";
 
@@ -49,6 +51,19 @@ describe("calendar date math", () => {
       startDate: "2025-12-28",
       endDate: "2026-01-03",
     });
+  });
+
+  it("formats compact month and week labels in both locales", () => {
+    expect(monthLabel("2026-07-08", "en")).toBe("Jul 26");
+    expect(monthLabel("2026-07-08", "cn")).toBe("26年7月");
+    expect(weekLabel("2026-07-05", "2026-07-11", "en")).toBe("Jul 5–11, 26");
+    expect(weekLabel("2026-07-05", "2026-07-11", "cn")).toBe("26年7月5–11日");
+    expect(weekLabel("2026-06-28", "2026-07-04", "en")).toBe(
+      "Jun 28–Jul 4, 26",
+    );
+    expect(weekLabel("2025-12-28", "2026-01-03", "cn")).toBe(
+      "25年12月28日–26年1月3日",
+    );
   });
 
   it("derives Toronto calendar dates across DST transitions", () => {
