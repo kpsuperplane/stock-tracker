@@ -158,6 +158,122 @@ html[lang="zh-CN"]
   font-variant-numeric: tabular-nums;
 }
 
+.accounts-page {
+  width: min(100%, 72rem);
+  margin-inline: auto;
+  padding-block-end: 2rem;
+}
+
+.accounts-page-intro p {
+  max-width: 42rem;
+  margin: 0;
+}
+
+.accounts-create-layout {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) minmax(20rem, 1.25fr);
+  align-items: end;
+  gap: 2rem;
+}
+
+.accounts-create-layout p,
+.accounts-category-archive-hint,
+.accounts-category-empty p {
+  margin: 0;
+}
+
+.accounts-create-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.accounts-loading-state,
+.accounts-category-section,
+.accounts-account-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.accounts-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.accounts-category-header {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.75fr) minmax(22rem, 1.25fr);
+  align-items: end;
+  gap: 1rem 2rem;
+  padding: 1rem;
+}
+
+.accounts-category-title-row {
+  align-self: start;
+  padding-block-start: 0.125rem;
+}
+
+.accounts-category-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.accounts-category-archive-hint {
+  grid-column: 2;
+}
+
+.accounts-category-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--color-background-muted);
+  border-block-start: 1px solid var(--color-border);
+}
+
+.accounts-list-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.accounts-account-row {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(5rem, auto) auto;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.75rem;
+  background: var(--color-background-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
+}
+
+.accounts-account-status {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.accounts-category-empty {
+  padding: 1rem;
+  text-align: center;
+  border: 1px dashed var(--color-border-emphasized);
+  border-radius: var(--radius-container);
+}
+
+.accounts-add-account-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+  padding-block-start: 0.25rem;
+}
+
 .calendar-mover-dialog__body {
   min-height: 0;
   flex: 1 1 auto;
@@ -166,6 +282,35 @@ html[lang="zh-CN"]
 }
 
 @media (max-width: 768px) {
+  .accounts-page {
+    padding-block-end: 1rem;
+  }
+
+  .accounts-create-layout,
+  .accounts-category-header {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .accounts-category-archive-hint {
+    grid-column: 1;
+  }
+
+  .accounts-list-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .accounts-account-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .accounts-account-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
   .product-top-nav {
     padding-inline-start: 0.5rem;
   }
@@ -188,6 +333,28 @@ html[lang="zh-CN"]
 
   .astryx-mobile-nav .product-mobile-nav-toggle {
     display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .accounts-create-controls,
+  .accounts-category-controls,
+  .accounts-add-account-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .accounts-category-controls > :last-child,
+  .accounts-add-account-row > :last-child {
+    justify-self: start;
+  }
+
+  .accounts-account-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .accounts-account-actions,
+  .accounts-account-status {
+    grid-column: 1;
   }
 }
 
