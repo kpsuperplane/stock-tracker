@@ -94,6 +94,7 @@ describe("deployment safety", () => {
     expect(production.secrets?.required).toEqual([
       "BASIC_AUTH_USERNAME",
       "BASIC_AUTH_PASSWORD",
+      "ALPHA_VANTAGE_API_KEY",
     ]);
     expect(production.d1_databases).toEqual([
       expect.objectContaining({

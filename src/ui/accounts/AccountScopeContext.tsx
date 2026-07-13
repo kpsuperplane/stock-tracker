@@ -14,6 +14,12 @@ import type {
 } from "../../shared/contracts";
 import { api } from "../api";
 import { useI18n } from "../i18n/I18nProvider";
+import {
+  accountOwnerNames,
+  accountScopeExists,
+  buildAccountScopeOptions,
+  parseAccountScopeSelection,
+} from "./scope";
 
 interface AccountScopeContextValue {
   categories: AccountCategoryDto[];
@@ -28,13 +34,7 @@ const Context = createContext<AccountScopeContextValue | null>(null);
 
 const parseSelection = (): AccountScopeSelection => {
   if (typeof window === "undefined") return { scopeType: "all" };
-  const params = new URLSearchParams(window.location.search);
-  const scopeType = params.get("scopeType");
-  const scopeId = params.get("scopeId") ?? undefined;
-  if ((scopeType === "category" || scopeType === "account") && scopeId) {
-    return { scopeType, scopeId };
-  }
-  return { scopeType: "all" };
+  return parseAccountScopeSelection(window.location.search);
 };
 
 const selectionKey = (selection: AccountScopeSelection): string =>
@@ -71,24 +71,48 @@ export const AccountScopeProvider = ({ children }: { children: ReactNode }) => {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const setSelection = useCallback((next: AccountScopeSelection) => {
-    setSelectionState(next);
-    if (typeof window === "undefined") return;
-    const url = new URL(window.location.href);
-    if (next.scopeType === "all") {
-      url.searchParams.delete("scopeType");
-      url.searchParams.delete("scopeId");
-    } else {
-      url.searchParams.set("scopeType", next.scopeType);
-      url.searchParams.set("scopeId", next.scopeId ?? "");
-    }
-    window.history.pushState({}, "", `${url.pathname}${url.search}${url.hash}`);
-  }, []);
+  const applySelection = useCallback(
+    (next: AccountScopeSelection, historyMode: "push" | "replace") => {
+      setSelectionState(next);
+      if (typeof window === "undefined") return;
+      const url = new URL(window.location.href);
+      if (next.scopeType === "all") {
+        url.searchParams.delete("scopeType");
+        url.searchParams.delete("scopeId");
+      } else {
+        url.searchParams.set("scopeType", next.scopeType);
+        url.searchParams.set("scopeId", next.scopeId ?? "");
+      }
+      window.history[historyMode === "push" ? "pushState" : "replaceState"](
+        {},
+        "",
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    },
+    [],
+  );
+
+  const setSelection = useCallback(
+    (next: AccountScopeSelection) => applySelection(next, "push"),
+    [applySelection],
+  );
 
   const value = useMemo(
     () => ({ categories, selection, setSelection, loading, error, reload }),
     [categories, error, loading, reload, selection, setSelection],
   );
+
+  useEffect(() => {
+    if (
+      !loading &&
+      !error &&
+      selection.scopeType !== "all" &&
+      !accountScopeExists(categories, selection)
+    ) {
+      applySelection({ scopeType: "all" }, "replace");
+    }
+  }, [applySelection, categories, error, loading, selection]);
+
   return <Context.Provider value={value}>{children}</Context.Provider>;
 };
 
@@ -109,20 +133,19 @@ export const useAccountScope = (): AccountScopeContextValue => {
 export const AccountScopeBar = () => {
   const { t } = useI18n();
   const { categories, selection, setSelection, loading } = useAccountScope();
+  const owners = useMemo(() => accountOwnerNames(categories), [categories]);
   const options = useMemo(
-    () => [
-      { value: "all", label: t("allAccounts") },
-      ...categories.flatMap((category) => [
-        {
-          value: `category:${category.id}`,
-          label: `${category.name}${category.archivedAt ? ` · ${t("archived")}` : ""}`,
-        },
-        ...category.accounts.map((account) => ({
-          value: `account:${account.id}`,
-          label: `↳ ${category.name} / ${account.name}${account.archivedAt ? ` · ${t("archived")}` : ""}`,
-        })),
-      ]),
-    ],
+    () =>
+      buildAccountScopeOptions(categories, {
+        allAccounts: t("allAccounts"),
+        owners: t("owners"),
+        owner: t("owner"),
+        categories: t("categories"),
+        category: t("category"),
+        accounts: t("accounts"),
+        account: t("account"),
+        archived: t("archived"),
+      }),
     [categories, t],
   );
   const value = selectionKey(selection);
@@ -136,13 +159,15 @@ export const AccountScopeBar = () => {
         value={value}
         onChange={(next) => {
           if (next === "all") setSelection({ scopeType: "all" });
-          else if (next.startsWith("category:")) {
+          else if (next.startsWith("owner:")) {
+            setSelection({ scopeType: "owner", scopeId: next.slice(6) });
+          } else if (next.startsWith("category:")) {
             setSelection({ scopeType: "category", scopeId: next.slice(9) });
           } else if (next.startsWith("account:")) {
             setSelection({ scopeType: "account", scopeId: next.slice(8) });
           }
         }}
-        isDisabled={loading || options.length === 1}
+        isDisabled={loading || (owners.length === 0 && categories.length === 0)}
         size="sm"
         width="100%"
       />

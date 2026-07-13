@@ -6,10 +6,11 @@ import type {
 } from "../db/accounts";
 import { ApiError } from "../worker/errors";
 
-export type AccountScopeType = "all" | "category" | "account";
+export type AccountScopeType = "all" | "owner" | "category" | "account";
 
 export type AccountScope =
   | { scopeType: "all"; scopeId?: never }
+  | { scopeType: "owner"; scopeId: string }
   | { scopeType: "category"; scopeId: string }
   | { scopeType: "account"; scopeId: string };
 
@@ -20,6 +21,7 @@ export interface ResolvedAccountScope {
   categoryId: string | null;
   categoryName: string | null;
   accountName: string | null;
+  ownerName: string | null;
   structureRevision: number;
   fingerprint: string;
 }
@@ -45,6 +47,7 @@ export interface UpdateCategoryInput {
 export interface CreateAccountInput {
   categoryId: string;
   name: string;
+  owner?: string;
   sortOrder?: number;
   id?: string;
   now?: string;
@@ -54,6 +57,7 @@ export interface UpdateAccountInput {
   id: string;
   categoryId?: string;
   name?: string;
+  owner?: string;
   sortOrder?: number;
   archived?: boolean;
   expectedRevision: number;
@@ -80,6 +84,7 @@ interface AccountRepositoryPort {
     id: string;
     categoryId: string;
     name: string;
+    owner: string;
     sortOrder: number;
     now: string;
   }): Promise<void>;
@@ -95,6 +100,7 @@ interface AccountRepositoryPort {
     id: string;
     categoryId: string;
     name: string;
+    owner: string;
     sortOrder: number;
     archivedAt: string | null;
     expectedRevision: number;
@@ -107,6 +113,10 @@ interface AccountRepositoryPort {
   }>;
   accountIdsForCategory(
     categoryId: string,
+    options?: { includeArchived?: boolean },
+  ): Promise<string[]>;
+  accountIdsForOwner(
+    owner: string,
     options?: { includeArchived?: boolean },
   ): Promise<string[]>;
   hasTransactions(accountId: string): Promise<boolean>;
@@ -128,6 +138,18 @@ const normalizeName = (value: string, label: string): string => {
     );
   }
   return name;
+};
+
+const normalizeOwner = (value: string): string => {
+  const owner = value.trim();
+  if (owner.length > MAX_NAME_LENGTH) {
+    throw new ApiError(
+      422,
+      "invalid_account_owner",
+      `Owner names must be at most ${MAX_NAME_LENGTH} characters.`,
+    );
+  }
+  return owner;
 };
 
 const normalizeSortOrder = (value: number | undefined): number => {
@@ -299,11 +321,13 @@ export class AccountService {
       );
     }
     const name = normalizeName(input.name, "Account");
+    const owner = normalizeOwner(input.owner ?? "");
     const sortOrder = normalizeSortOrder(input.sortOrder);
     const row = {
       id: input.id ?? this.createId(),
       categoryId: input.categoryId,
       name,
+      owner,
       sortOrder,
       now: timestamp(input.now),
     };
@@ -384,6 +408,7 @@ export class AccountService {
       }
     }
     const name = normalizeName(input.name ?? existing.name, "Account");
+    const owner = normalizeOwner(input.owner ?? existing.owner);
     const sortOrder = normalizeSortOrder(input.sortOrder ?? existing.sortOrder);
     let updated: boolean;
     try {
@@ -391,6 +416,7 @@ export class AccountService {
         id: existing.id,
         categoryId,
         name,
+        owner,
         sortOrder,
         archivedAt,
         expectedRevision: input.expectedRevision,
@@ -433,7 +459,7 @@ export class AccountService {
     });
   }
 
-  /** Resolve a global, category, or account filter into stable account IDs. */
+  /** Resolve a global, owner, category, or account filter into stable IDs. */
   async resolveScope(
     scope: AccountScope,
     options: { includeArchived?: boolean } = {},
@@ -449,6 +475,7 @@ export class AccountService {
         categoryId: null,
         categoryName: null,
         accountName: null,
+        ownerName: null,
         structureRevision,
         fingerprint: `all:${structureRevision}`,
       };
@@ -479,8 +506,37 @@ export class AccountService {
         categoryId: category.id,
         categoryName: category.name,
         accountName: null,
+        ownerName: null,
         structureRevision,
         fingerprint: `category:${category.id}:${structureRevision}`,
+      };
+    }
+
+    if (scope.scopeType === "owner") {
+      const owner = normalizeOwner(scope.scopeId);
+      if (!owner) {
+        throw new ApiError(422, "invalid_scope", "Choose an account owner.");
+      }
+      const accountIds = await this.repository.accountIdsForOwner(owner, {
+        includeArchived,
+      });
+      if (accountIds.length === 0) {
+        throw new ApiError(
+          404,
+          "account_owner_not_found",
+          "Account owner not found.",
+        );
+      }
+      return {
+        scopeType: "owner",
+        scopeId: owner,
+        accountIds,
+        categoryId: null,
+        categoryName: null,
+        accountName: null,
+        ownerName: owner,
+        structureRevision,
+        fingerprint: `owner:${encodeURIComponent(owner)}:${structureRevision}`,
       };
     }
 
@@ -499,6 +555,7 @@ export class AccountService {
       categoryId: account.categoryId,
       categoryName: category?.name ?? null,
       accountName: account.name,
+      ownerName: account.owner || null,
       structureRevision,
       fingerprint: `account:${account.id}:${structureRevision}`,
     };

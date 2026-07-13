@@ -1,7 +1,7 @@
-import { DecimalValue } from "../domain/decimal";
 import { deriveHoldings } from "../domain/holdings";
 import type {
   CalendarDividendDto,
+  CalendarEarningsDto,
   CalendarMoverDto,
   CalendarPendingDto,
   CalendarReadModelDto,
@@ -9,82 +9,28 @@ import type {
   ReadModelLocale,
   ReadModelSourceDto,
 } from "../shared/contracts";
-
-interface TransactionRow {
-  instrument_id: string;
-  trade_date: string;
-  quantity_decimal: string;
-  side: "buy" | "sell";
-  id: string;
-}
-
-interface SplitRow {
-  instrument_id: string;
-  effective_date: string;
-  split_numerator: string;
-  split_denominator: string;
-  id: string;
-}
-
-interface FactRow {
-  id: string;
-  instrument_id: string;
-  symbol: string;
-  company_name: string;
-  exchange: string;
-  currency: "USD" | "CAD";
-  trading_date: string;
-  previous_trading_date: string | null;
-  previous_raw_close_decimal: string | null;
-  current_raw_close_decimal: string;
-  split_adjusted_previous_close_decimal: string | null;
-  movement_amount_decimal: string | null;
-  movement_percent_decimal: string | null;
-  raw_close_difference_decimal: string | null;
-  movement_basis: "split_adjusted_price_return" | "legacy_migration";
-  status: "valid" | "stale" | "error";
-  error_code: string | null;
-  error_message: string | null;
-}
-
-interface AnalysisRow {
-  id: string;
-  daily_market_fact_id: string;
-  summary_zh_cn: string | null;
-  status: "pending" | "complete" | "stale" | "error";
-  error_code: string | null;
-  error_message: string | null;
-}
-
-interface CompleteAnalysisRow extends AnalysisRow {
-  instrument_id: string;
-  trading_date: string;
-}
-
-interface SourceRow {
-  movement_analysis_id: string;
-  title: string;
-  publisher: string | null;
-  published_at: string | null;
-  source_url: string;
-  cited: number;
-}
-
-interface DividendRow {
-  id: string;
-  instrument_id: string;
-  symbol: string;
-  company_name: string;
-  currency: "USD" | "CAD";
-  ex_date: string;
-  payment_date: string | null;
-  amount_per_share_decimal: string;
-  status: "active" | "stale" | "error" | "superseded";
-  error_code: string | null;
-  error_message: string | null;
-  source_url: string | null;
-  provider: string;
-}
+import {
+  type CalendarEventCursor,
+  paginateCalendarEvents,
+} from "./calendar-event-pagination";
+import type {
+  AnalysisRow,
+  CompleteAnalysisRow,
+  DividendRow,
+  EarningsCoverageRow,
+  EarningsRow,
+  FactRow,
+  SourceRow,
+  SplitRow,
+  TransactionRow,
+} from "./calendar-read-model-types";
+import {
+  multiplyDecimal,
+  pendingMessage,
+  qualifies,
+  safeDecimal,
+  safeSourceUrl,
+} from "./calendar-read-model-utils";
 
 export interface CalendarReadModelInput {
   startDate: string;
@@ -92,61 +38,9 @@ export interface CalendarReadModelInput {
   asOfDate: string;
   locale: ReadModelLocale;
   accountIds: readonly string[];
-  cursor?: { date: string; kind: string; id: string } | null;
+  cursor?: CalendarEventCursor | null;
   limit?: number;
 }
-
-const safeDecimal = (value: string | null): string | null => {
-  if (value === null) return null;
-  try {
-    return DecimalValue.parse(value).toString();
-  } catch {
-    return null;
-  }
-};
-
-const multiplyDecimal = (left: string, right: string): string | null => {
-  const normalizedLeft = safeDecimal(left);
-  const normalizedRight = safeDecimal(right);
-  if (normalizedLeft === null || normalizedRight === null) return null;
-  try {
-    return DecimalValue.parse(normalizedLeft)
-      .multiply(normalizedRight)
-      .toString();
-  } catch {
-    return null;
-  }
-};
-
-const qualifies = (value: string | null): boolean => {
-  const normalized = safeDecimal(value);
-  if (normalized === null) return false;
-  const decimal = DecimalValue.parse(normalized);
-  return (
-    (decimal.isNegative() ? decimal.multiply("-1") : decimal).compare("5") >= 0
-  );
-};
-
-const safeSourceUrl = (value: string | null): string | null => {
-  if (!value) return null;
-  try {
-    const trimmed = value.trim();
-    const parsed = new URL(trimmed);
-    return (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-      parsed.hostname.length > 0 &&
-      !parsed.username &&
-      !parsed.password
-      ? trimmed
-      : null;
-  } catch {
-    return null;
-  }
-};
-
-const pendingMessage = (status: string): string =>
-  status === "processing"
-    ? "Market data is currently processing."
-    : "Market data is waiting to be fetched.";
 
 export class CalendarReadModelService {
   constructor(private readonly db: D1Database) {}
@@ -157,6 +51,8 @@ export class CalendarReadModelService {
       splitResult,
       factResult,
       dividendResult,
+      earningsResult,
+      earningsCoverage,
       pendingFacts,
       splitReview,
     ] = await Promise.all([
@@ -223,6 +119,31 @@ export class CalendarReadModelService {
         )
         .bind(JSON.stringify(input.accountIds), input.startDate, input.endDate)
         .all<DividendRow>(),
+      this.db
+        .prepare(
+          `WITH scoped_instruments AS (
+             SELECT DISTINCT instrument_id FROM transactions
+              WHERE account_id IN (SELECT value FROM json_each(?1))
+           )
+           SELECT e.id, e.instrument_id, i.symbol, i.company_name,
+                  e.report_date, e.fiscal_date_ending,
+                  e.eps_estimate_decimal, e.currency, e.time_of_day,
+                  e.status, e.provider
+             FROM earnings_events e JOIN instruments i ON i.id = e.instrument_id
+             JOIN scoped_instruments scoped ON scoped.instrument_id = e.instrument_id
+            WHERE e.report_date >= ?2 AND e.report_date <= ?3
+              AND e.status <> 'superseded'
+            ORDER BY e.report_date, i.symbol, e.id`,
+        )
+        .bind(JSON.stringify(input.accountIds), input.startDate, input.endDate)
+        .all<EarningsRow>(),
+      this.db
+        .prepare(
+          `SELECT coverage_start_date, coverage_end_date, status
+             FROM earnings_calendar_coverage
+            WHERE provider = 'alpha-vantage-earnings'`,
+        )
+        .first<EarningsCoverageRow>(),
       this.db
         .prepare(
           `WITH scoped_instruments AS (
@@ -663,6 +584,43 @@ export class CalendarReadModelService {
       }
     }
 
+    const earnings: CalendarEarningsDto[] = [];
+    for (const event of earningsResult.results) {
+      const holdings = holdingsByInstrument.get(event.instrument_id);
+      if (!holdings?.isEligibleForScreening(event.report_date)) continue;
+      const estimate = safeDecimal(event.eps_estimate_decimal);
+      earnings.push({
+        id: event.id,
+        instrumentId: event.instrument_id,
+        symbol: event.symbol,
+        companyName: event.company_name,
+        reportDate: event.report_date,
+        fiscalDateEnding: event.fiscal_date_ending,
+        epsEstimateDecimal: estimate,
+        currency: event.currency,
+        timeOfDay: event.time_of_day,
+        heldQuantityDecimal: holdings.quantityAtStartOfDay(event.report_date),
+        status: event.status,
+        provider: event.provider,
+      });
+      if (event.status === "stale") {
+        conflicts.push({
+          code: "earnings_event_stale",
+          message: "The scheduled earnings date may have changed.",
+          instrumentId: event.instrument_id,
+          effectiveDate: event.report_date,
+        });
+      }
+      if (event.eps_estimate_decimal !== null && estimate === null) {
+        conflicts.push({
+          code: "invalid_earnings_estimate",
+          message: "The stored earnings estimate is not a valid decimal.",
+          instrumentId: event.instrument_id,
+          effectiveDate: event.report_date,
+        });
+      }
+    }
+
     const pendingFactRows: CalendarPendingDto[] = [
       ...pendingFacts.results
         .filter(
@@ -712,47 +670,25 @@ export class CalendarReadModelService {
         ...dividend,
         kind: "dividend" as const,
       })),
-    ].sort(
-      (left, right) =>
-        ("tradingDate" in left ? left.tradingDate : left.exDate).localeCompare(
-          "tradingDate" in right ? right.tradingDate : right.exDate,
-        ) ||
-        left.kind.localeCompare(right.kind) ||
-        left.id.localeCompare(right.id),
-    );
-    const cursor = input.cursor;
-    const startIndex = cursor
-      ? eventRows.findIndex((event) => {
-          const date =
-            "tradingDate" in event ? event.tradingDate : event.exDate;
-          return (
-            date > cursor.date ||
-            (date === cursor.date &&
-              (event.kind > cursor.kind ||
-                (event.kind === cursor.kind && event.id > cursor.id)))
-          );
-        })
-      : 0;
-    const offset = startIndex < 0 ? eventRows.length : startIndex;
-    const limit = Math.min(Math.max(input.limit ?? 500, 1), 500);
-    const selectedEvents = eventRows.slice(offset, offset + limit);
+      ...earnings.map((event) => ({
+        ...event,
+        kind: "earnings" as const,
+      })),
+    ];
+    const { events: selectedEvents, nextCursor } = paginateCalendarEvents({
+      events: eventRows,
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+    });
     const selectedIds = new Set(
       selectedEvents.map((event) => `${event.kind}:${event.id}`),
     );
     const selectedMovers = movers.filter((mover) =>
       selectedIds.has(`mover:${mover.id}`),
     );
-    const last = selectedEvents.at(-1);
-    const nextCursor =
-      last && offset + selectedEvents.length < eventRows.length
-        ? btoa(
-            JSON.stringify({
-              date: "tradingDate" in last ? last.tradingDate : last.exDate,
-              kind: last.kind,
-              id: last.id,
-            }),
-          )
-        : null;
+    const selectedEarnings = earnings.filter((event) =>
+      selectedIds.has(`earnings:${event.id}`),
+    );
     const futureDividendStatus = dividends.some(
       (event) => event.exDate >= input.asOfDate,
     )
@@ -768,11 +704,25 @@ export class CalendarReadModelService {
       // Keep the period's complete dividend set available for totals and the
       // breakdown even when the mixed calendar event stream is paginated.
       dividends,
+      earnings: selectedEarnings,
       events: selectedEvents,
       pending,
       pendingFacts: pendingFactRows,
       splitReview: splitPending,
       futureDividendStatus,
+      earningsCoverageStatus:
+        earningsCoverage?.status !== "current"
+          ? (earningsCoverage?.status ?? "unavailable")
+          : input.endDate < input.asOfDate ||
+              (earningsCoverage.coverage_start_date !== null &&
+                earningsCoverage.coverage_end_date !== null &&
+                earningsCoverage.coverage_start_date <=
+                  (input.startDate > input.asOfDate
+                    ? input.startDate
+                    : input.asOfDate) &&
+                earningsCoverage.coverage_end_date >= input.endDate)
+            ? "current"
+            : "stale",
       conflicts,
       nextCursor,
     };

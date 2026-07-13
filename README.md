@@ -38,9 +38,9 @@ The persistent navigation links to four stable destinations:
   sell, or use **Import CSV** to preview rows, review projected holdings, confirm
   provider split history, and commit the staged batch. A successful commit
   queues reconciliation; it does not write a second holdings table.
-- **Calendar** shows historical movers and ex-dividend events in month or week
-  view. Select a mover for its Chinese summary, split-adjusted movement basis,
-  held quantity, valuation, and source links.
+- **Calendar** shows historical movers, ex-dividend events, and Alpha Vantage
+  earnings dates in month or week view. Earnings appear only when the selected
+  account scope held shares at the start of the report date.
 - **Backfill** starts a bounded historical refresh and shows manual and automatic
   reconciliation progress. Work counts, partial errors, retryable items, and
   background continuation remain visible after navigation. The page merges the
@@ -144,6 +144,7 @@ npm run types:worker
 npx wrangler d1 migrations apply DB --remote
 npx wrangler secret put BASIC_AUTH_USERNAME
 npx wrangler secret put BASIC_AUTH_PASSWORD
+npx wrangler secret put ALPHA_VANTAGE_API_KEY
 npm run deploy:production
 ```
 

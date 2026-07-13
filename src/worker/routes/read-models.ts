@@ -26,7 +26,12 @@ const resolveScope = async (db: D1Database, query: Record<string, string>) => {
     }
     return accountService.resolveScope({ scopeType: "all" });
   }
-  if ((scopeType !== "category" && scopeType !== "account") || !query.scopeId) {
+  if (
+    (scopeType !== "owner" &&
+      scopeType !== "category" &&
+      scopeType !== "account") ||
+    !query.scopeId
+  ) {
     throw new ApiError(422, "invalid_scope", "The account scope is invalid.");
   }
   return accountService.resolveScope({

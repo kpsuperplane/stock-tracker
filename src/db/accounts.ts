@@ -14,6 +14,7 @@ export interface AccountRecord {
   id: string;
   categoryId: string;
   name: string;
+  owner: string;
   sortOrder: number;
   revision: number;
   archivedAt: string | null;
@@ -45,6 +46,7 @@ interface AccountRow {
   id: string;
   category_id: string;
   name: string;
+  owner: string;
   sort_order: number;
   revision: number;
   archived_at: string | null;
@@ -78,6 +80,7 @@ const mapAccount = (row: AccountRow): AccountRecord => ({
   id: row.id,
   categoryId: row.category_id,
   name: row.name,
+  owner: row.owner,
   sortOrder: row.sort_order,
   revision: row.revision,
   archivedAt: row.archived_at,
@@ -90,7 +93,7 @@ const categorySelect = `
     FROM account_categories`;
 
 const accountSelect = `
-  SELECT id, category_id, name, sort_order, revision, archived_at,
+  SELECT id, category_id, name, owner, sort_order, revision, archived_at,
          created_at, updated_at
     FROM accounts`;
 
@@ -114,6 +117,7 @@ export interface InsertAccount {
   id: string;
   categoryId: string;
   name: string;
+  owner?: string;
   sortOrder: number;
   now: string;
 }
@@ -122,6 +126,7 @@ export interface UpdateAccount {
   id: string;
   categoryId: string;
   name: string;
+  owner: string;
   sortOrder: number;
   archivedAt: string | null;
   expectedRevision: number;
@@ -213,10 +218,17 @@ export class AccountRepository {
     await this.db
       .prepare(
         `INSERT INTO accounts
-         (id, category_id, name, sort_order, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)`,
+         (id, category_id, name, owner, sort_order, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)`,
       )
-      .bind(input.id, input.categoryId, input.name, input.sortOrder, input.now)
+      .bind(
+        input.id,
+        input.categoryId,
+        input.name,
+        input.owner ?? "",
+        input.sortOrder,
+        input.now,
+      )
       .run();
   }
 
@@ -247,13 +259,14 @@ export class AccountRepository {
     const result = await this.db
       .prepare(
         `UPDATE accounts
-            SET category_id = ?1, name = ?2, sort_order = ?3,
-                archived_at = ?4, revision = revision + 1, updated_at = ?5
-          WHERE id = ?6 AND revision = ?7`,
+            SET category_id = ?1, name = ?2, owner = ?3, sort_order = ?4,
+                archived_at = ?5, revision = revision + 1, updated_at = ?6
+          WHERE id = ?7 AND revision = ?8`,
       )
       .bind(
         input.categoryId,
         input.name,
+        input.owner,
         input.sortOrder,
         input.archivedAt,
         input.now,
@@ -305,6 +318,21 @@ export class AccountRepository {
           ORDER BY sort_order, lower(name), id`,
       )
       .bind(categoryId, options.includeArchived === true ? 1 : 0)
+      .all<{ id: string }>();
+    return result.results.map((row) => row.id);
+  }
+
+  async accountIdsForOwner(
+    owner: string,
+    options: { includeArchived?: boolean } = {},
+  ): Promise<string[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT id FROM accounts
+          WHERE owner = ?1 AND (?2 = 1 OR archived_at IS NULL)
+          ORDER BY category_id, sort_order, lower(name), id`,
+      )
+      .bind(owner, options.includeArchived === true ? 1 : 0)
       .all<{ id: string }>();
     return result.results.map((row) => row.id);
   }

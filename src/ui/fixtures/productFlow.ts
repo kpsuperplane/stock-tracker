@@ -100,6 +100,7 @@ export const productFlowFixture = {
       } satisfies CalendarMoverDto,
     ],
     dividends: [],
+    earnings: [],
     events: [
       {
         ...position,
@@ -113,6 +114,7 @@ export const productFlowFixture = {
     pendingFacts: [],
     splitReview: [],
     futureDividendStatus: "not_currently_known" as const,
+    earningsCoverageStatus: "unavailable" as const,
     conflicts: [],
     nextCursor: null,
   } satisfies CalendarReadModelDto,

@@ -41,6 +41,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM movement_analyses"),
     env.DB.prepare("DELETE FROM daily_market_facts"),
     env.DB.prepare("DELETE FROM dividend_events"),
+    env.DB.prepare("DELETE FROM earnings_events"),
+    env.DB.prepare("DELETE FROM earnings_calendar_coverage"),
     env.DB.prepare("DELETE FROM fact_revision_buckets"),
     env.DB.prepare("DELETE FROM import_rows"),
     env.DB.prepare("DELETE FROM import_batches"),
@@ -60,7 +62,7 @@ beforeEach(async () => {
     env.DB.prepare(
       `UPDATE accounts
           SET category_id = 'account-category-uncategorized',
-              name = 'Default Account', sort_order = 0, revision = 1,
+              name = 'Default Account', owner = '', sort_order = 0, revision = 1,
               archived_at = NULL, updated_at = datetime('now')
         WHERE id = 'account-default'`,
     ),

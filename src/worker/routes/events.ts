@@ -70,7 +70,7 @@ const timelineQuerySchema = z.object({
   instrumentId: z.string().min(1).max(128).optional(),
   symbol: z.string().min(1).max(32).optional(),
   type: z.enum(["transaction", "split"]).optional(),
-  scopeType: z.enum(["all", "category", "account"]).optional(),
+  scopeType: z.enum(["all", "owner", "category", "account"]).optional(),
   scopeId: z.string().min(1).max(128).optional(),
   cursor: z.string().min(1).max(1_024).optional(),
   limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).optional(),
@@ -480,7 +480,7 @@ interface ResolvedEventScope {
 
 const resolveEventScope = async (
   context: EventContext,
-  scopeType: "all" | "category" | "account" | undefined,
+  scopeType: "all" | "owner" | "category" | "account" | undefined,
   scopeId: string | undefined,
 ): Promise<ResolvedEventScope | Response> => {
   const type = scopeType ?? "all";
@@ -515,6 +515,34 @@ const resolveEventScope = async (
         "The selected account does not exist.",
       );
     return { key: `account:${account.id}`, accountIds: [account.id] };
+  }
+  if (type === "owner") {
+    const owner = scopeId.trim();
+    if (!owner)
+      return error(
+        context,
+        422,
+        "invalid_scope",
+        "The account scope is invalid.",
+      );
+    const accounts = await context.env.DB.prepare(
+      `SELECT id FROM accounts
+        WHERE owner = ?1
+        ORDER BY category_id, sort_order, lower(name), id`,
+    )
+      .bind(owner)
+      .all<{ id: string }>();
+    if (accounts.results.length === 0)
+      return error(
+        context,
+        422,
+        "scope_not_found",
+        "The selected owner does not exist.",
+      );
+    return {
+      key: `owner:${encodeURIComponent(owner)}`,
+      accountIds: accounts.results.map(({ id }) => id),
+    };
   }
   const category = await context.env.DB.prepare(
     "SELECT id FROM account_categories WHERE id = ?1",

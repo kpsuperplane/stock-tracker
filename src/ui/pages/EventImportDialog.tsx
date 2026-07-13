@@ -17,8 +17,9 @@ import {
   TableRow,
   VStack,
 } from "@astryxdesign/core";
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAccountScope } from "../accounts/AccountScopeContext";
+import { activeAccountsForScope } from "../accounts/scope";
 import {
   ApiClientError,
   type EventImportsApiClient,
@@ -194,19 +195,15 @@ export const EventImportDialog = ({
 }: EventImportDialogProps) => {
   const { t } = useI18n();
   const { selection, categories } = useAccountScope();
-  const accountOptions = categories.flatMap((category) =>
-    category.accounts
-      .filter((account) => account.archivedAt === null)
-      .map((account) => ({
+  const accountOptions = useMemo(
+    () =>
+      activeAccountsForScope(categories, selection).map((account) => ({
         value: account.id,
-        label: `${category.name} / ${account.name}`,
+        label: `${categories.find((category) => category.id === account.categoryId)?.name ?? t("category")} / ${account.name}`,
       })),
+    [categories, selection, t],
   );
-  const [accountId, setAccountId] = useState(
-    selection.scopeType === "account"
-      ? (selection.scopeId ?? "")
-      : (accountOptions[0]?.value ?? ""),
-  );
+  const [accountId, setAccountId] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<ImportPreviewResponse | null>(
     initialPreview ?? null,
@@ -219,6 +216,15 @@ export const EventImportDialog = ({
   const [isCommitting, setIsCommitting] = useState(false);
   const previewRequestId = useRef(0);
   const fileRef = useRef<File | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setAccountId((current) =>
+      accountOptions.some((option) => option.value === current)
+        ? current
+        : (accountOptions[0]?.value ?? ""),
+    );
+  }, [accountOptions, isOpen]);
 
   const clearPreview = () => {
     previewRequestId.current += 1;
@@ -241,6 +247,10 @@ export const EventImportDialog = ({
   };
 
   const handlePreview = async () => {
+    if (!accountId) {
+      setError(t("noActiveAccountsInScope"));
+      return;
+    }
     if (!file) {
       setError(t("chooseCsvFile"));
       return;
@@ -384,11 +394,18 @@ export const EventImportDialog = ({
             aria-label={t("account")}
             options={accountOptions}
             value={accountId}
-            onChange={setAccountId}
+            onChange={(next) => {
+              setAccountId(next);
+              clearPreview();
+              setError(null);
+            }}
             isDisabled={
               isPreviewing || isCommitting || accountOptions.length === 0
             }
           />
+          {accountOptions.length === 0 && (
+            <Banner status="warning" title={t("noActiveAccountsInScope")} />
+          )}
           <FileInput
             label={t("csvFile")}
             value={file}
@@ -412,7 +429,7 @@ export const EventImportDialog = ({
               variant="primary"
               label={isPreviewing ? t("previewingImport") : t("previewImport")}
               isLoading={isPreviewing}
-              isDisabled={!file || isPreviewing || isCommitting}
+              isDisabled={!file || !accountId || isPreviewing || isCommitting}
               onClick={handlePreview}
             />
             <Button

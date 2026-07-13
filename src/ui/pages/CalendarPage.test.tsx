@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type {
   CalendarDividendDto,
+  CalendarEarningsDto,
   CalendarMoverDto,
   CalendarReadModelDto,
 } from "../../shared/contracts";
@@ -73,6 +74,21 @@ const dividend: CalendarDividendDto = {
   provider: "provider-x",
 };
 
+const earnings: CalendarEarningsDto = {
+  id: "earnings-1",
+  instrumentId: "instrument-1",
+  symbol: "AAPL",
+  companyName: "Apple Inc.",
+  reportDate: "2026-07-12",
+  fiscalDateEnding: "2026-06-30",
+  epsEstimateDecimal: "1.42",
+  currency: "USD",
+  timeOfDay: "post-market",
+  heldQuantityDecimal: "2",
+  status: "active",
+  provider: "alpha-vantage-earnings",
+};
+
 const calendar: CalendarReadModelDto = {
   startDate: "2026-07-01",
   endDate: "2026-07-31",
@@ -81,14 +97,17 @@ const calendar: CalendarReadModelDto = {
   actualTradingDates: ["2026-07-10"],
   movers: [mover],
   dividends: [dividend],
+  earnings: [earnings],
   events: [
     { ...mover, kind: "mover" },
     { ...dividend, kind: "dividend" },
+    { ...earnings, kind: "earnings" },
   ],
   pending: [],
   pendingFacts: [],
   splitReview: [],
   futureDividendStatus: "not_currently_known",
+  earningsCoverageStatus: "current",
   conflicts: [],
   nextCursor: null,
 };
@@ -125,9 +144,11 @@ describe("CalendarPage", () => {
     expect(markup).toContain("Market calendar");
     expect(markup).toContain("+5.32%");
     expect(markup).toContain("AAPL $0.50");
+    expect(markup).toContain("AAPL · Earnings");
     expect(markup).toContain("Monthly dividends: USD $0.50");
     expect(markup).toContain("Dividend breakdown");
     expect(markup).toContain('aria-label="AAPL, Dividend, AAPL $0.50"');
+    expect(markup).toContain('aria-label="AAPL, Earnings, AAPL · Earnings"');
     expect(markup).toContain(
       "Future dividend coverage is not currently known.",
     );
@@ -174,6 +195,36 @@ describe("CalendarPage", () => {
     expect(markup).toContain('rel="noopener noreferrer"');
   });
 
+  it("shows earnings timing, fiscal period, estimate, and provider details", () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <MoverDialog
+          selection={{ kind: "earnings", event: earnings }}
+          onOpenChange={() => undefined}
+          onSelect={() => undefined}
+        />
+      </I18nProvider>,
+    );
+    expect(markup).toContain("Report date");
+    expect(markup).toContain("Fiscal period ending");
+    expect(markup).toContain("EPS estimate");
+    expect(markup).toContain("Post-market");
+    expect(markup).toContain("$1.42");
+    expect(markup).toContain("alpha-vantage-earnings");
+
+    const chinese = renderToStaticMarkup(
+      <I18nProvider initialLocale="cn">
+        <MoverDialog
+          selection={{ kind: "earnings", event: earnings }}
+          onOpenChange={() => undefined}
+          onSelect={() => undefined}
+        />
+      </I18nProvider>,
+    );
+    expect(chinese).toContain("财报日期");
+    expect(chinese).toContain("盘后");
+  });
+
   it("renders the week layout and pending date facts", () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">
@@ -183,6 +234,7 @@ describe("CalendarPage", () => {
             events: [],
             movers: [],
             dividends: [],
+            earnings: [],
             pending: [
               {
                 kind: "market_fact",
@@ -204,7 +256,9 @@ describe("CalendarPage", () => {
     expect(markup).toContain("Week");
     expect(markup).toContain("Weekly dividends: $0.00");
     expect(markup).toContain("Market data pending: Waiting for close.");
-    expect(markup).not.toContain("No movers or dividends in this range.");
+    expect(markup).not.toContain(
+      "No movers, dividends, or earnings in this range.",
+    );
   });
 
   it("totals period dividends exactly by native currency", () => {
@@ -273,13 +327,14 @@ describe("CalendarPage", () => {
             events: [],
             movers: [],
             dividends: [],
+            earnings: [],
             pending: [],
           }}
           today="2026-07-11"
         />
       </I18nProvider>,
     );
-    expect(empty).toContain("No movers or dividends in this range.");
+    expect(empty).toContain("No movers, dividends, or earnings in this range.");
   });
 
   it("surfaces paginated calendar ranges and merges subsequent pages", () => {
@@ -295,17 +350,26 @@ describe("CalendarPage", () => {
     expect(paginated).toContain("This range has more events.");
 
     const merged = mergeCalendarPages(
-      { ...calendar, events: [{ ...mover, kind: "mover" }] },
+      {
+        ...calendar,
+        earnings: [],
+        events: [{ ...mover, kind: "mover" }],
+      },
       {
         ...calendar,
         actualTradingDates: ["2026-07-11"],
-        events: [{ ...dividend, kind: "dividend" }],
+        events: [
+          { ...dividend, kind: "dividend" },
+          { ...earnings, kind: "earnings" },
+        ],
         movers: [],
         dividends: [dividend],
+        earnings: [earnings],
         nextCursor: null,
       },
     );
-    expect(merged.events).toHaveLength(2);
+    expect(merged.events).toHaveLength(3);
+    expect(merged.earnings).toEqual([earnings]);
     expect(merged.actualTradingDates).toEqual(["2026-07-10", "2026-07-11"]);
     expect(merged.nextCursor).toBeNull();
     expect(calendarLoadMoreDisabled(false, false, false)).toBe(false);
@@ -313,6 +377,24 @@ describe("CalendarPage", () => {
     expect(calendarLoadMoreDisabled(false, true, false)).toBe(true);
     expect(calendarLoadMoreDisabled(false, false, true)).toBe(true);
     expect(calendarLoadMoreDisabled(false, false, false, true)).toBe(true);
+  });
+
+  it("shows a visible warning when earnings coverage is unavailable", () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <CalendarPage
+          initialCalendar={{
+            ...calendar,
+            earningsCoverageStatus: "unavailable",
+          }}
+          today="2026-07-11"
+        />
+      </I18nProvider>,
+    );
+    expect(markup).toContain("Earnings coverage is not current.");
+    expect(markup).toContain(
+      "Scheduled earnings dates may be incomplete until the next successful Alpha Vantage refresh.",
+    );
   });
 
   it("uses error severity for failed facts and conflict codes", () => {

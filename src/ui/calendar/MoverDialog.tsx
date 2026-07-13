@@ -10,6 +10,7 @@ import {
 import { Icon } from "@astryxdesign/core/Icon";
 import type {
   CalendarDividendDto,
+  CalendarEarningsDto,
   CalendarMoverDto,
 } from "../../shared/contracts";
 import { useI18n } from "../i18n/I18nProvider";
@@ -246,6 +247,47 @@ const DividendDetails = ({ event }: { event: CalendarDividendDto }) => {
   );
 };
 
+const EarningsDetails = ({ event }: { event: CalendarEarningsDto }) => {
+  const { locale, t } = useI18n();
+  const timeLabel =
+    event.timeOfDay === "pre-market"
+      ? t("preMarket")
+      : event.timeOfDay === "during-market"
+        ? t("duringMarket")
+        : event.timeOfDay === "post-market"
+          ? t("postMarket")
+          : (event.timeOfDay ?? "—");
+  return (
+    <VStack gap={3}>
+      <DetailRow
+        label={t("reportDate")}
+        value={formatDate(event.reportDate, locale)}
+      />
+      <DetailRow
+        label={t("fiscalPeriodEnding")}
+        value={formatDate(event.fiscalDateEnding, locale)}
+      />
+      <DetailRow
+        label={t("epsEstimate")}
+        value={safeCurrency(event.epsEstimateDecimal, event.currency, locale)}
+      />
+      <DetailRow label={t("reportTiming")} value={timeLabel} />
+      <DetailRow
+        label={t("heldQuantity")}
+        value={safeDecimal(event.heldQuantityDecimal, locale)}
+      />
+      <HStack gap={1} wrap="wrap">
+        <Badge
+          variant={event.status === "active" ? "success" : "warning"}
+          label={t(event.status)}
+        />
+        <Badge variant="neutral" label={t("bestEffort")} />
+      </HStack>
+      <DetailRow label={t("source")} value={event.provider} />
+    </VStack>
+  );
+};
+
 const MoreDetails = ({
   date,
   events,
@@ -283,7 +325,9 @@ export const MoverDialog = ({
       ? `${selection.event.symbol} · ${t("mover")}`
       : selection?.kind === "dividend"
         ? `${selection.event.symbol} · ${t("dividend")}`
-        : t("dateDetails");
+        : selection?.kind === "earnings"
+          ? `${selection.event.symbol} · ${t("earnings")}`
+          : t("dateDetails");
   const closeButton = (
     <Button
       variant="ghost"
@@ -311,6 +355,9 @@ export const MoverDialog = ({
         )}
         {selection?.kind === "dividend" && (
           <DividendDetails event={selection.event} />
+        )}
+        {selection?.kind === "earnings" && (
+          <EarningsDetails event={selection.event} />
         )}
         {selection?.kind === "more" && (
           <MoreDetails

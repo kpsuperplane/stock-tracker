@@ -85,6 +85,7 @@ export const mergeCalendarPages = (
     next.dividends,
     (value) => value.id,
   ),
+  earnings: mergeUnique(current.earnings, next.earnings, (value) => value.id),
   events: mergeUnique(
     current.events,
     next.events,
@@ -228,11 +229,13 @@ export const CalendarPage = ({
       actualTradingDates: [],
       movers: [],
       dividends: [],
+      earnings: [],
       events: [],
       pending: [],
       pendingFacts: [],
       splitReview: [],
       futureDividendStatus: "known",
+      earningsCoverageStatus: "current",
       conflicts: [],
       nextCursor: null,
     };
@@ -274,6 +277,27 @@ export const CalendarPage = ({
                 size="sm"
                 label={t("futureDividendsUnknown")}
                 tooltip={t("futureDividendsUnknown")}
+                icon={<Icon icon="warning" color="warning" size="sm" />}
+                isIconOnly
+              />
+            </Popover>
+          )}
+          {calendar.earningsCoverageStatus !== "current" && (
+            <Popover
+              label={t("earningsCoverageUnknown")}
+              width="min(22rem, calc(100vw - 2rem))"
+              content={
+                <VStack gap={1}>
+                  <strong>{t("earningsCoverageUnknown")}</strong>
+                  <div>{t("earningsCoverageUnknownDescription")}</div>
+                </VStack>
+              }
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                label={t("earningsCoverageUnknown")}
+                tooltip={t("earningsCoverageUnknown")}
                 icon={<Icon icon="warning" color="warning" size="sm" />}
                 isIconOnly
               />
@@ -395,6 +419,13 @@ export const CalendarPage = ({
           inert={calendarBusy ? true : undefined}
         >
           <VStack gap={3}>
+            {calendar && calendar.earningsCoverageStatus !== "current" && (
+              <Banner
+                status="warning"
+                title={t("earningsCoverageUnknown")}
+                description={t("earningsCoverageUnknownDescription")}
+              />
+            )}
             {calendar &&
               calendar.events.length === 0 &&
               calendar.pending.length === 0 && (

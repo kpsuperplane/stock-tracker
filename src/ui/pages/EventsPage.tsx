@@ -27,6 +27,7 @@ import type {
   TransactionEventDto,
 } from "../../shared/contracts";
 import { useAccountScope } from "../accounts/AccountScopeContext";
+import { activeAccountsForScope } from "../accounts/scope";
 import {
   ApiClientError,
   type EventFilters,
@@ -184,25 +185,41 @@ const TransactionDialog = ({
   );
   const [validationError, setValidationError] = useState<string | null>(null);
   const { selection, categories } = useAccountScope();
-  const accountOptions = categories.flatMap((category) =>
-    category.accounts
-      .filter(
-        (account) =>
-          account.archivedAt === null || account.id === transaction?.accountId,
-      )
-      .map((account) => ({
-        value: account.id,
-        label: `${category.name} / ${account.name}${account.archivedAt ? " · archived" : ""}`,
-      })),
-  );
+  const accountOptions = useMemo(() => {
+    const scopedAccounts = activeAccountsForScope(categories, selection);
+    const currentAccount = transaction?.accountId
+      ? categories
+          .flatMap((category) => category.accounts)
+          .find((account) => account.id === transaction.accountId)
+      : undefined;
+    const availableAccounts =
+      currentAccount &&
+      !scopedAccounts.some((account) => account.id === currentAccount.id)
+        ? [currentAccount, ...scopedAccounts]
+        : scopedAccounts;
+    return availableAccounts.map((account) => ({
+      value: account.id,
+      label: `${categories.find((category) => category.id === account.categoryId)?.name ?? t("category")} / ${account.name}${account.archivedAt ? ` (${t("archived")})` : ""}`,
+    }));
+  }, [categories, selection, t, transaction]);
   const [accountId, setAccountId] = useState(
-    transaction?.accountId ??
-      (selection.scopeType === "account" ? selection.scopeId : undefined) ??
-      accountOptions[0]?.value ??
-      "",
+    transaction?.accountId ?? accountOptions[0]?.value ?? "",
   );
 
+  useEffect(() => {
+    if (transaction) return;
+    setAccountId((current) =>
+      accountOptions.some((option) => option.value === current)
+        ? current
+        : (accountOptions[0]?.value ?? ""),
+    );
+  }, [accountOptions, transaction]);
+
   const submit = async () => {
+    if (!accountId) {
+      setValidationError(t("noActiveAccountsInScope"));
+      return;
+    }
     if ((!transaction && symbol.trim() === "") || tradeDate === "") {
       setValidationError(t("genericMutationError"));
       return;
@@ -265,6 +282,9 @@ const TransactionDialog = ({
             onChange={setAccountId}
             isDisabled={accountOptions.length === 0}
           />
+          {accountOptions.length === 0 && (
+            <Banner status="warning" title={t("noActiveAccountsInScope")} />
+          )}
           <Selector
             label={t("transactionSide")}
             aria-label={t("transactionSide")}
@@ -303,7 +323,7 @@ const TransactionDialog = ({
             variant="primary"
             label={isSaving ? t("save") : t("save")}
             isLoading={isSaving}
-            isDisabled={isSaving}
+            isDisabled={isSaving || !accountId}
             onClick={() => void submit()}
           />
         </HStack>

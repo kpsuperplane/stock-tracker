@@ -73,6 +73,8 @@ describe("normalized facts and reconciliation schema", () => {
         "movement_analyses",
         "news_sources",
         "dividend_events",
+        "earnings_events",
+        "earnings_calendar_coverage",
         "fact_revision_buckets",
         "dispatch_batches",
         "dispatch_batch_items",

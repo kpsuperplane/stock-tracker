@@ -92,6 +92,7 @@ export interface AccountDto {
   id: string;
   categoryId: string;
   name: string;
+  owner: string;
   sortOrder: number;
   revision: number;
   archivedAt: string | null;
@@ -110,7 +111,7 @@ export interface AccountCategoryDto {
   accounts: AccountDto[];
 }
 
-export type AccountScopeType = "all" | "category" | "account";
+export type AccountScopeType = "all" | "owner" | "category" | "account";
 
 export interface AccountScopeSelection {
   scopeType: AccountScopeType;
@@ -260,6 +261,21 @@ export interface CalendarDividendDto {
   provider: string;
 }
 
+export interface CalendarEarningsDto {
+  id: string;
+  instrumentId: string;
+  symbol: string;
+  companyName: string;
+  reportDate: string;
+  fiscalDateEnding: string;
+  epsEstimateDecimal: string | null;
+  currency: "USD" | "CAD";
+  timeOfDay: string | null;
+  heldQuantityDecimal: string;
+  status: "active" | "stale";
+  provider: string;
+}
+
 export interface CalendarPendingDto {
   kind: "market_fact" | "split_review";
   instrumentId: string | null;
@@ -277,14 +293,17 @@ export interface CalendarReadModelDto {
   actualTradingDates: string[];
   movers: CalendarMoverDto[];
   dividends: CalendarDividendDto[];
+  earnings: CalendarEarningsDto[];
   events: Array<
     | (CalendarMoverDto & { kind: "mover" })
     | (CalendarDividendDto & { kind: "dividend" })
+    | (CalendarEarningsDto & { kind: "earnings" })
   >;
   pending: CalendarPendingDto[];
   pendingFacts: CalendarPendingDto[];
   splitReview: CalendarPendingDto[];
   futureDividendStatus: "known" | "not_currently_known";
+  earningsCoverageStatus: "current" | "stale" | "unavailable";
   conflicts: PortfolioConflictDto[];
   nextCursor: string | null;
 }

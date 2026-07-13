@@ -130,6 +130,7 @@ describe("portfolio and calendar read models", () => {
       expect.arrayContaining([
         "daily_market_facts_date_instrument_idx",
         "dividend_events_ex_date_instrument_idx",
+        "earnings_events_report_date_instrument_idx",
         "work_items_fact_date_idx",
       ]),
     );
@@ -147,6 +148,7 @@ describe("portfolio and calendar read models", () => {
       id: "scope-account-one",
       categoryId: "scope-category",
       name: "Account One",
+      owner: "Kevin",
       sortOrder: 0,
       now,
     });
@@ -154,6 +156,7 @@ describe("portfolio and calendar read models", () => {
       id: "scope-account-two",
       categoryId: "scope-category",
       name: "Account Two",
+      owner: "kevin",
       sortOrder: 1,
       now,
     });
@@ -212,6 +215,21 @@ describe("portfolio and calendar read models", () => {
       expect.objectContaining({ symbol: "SCOPE.ONE", quantityDecimal: "10" }),
     ]);
 
+    const ownerPortfolio = await exports.default.fetch(
+      new Request(
+        "http://local/api/portfolio?today=2026-07-10&scopeType=owner&scopeId=Kevin",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(ownerPortfolio.status).toBe(200);
+    expect(
+      (
+        await ownerPortfolio.json<{
+          portfolio: { positions: Array<{ symbol: string }> };
+        }>()
+      ).portfolio.positions.map(({ symbol }) => symbol),
+    ).toEqual(["SCOPE.ONE"]);
+
     const categoryCalendar = await exports.default.fetch(
       new Request(
         "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10&scopeType=category&scopeId=scope-category",
@@ -241,6 +259,25 @@ describe("portfolio and calendar read models", () => {
         type: "transaction",
         symbol: "SCOPE.TWO",
         accountId: "scope-account-two",
+      }),
+    ]);
+
+    const ownerEvents = await exports.default.fetch(
+      new Request("http://local/api/events?scopeType=owner&scopeId=Kevin", {
+        headers: { Authorization: authorization },
+      }),
+    );
+    expect(ownerEvents.status).toBe(200);
+    expect(
+      (
+        await ownerEvents.json<{
+          events: Array<{ symbol: string; accountId?: string }>;
+        }>()
+      ).events,
+    ).toEqual([
+      expect.objectContaining({
+        symbol: "SCOPE.ONE",
+        accountId: "scope-account-one",
       }),
     ]);
   });
@@ -1065,6 +1102,89 @@ describe("portfolio and calendar read models", () => {
         expect.objectContaining({ date: "2026-07-08", status: "queued" }),
       ]),
     );
+  });
+
+  it("shows earnings only when the scoped account held shares on the report date", async () => {
+    await insertInstrument({
+      id: "earnings-calendar",
+      symbol: "EARN",
+      currency: "USD",
+    });
+    await insertTransaction({
+      id: "earnings-calendar-buy",
+      instrumentId: "earnings-calendar",
+      date: "2026-01-02",
+      quantity: "4",
+    });
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO transactions
+         (id, instrument_id, account_id, trade_date, side, quantity_decimal,
+          price_decimal, revision, created_at, updated_at)
+         VALUES ('earnings-calendar-sell', 'earnings-calendar',
+                 'account-default', '2026-07-25', 'sell', '4', '100', 1, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO earnings_events
+         (id, instrument_id, report_date, fiscal_date_ending,
+          eps_estimate_decimal, currency, time_of_day, provider,
+          provider_event_id, provider_revision, retrieved_at, status,
+          created_at, updated_at)
+         VALUES ('earnings-held', 'earnings-calendar', '2026-07-22',
+                 '2026-06-30', '1.25', 'USD', 'post-market',
+                 'alpha-vantage-earnings', 'earnings-held', 'r1', ?1,
+                 'active', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO earnings_events
+         (id, instrument_id, report_date, fiscal_date_ending,
+          eps_estimate_decimal, currency, time_of_day, provider,
+          provider_event_id, provider_revision, retrieved_at, status,
+          created_at, updated_at)
+         VALUES ('earnings-sold', 'earnings-calendar', '2026-07-30',
+                 '2026-09-30', '1.4', 'USD', 'pre-market',
+                 'alpha-vantage-earnings', 'earnings-sold', 'r1', ?1,
+                 'active', ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO earnings_calendar_coverage
+         (provider, coverage_start_date, coverage_end_date, horizon,
+          provider_revision, observed_at, status, updated_at)
+         VALUES ('alpha-vantage-earnings', '2026-07-10', '2026-10-10',
+                 '3month', 'coverage-r1', ?1, 'current', ?1)`,
+      ).bind(now),
+    ]);
+
+    const response = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-31&view=month",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(response.status).toBe(200);
+    const payload = await response.json<{
+      calendar: {
+        earnings: Array<Record<string, unknown>>;
+        events: Array<Record<string, unknown>>;
+        earningsCoverageStatus: string;
+      };
+    }>();
+    expect(payload.calendar.earnings).toEqual([
+      expect.objectContaining({
+        id: "earnings-held",
+        reportDate: "2026-07-22",
+        fiscalDateEnding: "2026-06-30",
+        epsEstimateDecimal: "1.25",
+        heldQuantityDecimal: "4",
+        timeOfDay: "post-market",
+      }),
+    ]);
+    expect(payload.calendar.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "earnings-held", kind: "earnings" }),
+      ]),
+    );
+    expect(payload.calendar.earningsCoverageStatus).toBe("current");
   });
 
   it("returns job progress and bounded-range/cursor errors", async () => {

@@ -154,6 +154,12 @@
   color: var(--color-text-accent);
 }
 
+.calendar-event-chip--earnings {
+  color: var(--color-warning);
+  background: var(--color-background-muted);
+  border-inline-start-color: var(--color-warning);
+}
+
 .calendar-more {
   padding-inline: 0.2rem;
   color: var(--color-text-accent);

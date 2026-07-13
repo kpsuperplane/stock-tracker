@@ -9,7 +9,7 @@ export function isIsoCalendarDate(value: string): boolean {
   );
 }
 
-export async function readBoundedJson(response: Response): Promise<unknown> {
+async function readBoundedBytes(response: Response): Promise<Uint8Array> {
   const declaredLength = Number(
     response.headers.get("content-length") ?? Number.NaN,
   );
@@ -46,9 +46,25 @@ export async function readBoundedJson(response: Response): Promise<unknown> {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return bytes;
+}
+
+export async function readBoundedText(response: Response): Promise<string> {
+  return new TextDecoder("utf-8", { fatal: true }).decode(
+    await readBoundedBytes(response),
+  );
+}
+
+export async function readBoundedJson(response: Response): Promise<unknown> {
   try {
-    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-  } catch {
+    return JSON.parse(await readBoundedText(response)) as unknown;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "provider_response_too_large"
+    ) {
+      throw error;
+    }
     throw new Error("provider_schema");
   }
 }

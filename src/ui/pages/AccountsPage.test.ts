@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AccountCategoryDto, AccountDto } from "../../shared/contracts";
-import { ApiClientError } from "../api";
 import {
-  accountsMutationMessageKey,
-  mergeAccountNameDrafts,
+  mergeAccountDrafts,
   visibleAccountsForCategory,
-} from "./AccountsPage";
+} from "../accounts/AccountRows";
+import { ApiClientError } from "../api";
+import { accountsMutationMessageKey } from "./AccountsPage";
 
 const account = (
   id: string,
@@ -15,6 +15,7 @@ const account = (
   id,
   categoryId: "category-1",
   name,
+  owner: "",
   sortOrder: 0,
   revision: 1,
   archivedAt,
@@ -41,14 +42,17 @@ describe("AccountsPage state helpers", () => {
     ]);
 
     expect(
-      mergeAccountNameDrafts(
+      mergeAccountDrafts(
         [refreshed],
-        { "account-1": "TFSA draft", "account-2": "Old RRSP" },
+        {
+          "account-1": { name: "TFSA draft", owner: "Kevin" },
+          "account-2": { name: "Old RRSP", owner: "Old owner" },
+        },
         "account-1",
       ),
     ).toMatchObject({
-      "account-1": "TFSA draft",
-      "account-2": "RRSP updated",
+      "account-1": { name: "TFSA draft", owner: "Kevin" },
+      "account-2": { name: "RRSP updated", owner: "" },
     });
   });
 

@@ -9,7 +9,7 @@ export interface Env extends Cloudflare.Env {
   NORMALIZED_WORK_DLQ: Queue<PipelineDispatchMessage>;
   EXA_API_KEY?: string;
   MARKETAUX_API_TOKEN?: string;
-  ALPHA_VANTAGE_API_KEY?: string;
+  ALPHA_VANTAGE_API_KEY: string;
   READ_MODELS_ENABLED?: string;
   READ_MODEL_ENABLED?: string;
   PORTFOLIO_READ_MODELS_ENABLED?: string;

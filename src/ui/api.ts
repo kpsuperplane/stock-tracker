@@ -499,6 +499,7 @@ export const api = {
     createAccount: (input: {
       categoryId: string;
       name: string;
+      owner?: string;
       sortOrder?: number;
     }) =>
       request<{ account: AccountCategoryDto["accounts"][number] }>(
@@ -510,6 +511,7 @@ export const api = {
       input: {
         categoryId?: string;
         name?: string;
+        owner?: string;
         sortOrder?: number;
         archived?: boolean;
       },

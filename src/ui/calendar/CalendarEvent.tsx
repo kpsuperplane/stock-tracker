@@ -1,5 +1,6 @@
 import type {
   CalendarDividendDto,
+  CalendarEarningsDto,
   CalendarMoverDto,
   CalendarReadModelDto,
 } from "../../shared/contracts";
@@ -14,6 +15,7 @@ export type CalendarEvent = CalendarReadModelDto["events"][number];
 export type CalendarSelection =
   | { kind: "mover"; event: CalendarMoverDto }
   | { kind: "dividend"; event: CalendarDividendDto }
+  | { kind: "earnings"; event: CalendarEarningsDto }
   | { kind: "more"; date: string; events: CalendarEvent[] };
 
 export const isMoverEvent = (
@@ -24,6 +26,11 @@ export const isDividendEvent = (
   event: CalendarEvent,
 ): event is CalendarDividendDto & { kind: "dividend" } =>
   event.kind === "dividend";
+
+export const isEarningsEvent = (
+  event: CalendarEvent,
+): event is CalendarEarningsDto & { kind: "earnings" } =>
+  event.kind === "earnings";
 
 export const safeDecimal = (
   value: string | null,
@@ -78,8 +85,11 @@ const moverTone = (event: CalendarMoverDto): "up" | "down" | "neutral" => {
   return value.startsWith("-") ? "down" : "up";
 };
 
-export const eventDate = (event: CalendarEvent): string =>
-  isMoverEvent(event) ? event.tradingDate : event.exDate;
+export const eventDate = (event: CalendarEvent): string => {
+  if (isMoverEvent(event)) return event.tradingDate;
+  if (isDividendEvent(event)) return event.exDate;
+  return event.reportDate;
+};
 
 export interface CalendarEventChipProps {
   event: CalendarEvent;
@@ -94,36 +104,41 @@ export const CalendarEventChip = ({
 }: CalendarEventChipProps) => {
   const { t } = useI18n();
   const mover = isMoverEvent(event);
+  const dividend = isDividendEvent(event);
   const label = mover
     ? `${event.symbol} ${signedDecimal(
         event.movement?.movementPercentDecimal ?? null,
         locale,
       )}%`
-    : `${event.symbol} ${
-        event.expectedTotalValueDecimal === null
-          ? "—"
-          : safeCurrency(
-              event.expectedTotalValueDecimal,
-              event.currency,
-              locale,
-            )
-      }`;
-  const tone = mover ? moverTone(event) : "dividend";
+    : dividend
+      ? `${event.symbol} ${
+          event.expectedTotalValueDecimal === null
+            ? "—"
+            : safeCurrency(
+                event.expectedTotalValueDecimal,
+                event.currency,
+                locale,
+              )
+        }`
+      : `${event.symbol} · ${t("earnings")}`;
+  const tone = mover ? `mover-${moverTone(event)}` : event.kind;
   const ariaLabel = mover
     ? `${event.symbol}, ${t("mover")}, ${label}`
-    : `${event.symbol}, ${t("dividend")}, ${label}`;
+    : dividend
+      ? `${event.symbol}, ${t("dividend")}, ${label}`
+      : `${event.symbol}, ${t("earnings")}, ${label}`;
   return (
     <button
       type="button"
-      className={`calendar-event-chip calendar-event-chip--${
-        mover ? `mover-${tone}` : "dividend"
-      }`}
+      className={`calendar-event-chip calendar-event-chip--${tone}`}
       aria-haspopup="dialog"
       aria-label={ariaLabel}
       title={ariaLabel}
-      onClick={() =>
-        onSelect(mover ? { kind: "mover", event } : { kind: "dividend", event })
-      }
+      onClick={() => {
+        if (mover) onSelect({ kind: "mover", event });
+        else if (dividend) onSelect({ kind: "dividend", event });
+        else onSelect({ kind: "earnings", event });
+      }}
     >
       {label}
     </button>

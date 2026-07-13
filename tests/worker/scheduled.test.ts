@@ -43,6 +43,14 @@ describe("scheduled handler", () => {
         "SELECT COUNT(*) AS count FROM dispatch_events",
       ).first(),
     ).toEqual({ count: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT status, error_code FROM earnings_calendar_coverage WHERE provider = 'alpha-vantage-earnings'",
+      ).first(),
+    ).toEqual({
+      status: "unavailable",
+      error_code: "provider_key_unavailable",
+    });
   });
 
   it("runs one bounded migration page only when the migrator flag is enabled", async () => {

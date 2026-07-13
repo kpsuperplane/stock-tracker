@@ -49,6 +49,7 @@ describe("account routes", () => {
         body: JSON.stringify({
           categoryId: category.category.id,
           name: " Account 1 ",
+          owner: " Kevin ",
         }),
       }),
     );
@@ -57,12 +58,14 @@ describe("account routes", () => {
       account: {
         id: string;
         name: string;
+        owner: string;
         categoryId: string;
         revision: number;
       };
     }>();
     expect(account.account).toMatchObject({
       name: "Account 1",
+      owner: "Kevin",
       categoryId: category.category.id,
       revision: 1,
     });
@@ -71,14 +74,45 @@ describe("account routes", () => {
       new Request(`http://local/api/accounts/accounts/${account.account.id}`, {
         method: "PATCH",
         headers: { ...headers, "If-Match": String(account.account.revision) },
-        body: JSON.stringify({ name: "Account One" }),
+        body: JSON.stringify({ name: "Account One", owner: "Pat" }),
       }),
     );
     expect(renamed.status).toBe(200);
     expect(
-      (await renamed.json<{ account: { name: string; revision: number } }>())
+      (
+        await renamed.json<{
+          account: { name: string; owner: string; revision: number };
+        }>()
+      ).account,
+    ).toEqual(
+      expect.objectContaining({
+        name: "Account One",
+        owner: "Pat",
+        revision: 2,
+      }),
+    );
+
+    const cleared = await exports.default.fetch(
+      new Request(`http://local/api/accounts/accounts/${account.account.id}`, {
+        method: "PATCH",
+        headers: { ...headers, "If-Match": "2" },
+        body: JSON.stringify({ owner: "   " }),
+      }),
+    );
+    expect(cleared.status).toBe(200);
+    expect(
+      (await cleared.json<{ account: { owner: string; revision: number } }>())
         .account,
-    ).toEqual(expect.objectContaining({ name: "Account One", revision: 2 }));
+    ).toEqual(expect.objectContaining({ owner: "", revision: 3 }));
+
+    const nullable = await exports.default.fetch(
+      new Request(`http://local/api/accounts/accounts/${account.account.id}`, {
+        method: "PATCH",
+        headers: { ...headers, "If-Match": "3" },
+        body: JSON.stringify({ owner: null }),
+      }),
+    );
+    expect(nullable.status).toBe(422);
 
     const stale = await exports.default.fetch(
       new Request(`http://local/api/accounts/accounts/${account.account.id}`, {

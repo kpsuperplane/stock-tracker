@@ -207,11 +207,13 @@ describe("product event API clients", () => {
       actualTradingDates: ["2026-07-10"],
       movers: [],
       dividends: [],
+      earnings: [],
       events: [],
       pending: [],
       pendingFacts: [],
       splitReview: [],
       futureDividendStatus: "not_currently_known" as const,
+      earningsCoverageStatus: "unavailable" as const,
       conflicts: [],
       nextCursor: null,
     };

@@ -5,7 +5,11 @@
   "compatibility_date": "2026-07-09",
   "compatibility_flags": ["nodejs_compat"],
   "secrets": {
-    "required": ["BASIC_AUTH_USERNAME", "BASIC_AUTH_PASSWORD"]
+    "required": [
+      "BASIC_AUTH_USERNAME",
+      "BASIC_AUTH_PASSWORD",
+      "ALPHA_VANTAGE_API_KEY"
+    ]
   },
   "vars": {
     "PORTFOLIO_DUAL_WRITE_ENABLED": "false",

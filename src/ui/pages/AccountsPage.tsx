@@ -12,7 +12,14 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AccountCategoryDto, AccountDto } from "../../shared/contracts";
+import type { AccountCategoryDto } from "../../shared/contracts";
+import {
+  type AccountDraft,
+  AccountRows,
+  emptyAccountDraft,
+  mergeAccountDrafts,
+  visibleAccountsForCategory,
+} from "../accounts/AccountRows";
 import { useAccountScope } from "../accounts/AccountScopeContext";
 import { ApiClientError, api } from "../api";
 import type { MessageKey } from "../i18n/catalog";
@@ -53,28 +60,19 @@ export const accountsMutationMessageKey = (error: unknown): MessageKey => {
   }
 };
 
-export const mergeAccountNameDrafts = (
+const mergeCategoryNameDrafts = (
   categories: AccountCategoryDto[],
   previous: Record<string, string>,
   editingId: string | null,
 ): Record<string, string> => {
   const next = Object.fromEntries(
-    categories.flatMap((category) => [
-      [category.id, category.name],
-      ...category.accounts.map((account) => [account.id, account.name]),
-    ]),
+    categories.map((category) => [category.id, category.name]),
   );
   if (editingId && previous[editingId] !== undefined) {
     next[editingId] = previous[editingId];
   }
   return next;
 };
-
-export const visibleAccountsForCategory = (
-  accounts: AccountDto[],
-  showArchived: boolean,
-) =>
-  showArchived ? accounts : accounts.filter((account) => !account.archivedAt);
 
 const InlineMutationError = ({ message }: { message: string | undefined }) =>
   message ? (
@@ -108,8 +106,15 @@ export const AccountsPage = () => {
   const { reload: reloadAccountScope } = useAccountScope();
   const [categories, setCategories] = useState<AccountCategoryDto[]>([]);
   const [newCategory, setNewCategory] = useState("");
-  const [newAccounts, setNewAccounts] = useState<Record<string, string>>({});
-  const [names, setNames] = useState<Record<string, string>>({});
+  const [newAccounts, setNewAccounts] = useState<Record<string, AccountDraft>>(
+    {},
+  );
+  const [categoryNames, setCategoryNames] = useState<Record<string, string>>(
+    {},
+  );
+  const [accountDrafts, setAccountDrafts] = useState<
+    Record<string, AccountDraft>
+  >({});
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -131,12 +136,15 @@ export const AccountsPage = () => {
       try {
         const next = (await api.accounts.tree(true)).categories;
         setCategories(next);
-        setNames((previous) =>
-          mergeAccountNameDrafts(
+        setCategoryNames((previous) =>
+          mergeCategoryNameDrafts(
             next,
             previous,
             editingRef.current?.id ?? null,
           ),
+        );
+        setAccountDrafts((previous) =>
+          mergeAccountDrafts(next, previous, editingRef.current?.id ?? null),
         );
         setLoadFailed(false);
         return true;
@@ -191,10 +199,9 @@ export const AccountsPage = () => {
     }
   };
 
-  const beginEditing = (key: string, id: string, name: string) => {
+  const beginEditing = (key: string, id: string) => {
     editingRef.current = { key, id };
     setEditingKey(key);
-    setNames((previous) => ({ ...previous, [id]: name }));
   };
 
   const stopEditing = () => {
@@ -322,7 +329,7 @@ export const AccountsPage = () => {
             </div>
 
             {visibleCategories.map((category) => {
-              const categoryName = names[category.id] ?? category.name;
+              const categoryName = categoryNames[category.id] ?? category.name;
               const categoryEditKey = `category-edit-${category.id}`;
               const isEditingCategory = editingKey === categoryEditKey;
               const visibleAccounts = visibleAccountsForCategory(
@@ -332,20 +339,6 @@ export const AccountsPage = () => {
               const canArchiveCategory = category.accounts.every(
                 (account) => account.archivedAt !== null,
               );
-              const createAccount = () => {
-                const name = newAccounts[category.id] ?? "";
-                if (!name.trim() || busy !== null) return;
-                void run(`account-create-${category.id}`, async () => {
-                  await api.accounts.createAccount({
-                    categoryId: category.id,
-                    name,
-                  });
-                  setNewAccounts((previous) => ({
-                    ...previous,
-                    [category.id]: "",
-                  }));
-                });
-              };
 
               return (
                 <Card
@@ -374,7 +367,7 @@ export const AccountsPage = () => {
                           label={t("categoryName")}
                           value={categoryName}
                           onChange={(value) =>
-                            setNames((previous) => ({
+                            setCategoryNames((previous) => ({
                               ...previous,
                               [category.id]: value,
                             }))
@@ -417,7 +410,7 @@ export const AccountsPage = () => {
                             label={`${t("cancel")} ${category.name}`}
                             isDisabled={busy !== null}
                             onClick={() => {
-                              setNames((previous) => ({
+                              setCategoryNames((previous) => ({
                                 ...previous,
                                 [category.id]: category.name,
                               }));
@@ -442,11 +435,7 @@ export const AccountsPage = () => {
                             label={`${t("rename")} ${category.name}`}
                             isDisabled={editingKey !== null || busy !== null}
                             onClick={() =>
-                              beginEditing(
-                                categoryEditKey,
-                                category.id,
-                                category.name,
-                              )
+                              beginEditing(categoryEditKey, category.id)
                             }
                           >
                             {t("rename")}
@@ -501,216 +490,44 @@ export const AccountsPage = () => {
                       </Text>
                     </div>
 
-                    {visibleAccounts.length === 0 && (
-                      <div className="accounts-category-empty">
-                        <Text as="p" type="supporting" color="secondary">
-                          {showArchived
-                            ? t("noAccountsInCategory")
-                            : t("noActiveAccountsInCategory")}
-                        </Text>
-                      </div>
-                    )}
-
-                    {visibleAccounts.length > 0 && (
-                      <div className="accounts-account-list">
-                        {visibleAccounts.map((account) => {
-                          const accountName = names[account.id] ?? account.name;
-                          const accountEditKey = `account-edit-${account.id}`;
-                          const isEditingAccount =
-                            editingKey === accountEditKey;
-                          return (
-                            <div
-                              className={`accounts-account-row${
-                                isEditingAccount ? " is-editing" : ""
-                              }${category.archivedAt ? " is-read-only" : ""}`}
-                              key={account.id}
-                            >
-                              {isEditingAccount ? (
-                                <TextInput
-                                  label={t("accountName")}
-                                  value={accountName}
-                                  onChange={(value) =>
-                                    setNames((previous) => ({
-                                      ...previous,
-                                      [account.id]: value,
-                                    }))
-                                  }
-                                  width="100%"
-                                  size="sm"
-                                  isDisabled={busy !== null}
-                                />
-                              ) : (
-                                <Text weight="medium">{account.name}</Text>
-                              )}
-                              <div className="accounts-account-status">
-                                <Badge
-                                  variant={
-                                    account.archivedAt ? "neutral" : "success"
-                                  }
-                                  label={
-                                    account.archivedAt
-                                      ? t("archived")
-                                      : t("active")
-                                  }
-                                />
-                              </div>
-                              {!category.archivedAt && (
-                                <HStack
-                                  gap={1}
-                                  wrap="nowrap"
-                                  justify="end"
-                                  className="accounts-account-actions"
-                                >
-                                  {isEditingAccount ? (
-                                    <>
-                                      <Button
-                                        variant="secondary"
-                                        size="sm"
-                                        label={`${t("save")} ${account.name}`}
-                                        isDisabled={
-                                          busy !== null ||
-                                          !accountName.trim() ||
-                                          accountName === account.name
-                                        }
-                                        isLoading={
-                                          busy === `account-${account.id}`
-                                        }
-                                        onClick={() =>
-                                          void run(
-                                            `account-${account.id}`,
-                                            () =>
-                                              api.accounts.updateAccount(
-                                                account.id,
-                                                { name: accountName },
-                                                account.revision,
-                                              ),
-                                            [`account-archive-${account.id}`],
-                                          ).then((saved) => {
-                                            if (saved) stopEditing();
-                                          })
-                                        }
-                                      >
-                                        {t("save")}
-                                      </Button>
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        label={`${t("cancel")} ${account.name}`}
-                                        isDisabled={busy !== null}
-                                        onClick={() => {
-                                          setNames((previous) => ({
-                                            ...previous,
-                                            [account.id]: account.name,
-                                          }));
-                                          stopEditing();
-                                        }}
-                                      >
-                                        {t("cancel")}
-                                      </Button>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        label={`${t("rename")} ${account.name}`}
-                                        isDisabled={
-                                          editingKey !== null || busy !== null
-                                        }
-                                        onClick={() =>
-                                          beginEditing(
-                                            accountEditKey,
-                                            account.id,
-                                            account.name,
-                                          )
-                                        }
-                                      >
-                                        {t("rename")}
-                                      </Button>
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        label={`${
-                                          account.archivedAt
-                                            ? t("restore")
-                                            : t("archive")
-                                        } ${account.name}`}
-                                        isDisabled={busy !== null}
-                                        onClick={() =>
-                                          void run(
-                                            `account-archive-${account.id}`,
-                                            () =>
-                                              api.accounts.updateAccount(
-                                                account.id,
-                                                {
-                                                  archived:
-                                                    account.archivedAt === null,
-                                                },
-                                                account.revision,
-                                              ),
-                                            [`account-${account.id}`],
-                                          )
-                                        }
-                                      >
-                                        {account.archivedAt
-                                          ? t("restore")
-                                          : t("archive")}
-                                      </Button>
-                                    </>
-                                  )}
-                                </HStack>
-                              )}
-                              <InlineMutationError
-                                message={
-                                  mutationErrors[`account-${account.id}`] ??
-                                  mutationErrors[
-                                    `account-archive-${account.id}`
-                                  ]
-                                }
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {!category.archivedAt && (
-                      <VStack gap={1}>
-                        <div className="accounts-add-account-row">
-                          <TextInput
-                            label={t("newAccount")}
-                            placeholder={t("newAccount")}
-                            value={newAccounts[category.id] ?? ""}
-                            onChange={(value) =>
-                              setNewAccounts((previous) => ({
-                                ...previous,
-                                [category.id]: value,
-                              }))
-                            }
-                            onEnter={createAccount}
-                            width="100%"
-                            size="sm"
-                            isDisabled={busy !== null}
-                          />
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            label={t("addAccount")}
-                            isDisabled={
-                              busy !== null ||
-                              !(newAccounts[category.id] ?? "").trim()
-                            }
-                            isLoading={busy === `account-create-${category.id}`}
-                            onClick={createAccount}
-                          />
-                        </div>
-                        <InlineMutationError
-                          message={
-                            mutationErrors[`account-create-${category.id}`]
-                          }
-                        />
-                      </VStack>
-                    )}
+                    <AccountRows
+                      category={category}
+                      accounts={visibleAccounts}
+                      emptyMessage={
+                        showArchived
+                          ? t("noAccountsInCategory")
+                          : t("noActiveAccountsInCategory")
+                      }
+                      drafts={accountDrafts}
+                      newDraft={newAccounts[category.id] ?? emptyAccountDraft()}
+                      editingKey={editingKey}
+                      busy={busy}
+                      mutationErrors={mutationErrors}
+                      onDraftChange={(accountId, draft) =>
+                        setAccountDrafts((previous) => ({
+                          ...previous,
+                          [accountId]: draft,
+                        }))
+                      }
+                      onNewDraftChange={(draft) =>
+                        setNewAccounts((previous) => ({
+                          ...previous,
+                          [category.id]: draft,
+                        }))
+                      }
+                      onBeginEditing={(key, account) => {
+                        setAccountDrafts((previous) => ({
+                          ...previous,
+                          [account.id]: {
+                            name: account.name,
+                            owner: account.owner,
+                          },
+                        }));
+                        beginEditing(key, account.id);
+                      }}
+                      onStopEditing={stopEditing}
+                      runMutation={run}
+                    />
                   </div>
                 </Card>
               );

@@ -5,6 +5,7 @@ import type { Env } from "../env";
 import { ApiError } from "../errors";
 
 const name = z.string().trim().min(1).max(120);
+const owner = z.string().trim().max(120);
 const sortOrder = z.number().int().min(0).max(1_000_000).optional();
 
 const mapConstraint = (error: unknown): never => {
@@ -136,7 +137,12 @@ accountRoutes.patch("/categories/:id", async (context) => {
 
 accountRoutes.post("/accounts", async (context) => {
   const body = z
-    .object({ categoryId: z.string().min(1).max(128), name, sortOrder })
+    .object({
+      categoryId: z.string().min(1).max(128),
+      name,
+      owner: owner.optional(),
+      sortOrder,
+    })
     .strict()
     .parse(await context.req.json());
   const repository = new AccountRepository(context.env.DB);
@@ -150,6 +156,7 @@ accountRoutes.post("/accounts", async (context) => {
       id,
       categoryId: body.categoryId,
       name: body.name,
+      owner: body.owner ?? "",
       sortOrder: body.sortOrder ?? 0,
       now: now(),
     });
@@ -164,6 +171,7 @@ accountRoutes.patch("/accounts/:id", async (context) => {
     .object({
       categoryId: z.string().min(1).max(128).optional(),
       name: name.optional(),
+      owner: owner.optional(),
       sortOrder,
       archived: z.boolean().optional(),
     })
@@ -209,6 +217,7 @@ accountRoutes.patch("/accounts/:id", async (context) => {
     id: existing.id,
     categoryId,
     name: body.name ?? existing.name,
+    owner: body.owner ?? existing.owner,
     sortOrder: body.sortOrder ?? existing.sortOrder,
     archivedAt:
       body.archived === undefined

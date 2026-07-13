@@ -2,12 +2,14 @@ import { readPortfolioFeatureFlags } from "../config/features";
 import { RunRepository } from "../db/runs";
 import { TickerRepository } from "../db/tickers";
 import { AlphaVantageDividendEventProvider } from "../providers/alpha-vantage-dividends";
+import { AlphaVantageEarningsProvider } from "../providers/alpha-vantage-earnings";
 import { YahooDividendEventProvider } from "../providers/yahoo-dividends";
 import {
   BackfillPipelineAdapter,
   backfillPipelineFlagEnabled,
 } from "../services/backfill-pipeline";
 import { ScheduledDividendRefreshService } from "../services/dividend-refresh";
+import { ScheduledEarningsRefreshService } from "../services/earnings-refresh";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
 import { LegacyFactMigrator } from "../services/legacy-fact-migrator";
@@ -133,6 +135,35 @@ export const handleScheduled = async (
       message: safeErrorMessage(error),
     });
   }
+  let earningsRefresh: string | null = null;
+  try {
+    earningsRefresh = JSON.stringify(
+      await new ScheduledEarningsRefreshService({
+        db: env.DB,
+        ...(env.ALPHA_VANTAGE_API_KEY
+          ? {
+              provider: new AlphaVantageEarningsProvider(
+                env.ALPHA_VANTAGE_API_KEY,
+              ),
+            }
+          : {}),
+        now: () => new Date(now),
+      }).refreshHeldInstruments(),
+    );
+    logEvent("earnings_refresh_scheduled", {
+      scheduledTime: now,
+      result: earningsRefresh,
+    });
+  } catch (error) {
+    earningsRefresh = JSON.stringify({
+      status: "failed",
+      message: safeErrorMessage(error),
+    });
+    logEvent("earnings_refresh_failed", {
+      scheduledTime: now,
+      message: safeErrorMessage(error),
+    });
+  }
   let migrationResult: string | null = null;
   if (portfolioFlags.migrator) {
     try {
@@ -188,5 +219,6 @@ export const handleScheduled = async (
     compatibilityRetried,
     migration: migrationResult,
     dividends: dividendRefresh,
+    earnings: earningsRefresh,
   });
 };
