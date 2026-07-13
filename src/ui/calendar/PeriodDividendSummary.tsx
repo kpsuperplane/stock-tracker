@@ -1,6 +1,7 @@
-import { Button, HStack, Popover, VStack } from "@astryxdesign/core";
+import { Button, HStack, Icon, Popover, VStack } from "@astryxdesign/core";
 import { DecimalValue } from "../../domain/decimal";
 import type { CalendarDividendDto } from "../../shared/contracts";
+import { CashIcon } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
 import { formatDate } from "../system/formatters";
 import { safeCurrency } from "./CalendarEvent";
@@ -138,7 +139,18 @@ export const PeriodDividendSummary = ({
           </VStack>
         }
       >
-        <Button variant="secondary" size="sm" label={label} />
+        <Button
+          variant="secondary"
+          size="sm"
+          label={label}
+          {...(compact
+            ? {
+                tooltip: label,
+                icon: <Icon icon={CashIcon} size="sm" />,
+                isIconOnly: true,
+              }
+            : {})}
+        />
       </Popover>
     </div>
   );

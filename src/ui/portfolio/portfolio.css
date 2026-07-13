@@ -128,16 +128,9 @@
   min-width: 0;
 }
 
-.portfolio-range-shortcuts {
-  max-width: 100%;
+.portfolio-range-select {
+  width: min(10rem, 100%);
   min-width: 0;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  scrollbar-width: thin;
-}
-
-.portfolio-range-shortcuts > [role="radiogroup"] {
-  width: max-content;
 }
 
 .portfolio-control-end {
@@ -260,13 +253,8 @@
     flex-direction: column;
   }
 
-  .portfolio-range-shortcuts {
-    flex: 1 1 auto;
-    width: auto;
-  }
-
-  .portfolio-range-shortcuts > [role="radiogroup"] {
-    width: max-content;
+  .portfolio-range-select {
+    width: 100%;
   }
 
   .portfolio-control-end {

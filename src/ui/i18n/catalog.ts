@@ -105,7 +105,6 @@ export const messageCatalog = {
     portfolioDescription: "Long-term value, gains, and dividend performance",
     eventsDescription: "Historical buy and sell events",
     calendarDescription: "Movers, dividends, and earnings dates",
-    calendarHeading: "Market calendar",
     calendarIntro:
       "Historical ±5% movers, ex-dividend dates, and earnings dates for derived holdings.",
     month: "Month",
@@ -440,7 +439,6 @@ export const messageCatalog = {
     portfolioDescription: "长期市值、收益与股息表现",
     eventsDescription: "历史买入与卖出事件",
     calendarDescription: "异动、股息与财报日期",
-    calendarHeading: "市场日历",
     calendarIntro: "显示推导持仓的历史 ±5% 异动、除息日期与财报日期。",
     month: "月",
     week: "周",

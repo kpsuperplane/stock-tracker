@@ -68,7 +68,7 @@ const routeCopy = {
   },
   calendar: {
     title: "calendar",
-    pageTitle: "calendarHeading",
+    pageTitle: "calendar",
     description: "calendarDescription",
   },
   status: {
@@ -162,10 +162,12 @@ const ProductNavigation = ({ activeRoute }: NavigationProps) => {
       heading={
         <div className="product-top-nav-heading">
           <MobileNavToggle className="product-mobile-nav-toggle" />
-          <TopNavHeading
-            heading={t(routeCopy[activeRoute].pageTitle)}
-            headingHref={pathForRoute(activeRoute)}
-          />
+          {activeRoute !== "calendar" && (
+            <TopNavHeading
+              heading={t(routeCopy[activeRoute].pageTitle)}
+              headingHref={pathForRoute(activeRoute)}
+            />
+          )}
         </div>
       }
       startContent={renderMode === "default" ? topNavActions : undefined}

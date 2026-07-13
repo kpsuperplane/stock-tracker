@@ -140,11 +140,15 @@ describe("CalendarPage", () => {
     );
 
     expect(markup).toContain('data-testid="calendar-page"');
-    expect(markup).toContain("Market calendar");
+    expect(markup).not.toContain("Market calendar");
+    expect(markup).toContain("calendar-toolbar__date");
+    expect(markup).toContain("July 2026");
+    expect(markup).toContain('aria-label="July 2026, Today"');
     expect(markup).toContain("+5.32%");
     expect(markup).toContain("AAPL $0.50");
     expect(markup).toContain("AAPL · Earnings");
     expect(markup).toContain("Dividends: USD $0.50");
+    expect(markup).toContain('aria-label="Dividends: USD $0.50"');
     expect(markup).not.toContain("Monthly dividends: USD $0.50");
     expect(markup).toContain("Dividend breakdown");
     expect(markup).toContain('role="radiogroup" aria-label="Calendar view"');
@@ -158,6 +162,16 @@ describe("CalendarPage", () => {
     expect(markup).not.toContain("Earnings coverage is not current.");
     expect(markup).toContain('type="button"');
     expect(markup).toContain('aria-label="AAPL, Mover, AAPL +5.32%"');
+
+    const controlsStart = markup.indexOf('class="calendar-page__controls"');
+    const controlsEnd = markup.indexOf('class="calendar-page__content"');
+    const controls = markup.slice(controlsStart, controlsEnd);
+    expect(controls.indexOf('role="radiogroup"')).toBeLessThan(
+      controls.indexOf("calendar-toolbar"),
+    );
+    expect(controls.indexOf("calendar-toolbar")).toBeLessThan(
+      controls.indexOf("calendar-dividend-summary"),
+    );
   });
 
   it("switches static labels to Chinese while retaining Chinese summaries", () => {

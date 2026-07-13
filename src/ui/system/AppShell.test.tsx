@@ -30,6 +30,7 @@ describe("product AppShell", () => {
     expect(markup).toContain('href="/calendar"');
     expect(markup).toContain('aria-current="page"');
     expect(markup).toContain("Calendar");
+    expect(markup).not.toContain("Market calendar");
     expect(markup).toContain('aria-label="Language"');
     expect(markup).toContain('role="radiogroup"');
     expect(markup).toContain('role="radio" aria-checked="true"');

@@ -16,7 +16,10 @@ import {
   calendarApi,
 } from "../api";
 import type { CalendarSelection } from "../calendar/CalendarEvent";
-import { CalendarToolbar } from "../calendar/CalendarToolbar";
+import {
+  CalendarToolbar,
+  calendarPeriodTitle,
+} from "../calendar/CalendarToolbar";
 import {
   type CalendarView,
   rangeForView,
@@ -235,6 +238,17 @@ export const CalendarPage = ({
     const visibleRange = rangeForView(anchorDate, view);
     return (
       <div className="calendar-page__controls">
+        <SegmentedControl
+          value={view}
+          onChange={(value) => {
+            if (value === "month" || value === "week") setView(value);
+          }}
+          label={t("calendarView")}
+          size="sm"
+        >
+          <SegmentedControlItem value="month" label={t("month")} />
+          <SegmentedControlItem value="week" label={t("week")} />
+        </SegmentedControl>
         <CalendarToolbar
           view={view}
           anchorDate={anchorDate}
@@ -248,17 +262,6 @@ export const CalendarPage = ({
           endDate={visibleRange.endDate}
           compact
         />
-        <SegmentedControl
-          value={view}
-          onChange={(value) => {
-            if (value === "month" || value === "week") setView(value);
-          }}
-          label={t("calendarView")}
-          size="sm"
-        >
-          <SegmentedControlItem value="month" label={t("month")} />
-          <SegmentedControlItem value="week" label={t("week")} />
-        </SegmentedControl>
       </div>
     );
   }, [anchorDate, calendar, t, todayDate, view]);
@@ -267,7 +270,7 @@ export const CalendarPage = ({
   return (
     <VStack gap={3} className="calendar-page" data-testid="calendar-page">
       <Heading level={1} className="product-page-title-hidden">
-        {t("calendarHeading")}
+        {calendarPeriodTitle(view, anchorDate, locale)}
       </Heading>
       {!hasTopNavActions && pageActions}
 

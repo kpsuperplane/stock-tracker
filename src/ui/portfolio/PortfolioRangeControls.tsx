@@ -6,6 +6,7 @@ import {
   Popover,
   SegmentedControl,
   SegmentedControlItem,
+  Selector,
 } from "@astryxdesign/core";
 import type {
   PortfolioHistoryCoverageDto,
@@ -74,8 +75,15 @@ export const PortfolioRangeControls = ({
   return (
     <div className="portfolio-controls">
       <div className="portfolio-range-cluster">
-        <div className="portfolio-range-shortcuts">
-          <SegmentedControl
+        <div className="portfolio-range-select">
+          <Selector
+            label={t("selectRange")}
+            isLabelHidden
+            aria-label={t("selectRange")}
+            options={presets.map((preset) => ({
+              value: preset.value,
+              label: t(preset.labelKey),
+            }))}
             value={state.range}
             onChange={(value) => {
               const nextPreset = presets.find(
@@ -83,17 +91,9 @@ export const PortfolioRangeControls = ({
               );
               if (nextPreset) onRangeChange(nextPreset.value);
             }}
-            label={t("selectRange")}
             size="sm"
-          >
-            {presets.map((preset) => (
-              <SegmentedControlItem
-                key={preset.value}
-                value={preset.value}
-                label={t(preset.labelKey)}
-              />
-            ))}
-          </SegmentedControl>
+            width="100%"
+          />
         </div>
         {coverage && coverage.status !== "complete" && (
           <Popover

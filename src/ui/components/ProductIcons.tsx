@@ -30,6 +30,15 @@ export const DownloadIcon: IconType = (props) => (
   </svg>
 );
 
+export const CashIcon: IconType = (props) => (
+  // biome-ignore lint/a11y/noSvgWithoutTitle: The parent button provides the localized label.
+  <svg {...svgProps} {...props}>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <circle cx="12" cy="12" r="3" />
+    <path d="M7 8h.01M17 16h.01" />
+  </svg>
+);
+
 export const WarningIcon: IconType = (props) => (
   <svg {...svgProps} {...props}>
     <title>Warning</title>

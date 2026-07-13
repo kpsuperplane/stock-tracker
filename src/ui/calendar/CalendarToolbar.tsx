@@ -1,4 +1,5 @@
-import { Button, Heading, HStack } from "@astryxdesign/core";
+import { Button, HStack } from "@astryxdesign/core";
+import type { Locale } from "../i18n/catalog";
 import { useI18n } from "../i18n/I18nProvider";
 import { formatDate } from "../system/formatters";
 import {
@@ -16,6 +17,20 @@ export interface CalendarToolbarProps {
   onNavigate: (date: string) => void;
 }
 
+export const calendarPeriodTitle = (
+  view: CalendarView,
+  anchorDate: string,
+  locale: Locale,
+): string => {
+  const range = rangeForView(anchorDate, view);
+  return view === "month"
+    ? monthLabel(anchorDate, locale)
+    : `${formatDate(range.startDate, locale)} – ${formatDate(
+        range.endDate,
+        locale,
+      )}`;
+};
+
 export const CalendarToolbar = ({
   view,
   anchorDate,
@@ -23,14 +38,7 @@ export const CalendarToolbar = ({
   onNavigate,
 }: CalendarToolbarProps) => {
   const { locale, t } = useI18n();
-  const range = rangeForView(anchorDate, view);
-  const title =
-    view === "month"
-      ? monthLabel(anchorDate, locale)
-      : `${formatDate(range.startDate, locale)} – ${formatDate(
-          range.endDate,
-          locale,
-        )}`;
+  const title = calendarPeriodTitle(view, anchorDate, locale);
   return (
     <HStack className="calendar-toolbar" gap={1} align="center" wrap="wrap">
       <Button
@@ -49,9 +57,11 @@ export const CalendarToolbar = ({
         }
       />
       <Button
+        className="calendar-toolbar__date"
         variant="ghost"
         size="sm"
-        label={t("today")}
+        label={title}
+        aria-label={`${title}, ${t("today")}`}
         onClick={() => onNavigate(today)}
       />
       <Button
@@ -69,9 +79,6 @@ export const CalendarToolbar = ({
           )
         }
       />
-      <Heading level={2} className="calendar-toolbar__title">
-        {title}
-      </Heading>
     </HStack>
   );
 };
