@@ -17,7 +17,9 @@ describe("earnings history maintenance route", () => {
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain("Run one batch");
-    expect(body).toContain('headers: { "X-Stock-Tracker-Request": "1" }');
+    expect(body).toContain('"Content-Type": "application/json"');
+    expect(body).toContain('"X-Stock-Tracker-Request": "1"');
+    expect(body).toContain('body: "{}"');
   });
 
   it("runs one bounded batch and persists retry state", async () => {

@@ -35,7 +35,11 @@ earningsRoutes.get("/history-backfill", (context) =>
         try {
           const response = await fetch("/api/earnings/history-backfill", {
             method: "POST",
-            headers: { "X-Stock-Tracker-Request": "1" },
+            headers: {
+              "Content-Type": "application/json",
+              "X-Stock-Tracker-Request": "1",
+            },
+            body: "{}",
           });
           const body = await response.json();
           result.textContent = JSON.stringify({ status: response.status, body }, null, 2);
