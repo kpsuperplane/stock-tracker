@@ -12,6 +12,8 @@ export interface PlanningWorkRecord {
   updatedAt: string;
 }
 
+export const RESUMABLE_PLANNING_MAX_ATTEMPTS = 10;
+
 export type WorkItemState =
   | "pending"
   | "dispatching"
@@ -62,7 +64,7 @@ export interface WorkItemRecord {
   completedAt: string | null;
 }
 
-interface WorkItemRow {
+export interface WorkItemRow {
   id: string;
   scope: WorkItemRecord["scope"];
   pipeline_job_id: string | null;
@@ -88,7 +90,7 @@ interface WorkItemRow {
   completed_at: string | null;
 }
 
-const mapWorkItem = (row: WorkItemRow): WorkItemRecord => ({
+export const mapWorkItem = (row: WorkItemRow): WorkItemRecord => ({
   id: row.id,
   scope: row.scope,
   pipelineJobId: row.pipeline_job_id,

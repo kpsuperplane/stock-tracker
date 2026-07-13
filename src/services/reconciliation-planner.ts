@@ -1,6 +1,7 @@
 import type { CorporateActionRecord } from "../db/corporate-actions";
 import type { PipelineJobRecord } from "../db/pipeline-jobs";
 import { PipelineJobRepository } from "../db/pipeline-jobs";
+import { ReconciliationWorkRepository } from "../db/reconciliation-work";
 import type { TransactionRecord } from "../db/transactions";
 import {
   type GlobalFactWorkRecord,
@@ -305,6 +306,7 @@ const isQualifiedMovement = (fact: FactRow): boolean => {
 
 export class ReconciliationPlannerService {
   private readonly jobs: PipelineJobRepository;
+  private readonly reconciliationWork: ReconciliationWorkRepository;
   private readonly workItems: WorkItemRepository;
   private readonly now: () => Date;
   private readonly newId: () => string;
@@ -315,6 +317,7 @@ export class ReconciliationPlannerService {
     private readonly dependencies: ReconciliationPlannerDependencies,
   ) {
     this.jobs = new PipelineJobRepository(dependencies.db);
+    this.reconciliationWork = new ReconciliationWorkRepository(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
     this.now = dependencies.now ?? (() => new Date());
     this.newId = dependencies.newId ?? (() => crypto.randomUUID());
@@ -444,59 +447,27 @@ export class ReconciliationPlannerService {
       dividendOffset,
       dividendOffset + pageSize,
     );
-    let createdCount = 0;
-    let reusedCount = 0;
-    let attachedCount = 0;
-    const globalWork: WorkItemRecord[] = [];
-    for (const candidate of page) {
-      const workRecord: GlobalFactWorkRecord = {
-        id: this.newId(),
-        workType: candidate.workType,
-        instrumentId: candidate.instrumentId,
-        effectiveDate: candidate.effectiveDate,
-        dependencyRevision: candidate.dependencyRevision,
-        forcedRefreshGeneration: candidate.forcedRefreshGeneration,
-        deterministicKey: WorkItemRepository.globalFactKey(candidate),
-        priority: candidate.priority,
-        maxAttempts: 3,
-        availableAt: timestamp,
-        retentionUntil: null,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      };
-      const before = await this.workItems.findByDeterministicKey(
-        workRecord.deterministicKey,
-      );
-      const work = await this.workItems.ensureGlobal(workRecord);
-      await this.workItems
-        .promotePriorityStatement({
-          id: work.id,
-          priority: candidate.priority,
-          updatedAt: timestamp,
-        })
-        .run();
-      const promotedWork = {
-        ...work,
-        priority: Math.max(work.priority, candidate.priority),
-        updatedAt: timestamp,
-      };
-      if (!before) createdCount += 1;
-      if (work.state === "complete") reusedCount += 1;
-      const attached = await this.workItems.attachToJob({
+    const workRecords: GlobalFactWorkRecord[] = page.map((candidate) => ({
+      id: this.newId(),
+      workType: candidate.workType,
+      instrumentId: candidate.instrumentId,
+      effectiveDate: candidate.effectiveDate,
+      dependencyRevision: candidate.dependencyRevision,
+      forcedRefreshGeneration: candidate.forcedRefreshGeneration,
+      deterministicKey: WorkItemRepository.globalFactKey(candidate),
+      priority: candidate.priority,
+      maxAttempts: 3,
+      availableAt: timestamp,
+      retentionUntil: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+    const { createdCount, reusedCount, attachedCount, globalWork } =
+      await this.reconciliationWork.materializePage({
         pipelineJobId,
-        workItemId: work.id,
-        relationship: "required",
-        outcome:
-          work.state === "complete"
-            ? "reused"
-            : work.state === "terminal"
-              ? "failed"
-              : "pending",
+        work: workRecords,
         now: timestamp,
       });
-      if (attached) attachedCount += 1;
-      globalWork.push(promotedWork);
-    }
     const end = offset + page.length;
     const dividendEnd = dividendOffset + dividendPage.length;
     const globalComplete = end >= built.candidates.length;

@@ -113,7 +113,10 @@ import {
   type PipelineJobRecord,
   PipelineJobRepository,
 } from "../db/pipeline-jobs";
-import { WorkItemRepository } from "../db/work-items";
+import {
+  RESUMABLE_PLANNING_MAX_ATTEMPTS,
+  WorkItemRepository,
+} from "../db/work-items";
 import { deriveHoldings } from "../domain/holdings";
 import { ReconciliationPlannerService } from "./reconciliation-planner";
 
@@ -140,6 +143,21 @@ export type ScheduledPlannerResult =
       kind: "skipped";
       reason: "not_planner_trigger" | "weekend" | "holiday" | "no_positions";
     };
+
+export interface AutomaticPlanningError {
+  pipelineJobId: string;
+  message: string;
+}
+
+export interface AutomaticPlanningResult {
+  jobs: number;
+  pages: number;
+  workItems: number;
+  errors: AutomaticPlanningError[];
+}
+
+const planningErrorMessage = (error: unknown): string =>
+  (error instanceof Error ? error.message : String(error)).slice(0, 500);
 
 interface InstrumentRow {
   id: string;
@@ -324,7 +342,7 @@ export class ScheduledReconciliationService {
               "scheduled_reconciliation_plan",
             ),
             priority: 100,
-            maxAttempts: 5,
+            maxAttempts: RESUMABLE_PLANNING_MAX_ATTEMPTS,
             createdAt: timestamp,
             updatedAt: timestamp,
           }),
@@ -364,7 +382,7 @@ export class ScheduledReconciliationService {
   async continueAutomaticPlanning(
     at: Date = this.now(),
     maxJobs = 10,
-  ): Promise<{ jobs: number; pages: number; workItems: number }> {
+  ): Promise<AutomaticPlanningResult> {
     const timestamp = at.toISOString();
     const rows = await this.dependencies.db
       .prepare(
@@ -379,17 +397,70 @@ export class ScheduledReconciliationService {
       .all<{ id: string; requestedEndDate: string | null }>();
     let pages = 0;
     let workItems = 0;
+    const errors: AutomaticPlanningError[] = [];
     for (const row of rows.results) {
-      const result = await this.planPages(
-        row.id,
-        row.requestedEndDate ?? torontoTradingDate(at),
-        timestamp,
-      );
-      await this.completeIfSettled(row.id, timestamp);
-      pages += result.pages;
-      workItems += result.workItems;
+      try {
+        const result = await this.planPages(
+          row.id,
+          row.requestedEndDate ?? torontoTradingDate(at),
+          timestamp,
+        );
+        await this.completeIfSettled(row.id, timestamp);
+        pages += result.pages;
+        workItems += result.workItems;
+      } catch (error) {
+        const message = planningErrorMessage(error);
+        errors.push({ pipelineJobId: row.id, message });
+        try {
+          await this.terminalizeExhaustedPlanner(row.id, timestamp, message);
+        } catch (recoveryError) {
+          errors.push({
+            pipelineJobId: row.id,
+            message: `planner_recovery_failed:${planningErrorMessage(recoveryError)}`,
+          });
+        }
+      }
     }
-    return { jobs: rows.results.length, pages, workItems };
+    return { jobs: rows.results.length, pages, workItems, errors };
+  }
+
+  private async terminalizeExhaustedPlanner(
+    pipelineJobId: string,
+    timestamp: string,
+    message: string,
+  ): Promise<void> {
+    const [job, planner] = await Promise.all([
+      this.jobs.findById(pipelineJobId),
+      this.workItems.findPlanningForJob(pipelineJobId),
+    ]);
+    if (
+      !job ||
+      !planner ||
+      !["pending", "planning", "running"].includes(job.status) ||
+      planner.state !== "processing" ||
+      planner.processingLeaseUntil === null ||
+      planner.processingLeaseUntil > timestamp ||
+      planner.attemptCount < planner.maxAttempts
+    ) {
+      return;
+    }
+    const terminalized = await this.workItems.transition({
+      id: planner.id,
+      from: "processing",
+      to: "terminal",
+      now: timestamp,
+      expectedProcessingLeaseUntil: planner.processingLeaseUntil,
+      errorCode: "planner_attempts_exhausted",
+      errorMessage: message,
+    });
+    if (terminalized) {
+      await this.jobs.transition({
+        id: pipelineJobId,
+        from: job.status,
+        to: "terminal",
+        now: timestamp,
+      });
+    }
   }
 
   private async planPages(

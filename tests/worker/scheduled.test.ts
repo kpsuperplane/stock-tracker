@@ -248,7 +248,12 @@ describe("scheduled handler", () => {
       ).first(),
     ).toEqual({ planner_cursor: "10" });
     const continuation = await service.continueAutomaticPlanning(new Date(now));
-    expect(continuation).toEqual({ jobs: 1, pages: 1, workItems: 1 });
+    expect(continuation).toEqual({
+      jobs: 1,
+      pages: 1,
+      workItems: 1,
+      errors: [],
+    });
     expect(
       await env.DB.prepare(
         `SELECT planner_cursor FROM pipeline_jobs

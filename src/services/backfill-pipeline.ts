@@ -2,7 +2,10 @@ import {
   type PipelineJobRecord,
   PipelineJobRepository,
 } from "../db/pipeline-jobs";
-import { WorkItemRepository } from "../db/work-items";
+import {
+  RESUMABLE_PLANNING_MAX_ATTEMPTS,
+  WorkItemRepository,
+} from "../db/work-items";
 import { isMarketTradingDayForExchange } from "../domain/market-calendar";
 import { ReconciliationPlannerService } from "./reconciliation-planner";
 
@@ -107,7 +110,7 @@ export class BackfillPipelineAdapter {
         "backfill_reconciliation_plan",
       ),
       priority: 200,
-      maxAttempts: 5,
+      maxAttempts: RESUMABLE_PLANNING_MAX_ATTEMPTS,
       createdAt: now,
       updatedAt: now,
     };

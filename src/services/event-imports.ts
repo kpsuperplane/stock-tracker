@@ -8,7 +8,10 @@ import type { InstrumentRecord } from "../db/instruments";
 import { PipelineJobRepository } from "../db/pipeline-jobs";
 import { PositionBasisRepository } from "../db/position-basis";
 import { FactRevisionBucketRepository } from "../db/revision-buckets";
-import { WorkItemRepository } from "../db/work-items";
+import {
+  RESUMABLE_PLANNING_MAX_ATTEMPTS,
+  WorkItemRepository,
+} from "../db/work-items";
 import { deriveHoldings } from "../domain/holdings";
 import type {
   CorporateActionProvider,
@@ -764,7 +767,7 @@ export class EventImportsService {
         workType: PLANNING_WORK_TYPE,
         deterministicKey: `job:${jobId}:ledger-reconciliation-plan`,
         priority: 100,
-        maxAttempts: 3,
+        maxAttempts: RESUMABLE_PLANNING_MAX_ATTEMPTS,
         createdAt: timestamp,
         updatedAt: timestamp,
       }),

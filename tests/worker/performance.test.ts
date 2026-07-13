@@ -610,7 +610,7 @@ describe("portfolio performance budgets", () => {
       previousCompletedTradingDate: "2025-12-30",
     });
     expect(planner.complete || planner.createdCount > 0).toBe(true);
-    expect(plannerMetrics.queries).toBeLessThanOrEqual(250);
+    expect(plannerMetrics.queries).toBeLessThanOrEqual(80);
     expect(plannerMetrics.durationMs).toBeLessThanOrEqual(1_000);
     expect(performance.now() - plannerStarted).toBeLessThan(5_000);
 

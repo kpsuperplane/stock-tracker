@@ -159,8 +159,8 @@ describe("ledger reconciliation lifecycle", () => {
       new Date(recoveredAt),
     );
 
-    expect(first).toEqual({ jobs: 1, pages: 1, workItems: 0 });
-    expect(second).toEqual({ jobs: 0, pages: 0, workItems: 0 });
+    expect(first).toEqual({ jobs: 1, pages: 1, workItems: 0, errors: [] });
+    expect(second).toEqual({ jobs: 0, pages: 0, workItems: 0, errors: [] });
     expect(
       await env.DB.prepare(
         "SELECT status FROM pipeline_jobs WHERE id = 'ledger-filled'",
@@ -192,7 +192,7 @@ describe("ledger reconciliation lifecycle", () => {
       .bind(globalWork.results[0]?.id)
       .first<{ count: number }>();
 
-    expect(result).toEqual({ jobs: 2, pages: 2, workItems: 4 });
+    expect(result).toEqual({ jobs: 2, pages: 2, workItems: 4, errors: [] });
     expect(globalWork.results).toEqual([
       expect.objectContaining({ effectiveDate: "2026-07-01" }),
       expect.objectContaining({ effectiveDate: requestedDate }),
@@ -231,5 +231,77 @@ describe("ledger reconciliation lifecycle", () => {
       { effectiveDate: "2026-07-09" },
       { effectiveDate: "2026-07-10" },
     ]);
+  });
+
+  it("continues other jobs when one planner fails", async () => {
+    await insertLedger();
+    await createLedgerJob("ledger-malformed");
+    await createLedgerJob("ledger-healthy");
+    await env.DB.prepare(
+      `UPDATE pipeline_jobs
+          SET affected_instruments_json = '[null]'
+        WHERE id = 'ledger-malformed'`,
+    ).run();
+
+    const result = await recoveryService().continueAutomaticPlanning(
+      new Date(recoveredAt),
+    );
+
+    expect(result).toEqual({
+      jobs: 2,
+      pages: 1,
+      workItems: 2,
+      errors: [
+        {
+          pipelineJobId: "ledger-malformed",
+          message: "invalid_affected_instruments",
+        },
+      ],
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM pipeline_jobs WHERE id = 'ledger-healthy'",
+      ).first(),
+    ).toEqual({ status: "running" });
+  });
+
+  it("terminalizes a planner after its retry budget is exhausted", async () => {
+    await insertLedger();
+    await createLedgerJob("ledger-exhausted");
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE work_items
+            SET state = 'processing', attempt_count = max_attempts,
+                processing_lease_until = ?1
+          WHERE id = 'planner-ledger-exhausted'`,
+      ).bind(createdAt),
+      env.DB.prepare(
+        `UPDATE pipeline_jobs
+            SET status = 'planning', planner_lease_until = ?1
+          WHERE id = 'ledger-exhausted'`,
+      ).bind(createdAt),
+    ]);
+
+    const result = await recoveryService().continueAutomaticPlanning(
+      new Date(recoveredAt),
+    );
+
+    expect(result.errors).toEqual([
+      {
+        pipelineJobId: "ledger-exhausted",
+        message: "planner_claim_conflict",
+      },
+    ]);
+    expect(
+      await env.DB.prepare(
+        `SELECT state, terminal_error_code AS errorCode
+           FROM work_items WHERE id = 'planner-ledger-exhausted'`,
+      ).first(),
+    ).toEqual({ state: "terminal", errorCode: "planner_attempts_exhausted" });
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM pipeline_jobs WHERE id = 'ledger-exhausted'",
+      ).first(),
+    ).toEqual({ status: "terminal" });
   });
 });
