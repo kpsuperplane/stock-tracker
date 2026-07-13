@@ -283,6 +283,7 @@ describe("portfolio and calendar read models", () => {
     expect(cad.currency).toBe("CAD");
     expect(cad.summaries).toMatchObject({
       totalValue: { valueDecimal: "78", periodDeltaDecimal: "-32" },
+      bookValue: { valueDecimal: "60", periodDeltaDecimal: "-40" },
       realizedGains: { valueDecimal: "20", periodDeltaDecimal: "20" },
       unrealizedGains: { valueDecimal: "18", periodDeltaDecimal: "8" },
       dividends: { valueDecimal: "5", periodDeltaDecimal: "5" },
@@ -503,6 +504,7 @@ describe("portfolio and calendar read models", () => {
     expect(partialCurrency?.points.at(-1)).toEqual({
       date: "2026-07-06",
       totalValueDecimal: null,
+      bookValueDecimal: "25",
       realizedGainsDecimal: "0",
       unrealizedGainsDecimal: null,
       dividendsDecimal: "0",
@@ -1668,6 +1670,17 @@ describe("portfolio and calendar read models", () => {
   });
 
   it("returns provider coverage and recent jobs on the status read model", async () => {
+    await insertInstrument({
+      id: "status-instrument",
+      symbol: "STATUS",
+      currency: "USD",
+    });
+    await insertTransaction({
+      id: "status-transaction",
+      instrumentId: "status-instrument",
+      date: "2026-01-02",
+      quantity: "4",
+    });
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO earnings_calendar_coverage
@@ -1675,6 +1688,30 @@ describe("portfolio and calendar read models", () => {
           provider_revision, observed_at, status, updated_at)
          VALUES ('alpha-vantage-earnings', '2026-07-01', '2026-10-01',
                  '3month', 'coverage-r1', ?1, 'current', ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO work_items
+         (id, scope, work_type, instrument_id, effective_date,
+          dependency_revision, deterministic_key, state, priority, max_attempts,
+          created_at, updated_at, completed_at)
+         VALUES ('status-market-fact', 'global_fact', 'market_fact',
+                 'status-instrument', '2026-07-10', 'r1', 'status-market-fact',
+                 'complete', 1, 3, ?1, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO dividend_refresh_state
+         (instrument_id, requested_start_date, status, attempt_count,
+          next_attempt_at, completed_at, created_at, updated_at)
+         VALUES ('status-instrument', '2026-01-02', 'current', 0,
+                 ?1, ?1, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO earnings_history_coverage
+         (instrument_id, requested_start_date, coverage_start_date,
+          coverage_end_date, provider, status, attempt_count, next_attempt_at,
+          completed_at, created_at, updated_at)
+         VALUES ('status-instrument', '2026-01-02', '2026-01-02', '2026-07-10',
+                 'sec-earnings', 'current', 0, ?1, ?1, ?1, ?1)`,
       ).bind(now),
       env.DB.prepare(
         `INSERT INTO pipeline_jobs
@@ -1693,12 +1730,38 @@ describe("portfolio and calendar read models", () => {
     const payload = await response.json<{
       status: {
         earningsCoverage: { status: string; coverageEndDate: string };
+        reconciliation: {
+          stockValues: { status: string; total: number; completed: number };
+          dividends: { status: string; total: number; completed: number };
+          financialReports: {
+            status: string;
+            total: number;
+            completed: number;
+          };
+        };
         jobs: Array<{ id: string; status: string }>;
       };
     }>();
     expect(payload.status.earningsCoverage).toMatchObject({
       status: "current",
       coverageEndDate: "2026-10-01",
+    });
+    expect(payload.status.reconciliation).toEqual({
+      stockValues: expect.objectContaining({
+        status: "current",
+        total: 1,
+        completed: 1,
+      }),
+      dividends: expect.objectContaining({
+        status: "current",
+        total: 1,
+        completed: 1,
+      }),
+      financialReports: expect.objectContaining({
+        status: "current",
+        total: 1,
+        completed: 1,
+      }),
     });
     expect(payload.status.jobs).toEqual(
       expect.arrayContaining([

@@ -39,7 +39,8 @@ The persistent navigation links to five stable destinations:
   Chinese analysis/source links for qualifying movers. The compatible
   `GET /api/portfolio` read model continues to back this page.
 - **Portfolio** shows long-term performance in CAD and USD independently. Its
-  selectable total value, realized gain, unrealized gain, and gross-dividend
+  selectable total value, book value, realized gain, unrealized gain, and
+  gross-dividend
   series support Today, 1W, 30D, 3M, YTD, 1Y, All, and custom ranges, with
   end-of-range holdings and an accessible exact-value table beneath the chart.
 - **Events** is the source of truth for holdings. Add, edit, or delete a buy or

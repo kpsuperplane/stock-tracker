@@ -18,6 +18,7 @@ import { formatPortfolioCurrency } from "./format";
 
 const metricKeys = {
   totalValue: "totalValueDecimal",
+  bookValue: "bookValueDecimal",
   realizedGains: "realizedGainsDecimal",
   unrealizedGains: "unrealizedGainsDecimal",
   dividends: "dividendsDecimal",
@@ -25,6 +26,7 @@ const metricKeys = {
 
 const labelKeys = {
   totalValue: "portfolioTotalValue",
+  bookValue: "portfolioBookValue",
   realizedGains: "portfolioRealizedGains",
   unrealizedGains: "portfolioUnrealizedGains",
   dividends: "portfolioDividends",

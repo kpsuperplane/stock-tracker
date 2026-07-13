@@ -15,6 +15,7 @@ const currencyResult: PortfolioHistoryCurrencyDto = {
   currency: "CAD",
   summaries: {
     totalValue: { valueDecimal: "1250", periodDeltaDecimal: "125" },
+    bookValue: { valueDecimal: "1000", periodDeltaDecimal: "0" },
     realizedGains: { valueDecimal: "80", periodDeltaDecimal: "30" },
     unrealizedGains: { valueDecimal: "250", periodDeltaDecimal: "75" },
     dividends: { valueDecimal: "42.5", periodDeltaDecimal: "12.5" },
@@ -23,6 +24,7 @@ const currencyResult: PortfolioHistoryCurrencyDto = {
     {
       date: "2025-07-10",
       totalValueDecimal: "1125",
+      bookValueDecimal: "1000",
       realizedGainsDecimal: "50",
       unrealizedGainsDecimal: "175",
       dividendsDecimal: "30",
@@ -31,6 +33,7 @@ const currencyResult: PortfolioHistoryCurrencyDto = {
     {
       date: "2026-07-10",
       totalValueDecimal: "1250",
+      bookValueDecimal: "1000",
       realizedGainsDecimal: "80",
       unrealizedGainsDecimal: "250",
       dividendsDecimal: "42.5",
@@ -95,7 +98,14 @@ describe("PortfolioPage", () => {
 
     expect(markup).toContain('data-testid="portfolio-page"');
     expect(markup).toContain("Total value");
+    expect(markup).toContain("Book value");
     expect(markup).toContain("Realized gains");
+    expect(markup.indexOf("Total value")).toBeLessThan(
+      markup.indexOf("Book value"),
+    );
+    expect(markup.indexOf("Book value")).toBeLessThan(
+      markup.indexOf("Realized gains"),
+    );
     expect(markup).toContain("Unrealized gains");
     expect(markup).toContain("Dividends");
     expect(markup).toContain("CA$1,250.00");
@@ -126,6 +136,7 @@ describe("PortfolioPage", () => {
       </I18nProvider>,
     );
     expect(chinese).toContain("总市值");
+    expect(chinese).toContain("账面价值");
     expect(chinese).toContain("已实现收益");
     expect(chinese).toContain("下载投资组合数据");
 

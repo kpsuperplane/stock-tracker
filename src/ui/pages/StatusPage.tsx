@@ -15,6 +15,7 @@ import {
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type {
   JobReadModelDto,
+  ReconciliationStatusDto,
   StatusReadModelDto,
 } from "../../shared/contracts";
 import { api } from "../api";
@@ -27,13 +28,22 @@ export type SyncHealth = "healthy" | "syncing" | "attention" | "unknown";
 const activeJobStatuses = new Set(["pending", "planning", "running"]);
 
 export const syncHealthFor = (status: StatusReadModelDto): SyncHealth => {
+  const reconciliationStatuses = [
+    status.reconciliation?.stockValues?.status,
+    status.reconciliation?.dividends?.status,
+    status.reconciliation?.financialReports?.status,
+  ];
   if (status.jobs.some((job) => activeJobStatuses.has(job.status))) {
+    return "syncing";
+  }
+  if (reconciliationStatuses.some((value) => value === "syncing")) {
     return "syncing";
   }
   const latestJob = status.jobs[0];
   if (
     status.earningsCoverage?.status === "stale" ||
     status.earningsCoverage?.status === "unavailable" ||
+    reconciliationStatuses.some((value) => value === "attention") ||
     latestJob?.status === "complete_with_errors" ||
     latestJob?.status === "terminal"
   ) {
@@ -41,6 +51,7 @@ export const syncHealthFor = (status: StatusReadModelDto): SyncHealth => {
   }
   if (
     status.earningsCoverage?.status === "current" ||
+    reconciliationStatuses.some((value) => value === "current") ||
     latestJob?.status === "complete"
   ) {
     return "healthy";
@@ -75,6 +86,87 @@ const healthVariant = (health: SyncHealth) => {
     default:
       return "neutral" as const;
   }
+};
+
+const reconciliationCopy: Record<SyncHealth, MessageKey> = {
+  healthy: "syncUpToDate",
+  syncing: "syncInProgress",
+  attention: "syncNeedsAttention",
+  unknown: "syncUnknown",
+};
+
+const healthForReconciliation = (
+  status: ReconciliationStatusDto["status"] | undefined,
+): SyncHealth => {
+  switch (status) {
+    case "current":
+      return "healthy";
+    case "syncing":
+      return "syncing";
+    case "attention":
+      return "attention";
+    default:
+      return "unknown";
+  }
+};
+
+const StatusReconciliationRow = ({
+  id,
+  label,
+  provider,
+  metricLabel,
+  status,
+  locale,
+  t,
+}: {
+  id: string;
+  label: string;
+  provider: string;
+  metricLabel: string;
+  status: ReconciliationStatusDto | undefined;
+  locale: "en" | "cn";
+  t: (key: MessageKey) => string;
+}) => {
+  const health = healthForReconciliation(status?.status);
+  const error = status?.errorMessage ?? status?.errorCode;
+  return (
+    <div
+      className="status-source-row"
+      data-testid={`status-reconciliation-${id}`}
+    >
+      <div className="status-source-row__identity">
+        <StatusDot
+          variant={healthVariant(health)}
+          label={t(reconciliationCopy[health])}
+          isPulsing={health === "syncing"}
+        />
+        <div>
+          <strong>{label}</strong>
+          <span className="status-source-row__provider">{provider}</span>
+        </div>
+      </div>
+      <div className="status-source-row__details">
+        <span>
+          {status
+            ? `${status.completed} / ${status.total} ${metricLabel}`
+            : t("notAvailable")}
+        </span>
+        <time dateTime={status?.updatedAt ?? undefined}>
+          {status?.updatedAt
+            ? formatDateTime(status.updatedAt, locale)
+            : t("notAvailable")}
+        </time>
+      </div>
+      {error && (
+        <div className="status-source-row__error" role="alert">
+          {error}
+          {status?.errorMessage && status.errorCode
+            ? ` (${status.errorCode})`
+            : ""}
+        </div>
+      )}
+    </div>
+  );
 };
 
 const jobBadgeVariant = (status: string) => {
@@ -236,7 +328,16 @@ export const StatusPage = ({
   const healthText = healthCopy[health];
   const latestSuccess = status ? latestSuccessfulJob(status.jobs) : null;
   const latestActivity =
-    status?.jobs[0]?.updatedAt ?? status?.earningsCoverage?.updatedAt ?? null;
+    [
+      ...(status?.jobs.map((job) => job.updatedAt) ?? []),
+      status?.earningsCoverage?.updatedAt,
+      status?.reconciliation?.stockValues?.updatedAt,
+      status?.reconciliation?.dividends?.updatedAt,
+      status?.reconciliation?.financialReports?.updatedAt,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1) ?? null;
 
   return (
     <main className="status-page" data-testid="status-page">
@@ -297,6 +398,33 @@ export const StatusPage = ({
             </Heading>
           </div>
         </div>
+        <StatusReconciliationRow
+          id="stock-values"
+          label={t("stockValuesSync")}
+          provider={t("normalizedMarketData")}
+          metricLabel={t("factsReconciled")}
+          status={status?.reconciliation?.stockValues}
+          locale={locale}
+          t={t}
+        />
+        <StatusReconciliationRow
+          id="dividends"
+          label={t("dividendSync")}
+          provider={t("scheduledRefresh")}
+          metricLabel={t("instrumentsReconciled")}
+          status={status?.reconciliation?.dividends}
+          locale={locale}
+          t={t}
+        />
+        <StatusReconciliationRow
+          id="financial-reports"
+          label={t("financialReportsSync")}
+          provider={t("financialReportsProviders")}
+          metricLabel={t("instrumentsReconciled")}
+          status={status?.reconciliation?.financialReports}
+          locale={locale}
+          t={t}
+        />
         <div className="status-source-row">
           <div className="status-source-row__identity">
             <StatusDot

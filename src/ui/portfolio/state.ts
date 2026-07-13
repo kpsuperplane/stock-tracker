@@ -18,6 +18,7 @@ export const defaultPortfolioUrlState: PortfolioUrlState = {
 
 const metrics = new Set<PortfolioMetric>([
   "totalValue",
+  "bookValue",
   "realizedGains",
   "unrealizedGains",
   "dividends",

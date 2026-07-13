@@ -11,6 +11,7 @@ import {
 
 const metrics: PortfolioMetric[] = [
   "totalValue",
+  "bookValue",
   "realizedGains",
   "unrealizedGains",
   "dividends",
@@ -18,6 +19,7 @@ const metrics: PortfolioMetric[] = [
 
 const labelKeys = {
   totalValue: "portfolioTotalValue",
+  bookValue: "portfolioBookValue",
   realizedGains: "portfolioRealizedGains",
   unrealizedGains: "portfolioUnrealizedGains",
   dividends: "portfolioDividends",

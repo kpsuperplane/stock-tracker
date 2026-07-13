@@ -5,6 +5,7 @@ import type {
 
 const metricKeys: Record<PortfolioMetric, keyof PortfolioHistoryPointDto> = {
   totalValue: "totalValueDecimal",
+  bookValue: "bookValueDecimal",
   realizedGains: "realizedGainsDecimal",
   unrealizedGains: "unrealizedGainsDecimal",
   dividends: "dividendsDecimal",

@@ -200,11 +200,13 @@ const metricValue = (
 ): string | null =>
   metric === "totalValue"
     ? point.totalValueDecimal
-    : metric === "realizedGains"
-      ? point.realizedGainsDecimal
-      : metric === "unrealizedGains"
-        ? point.unrealizedGainsDecimal
-        : point.dividendsDecimal;
+    : metric === "bookValue"
+      ? point.bookValueDecimal
+      : metric === "realizedGains"
+        ? point.realizedGainsDecimal
+        : metric === "unrealizedGains"
+          ? point.unrealizedGainsDecimal
+          : point.dividendsDecimal;
 
 const delta = (end: string | null, start: string | null): string | null => {
   if (end === null || start === null) return null;
@@ -439,6 +441,9 @@ export class PortfolioHistoryReadModelService {
         point: {
           date,
           totalValueDecimal: partial ? null : sum(marketValues).toString(),
+          bookValueDecimal: sum(
+            positions.map((position) => position.bookCost),
+          ).toString(),
           realizedGainsDecimal: sum(
             positions.map((position) => position.realizedGain),
           ).toString(),
@@ -528,6 +533,7 @@ export class PortfolioHistoryReadModelService {
       throw new Error("portfolio history requires summary points");
     const metrics: PortfolioMetric[] = [
       "totalValue",
+      "bookValue",
       "realizedGains",
       "unrealizedGains",
       "dividends",

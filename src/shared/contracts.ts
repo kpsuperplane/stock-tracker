@@ -244,6 +244,7 @@ export type PortfolioRangePreset =
 
 export type PortfolioMetric =
   | "totalValue"
+  | "bookValue"
   | "realizedGains"
   | "unrealizedGains"
   | "dividends";
@@ -273,6 +274,7 @@ export interface PortfolioHistoryCoverageDto {
 export interface PortfolioHistoryPointDto {
   date: string;
   totalValueDecimal: string | null;
+  bookValueDecimal: string;
   realizedGainsDecimal: string;
   unrealizedGainsDecimal: string | null;
   dividendsDecimal: string;
@@ -438,8 +440,30 @@ export interface EarningsSyncStatusDto {
   updatedAt: string;
 }
 
+export type ReconciliationStatus =
+  | "current"
+  | "syncing"
+  | "attention"
+  | "unknown";
+
+export interface ReconciliationStatusDto {
+  status: ReconciliationStatus;
+  total: number;
+  completed: number;
+  pending: number;
+  failed: number;
+  updatedAt: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
 export interface StatusReadModelDto {
   earningsCoverage: EarningsSyncStatusDto | null;
+  reconciliation: {
+    stockValues: ReconciliationStatusDto;
+    dividends: ReconciliationStatusDto;
+    financialReports: ReconciliationStatusDto;
+  };
   jobs: JobReadModelDto[];
   nextCursor: string | null;
 }

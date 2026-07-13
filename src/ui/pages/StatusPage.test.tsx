@@ -15,6 +15,38 @@ const status: StatusReadModelDto = {
     errorMessage: null,
     updatedAt: "2026-07-13T12:00:00.000Z",
   },
+  reconciliation: {
+    stockValues: {
+      status: "current",
+      total: 8,
+      completed: 8,
+      pending: 0,
+      failed: 0,
+      updatedAt: "2026-07-13T12:00:00.000Z",
+      errorCode: null,
+      errorMessage: null,
+    },
+    dividends: {
+      status: "current",
+      total: 2,
+      completed: 2,
+      pending: 0,
+      failed: 0,
+      updatedAt: "2026-07-13T12:00:00.000Z",
+      errorCode: null,
+      errorMessage: null,
+    },
+    financialReports: {
+      status: "current",
+      total: 2,
+      completed: 2,
+      pending: 0,
+      failed: 0,
+      updatedAt: "2026-07-13T12:00:00.000Z",
+      errorCode: null,
+      errorMessage: null,
+    },
+  },
   jobs: [
     {
       id: "scheduled:portfolio:2026-07-13",
@@ -53,6 +85,10 @@ describe("StatusPage", () => {
     expect(markup).toContain('data-testid="status-page"');
     expect(markup).toContain("Up to date");
     expect(markup).toContain("Earnings calendar");
+    expect(markup).toContain("Stock values");
+    expect(markup).toContain("Dividends");
+    expect(markup).toContain("Financial reports");
+    expect(markup).toContain("8 / 8 facts reconciled");
     expect(markup).toContain("Scheduled sync");
     expect(markup).toContain("8 / 8");
     expect(markup).toContain("<table");
@@ -112,5 +148,22 @@ describe("StatusPage", () => {
         jobs: [{ ...job, status: "running" }],
       }),
     ).toBe("syncing");
+  });
+
+  it("surfaces domain reconciliation work in the overall health", () => {
+    expect(
+      syncHealthFor({
+        ...status,
+        reconciliation: {
+          ...status.reconciliation,
+          dividends: {
+            ...status.reconciliation.dividends,
+            status: "attention",
+            failed: 1,
+            completed: 1,
+          },
+        },
+      }),
+    ).toBe("attention");
   });
 });

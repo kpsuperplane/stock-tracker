@@ -5,10 +5,10 @@ describe("portfolio URL state", () => {
   it("restores supported metric, range, currency, and custom dates", () => {
     expect(
       parsePortfolioUrlState(
-        "?metric=dividends&range=custom&currency=USD&startDate=2025-01-01&endDate=2025-06-30",
+        "?metric=bookValue&range=custom&currency=USD&startDate=2025-01-01&endDate=2025-06-30",
       ),
     ).toEqual({
-      metric: "dividends",
+      metric: "bookValue",
       range: "custom",
       currency: "USD",
       startDate: "2025-01-01",
