@@ -14,14 +14,7 @@ import {
   TableRow,
   VStack,
 } from "@astryxdesign/core";
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type {
   PortfolioMovementDto,
   PortfolioPositionDto,
@@ -34,14 +27,12 @@ import {
   type PortfolioReadOptions,
   portfolioApi,
 } from "../api";
-import { RefreshIcon } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
 import {
   formatDate,
   formatDecimalString,
   formatNativeCurrency,
 } from "../system/formatters";
-import { usePageActions } from "../system/PageActionsContext";
 
 export interface TodayPageProps {
   apiClient?: PortfolioApiClient;
@@ -308,7 +299,6 @@ export const TodayPage = ({
   const portfolioRef = useRef<PortfolioReadModelDto | null>(portfolio);
   const requestIdRef = useRef(0);
   const [loading, setLoading] = useState(initialPortfolio === undefined);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [readModelDisabled, setReadModelDisabled] = useState(false);
 
@@ -320,7 +310,6 @@ export const TodayPage = ({
     const requestId = ++requestIdRef.current;
     const hadCachedPortfolio = portfolioRef.current !== null;
     setLoading(!hadCachedPortfolio);
-    setRefreshing(hadCachedPortfolio);
     setError(null);
     setReadModelDisabled(false);
     const options: PortfolioReadOptions = {
@@ -344,7 +333,6 @@ export const TodayPage = ({
     } finally {
       if (requestId === requestIdRef.current) {
         setLoading(false);
-        setRefreshing(false);
       }
     }
   }, [apiClient, locale, selection, t, today]);
@@ -354,22 +342,6 @@ export const TodayPage = ({
   }, [load]);
 
   const retry = useCallback(() => void load(), [load]);
-  const pageActions = useMemo(
-    () => (
-      <Button
-        variant="secondary"
-        size="sm"
-        label={refreshing ? t("todayRefreshing") : t("refresh")}
-        tooltip={refreshing ? t("todayRefreshing") : t("refresh")}
-        icon={<Icon icon={RefreshIcon} size="sm" />}
-        isIconOnly
-        isLoading={refreshing}
-        onClick={retry}
-      />
-    ),
-    [refreshing, retry, t],
-  );
-  const hasTopNavActions = usePageActions(pageActions);
 
   return (
     <VStack gap={3} data-testid="today-page">
@@ -387,7 +359,6 @@ export const TodayPage = ({
             </div>
           )}
         </VStack>
-        {!hasTopNavActions && pageActions}
       </HStack>
 
       {error && (

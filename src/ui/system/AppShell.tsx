@@ -48,6 +48,7 @@ import {
 import {
   PageActionsProvider,
   useRegisteredPageActions,
+  useRegisteredPageTitle,
 } from "./PageActionsContext";
 
 const routeCopy = {
@@ -147,6 +148,7 @@ const ProductNavigation = ({ activeRoute }: NavigationProps) => {
   const { t } = useI18n();
   const renderMode = useTopNavRenderMode();
   const pageActions = useRegisteredPageActions();
+  const pageTitle = useRegisteredPageTitle();
   const hasAccountScope =
     activeRoute === "today" ||
     activeRoute === "portfolio" ||
@@ -162,7 +164,9 @@ const ProductNavigation = ({ activeRoute }: NavigationProps) => {
       heading={
         <div className="product-top-nav-heading">
           <MobileNavToggle className="product-mobile-nav-toggle" />
-          {activeRoute !== "calendar" && (
+          {activeRoute === "calendar" ? (
+            pageTitle
+          ) : (
             <TopNavHeading
               heading={t(routeCopy[activeRoute].pageTitle)}
               headingHref={pathForRoute(activeRoute)}

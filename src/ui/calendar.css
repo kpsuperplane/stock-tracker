@@ -19,7 +19,8 @@
   flex: 0 0 auto;
 }
 
-.calendar-page__controls .calendar-toolbar {
+.calendar-page__controls .calendar-toolbar,
+.product-top-nav-heading .calendar-toolbar {
   min-width: 0;
 }
 

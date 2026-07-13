@@ -124,6 +124,7 @@ describe("TodayPage", () => {
     expect(markup).toContain('target="_blank"');
     expect(markup).toContain('rel="noopener noreferrer"');
     expect(markup).toContain(">Sources<");
+    expect(markup).not.toContain("Close popover");
     expect(markup).toContain('colSpan="5"');
     expect(markup).not.toContain("Movement basis:");
     expect(markup).not.toContain("Previous close:");

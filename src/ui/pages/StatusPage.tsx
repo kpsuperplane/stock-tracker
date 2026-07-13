@@ -3,7 +3,6 @@ import {
   Button,
   EmptyState,
   Heading,
-  HStack,
   Skeleton,
   StatusDot,
   Table,
@@ -13,14 +12,7 @@ import {
   TableHeaderCell,
   TableRow,
 } from "@astryxdesign/core";
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type {
   JobReadModelDto,
   StatusReadModelDto,
@@ -29,7 +21,6 @@ import { api } from "../api";
 import type { MessageKey } from "../i18n/catalog";
 import { useI18n } from "../i18n/I18nProvider";
 import { formatDate, formatDateTime } from "../system/formatters";
-import { usePageActions } from "../system/PageActionsContext";
 
 export type SyncHealth = "healthy" | "syncing" | "attention" | "unknown";
 
@@ -182,7 +173,6 @@ export const StatusPage = ({
     initialStatus ?? null,
   );
   const [loading, setLoading] = useState(initialStatus === undefined);
-  const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestId = useRef(0);
@@ -198,8 +188,7 @@ export const StatusPage = ({
       const appending = cursor !== undefined;
       setError(null);
       if (appending) setLoadingMore(true);
-      else if (statusRef.current) setRefreshing(true);
-      else setLoading(true);
+      else if (!statusRef.current) setLoading(true);
       try {
         const result = (await apiClient.read(25, cursor)).status;
         if (id !== requestId.current) return;
@@ -221,7 +210,6 @@ export const StatusPage = ({
       } finally {
         if (id === requestId.current) {
           setLoading(false);
-          setRefreshing(false);
           setLoadingMore(false);
         }
       }
@@ -241,20 +229,6 @@ export const StatusPage = ({
     return () => window.clearInterval(timer);
   }, [hasActiveJob, load]);
 
-  const refreshAction = useMemo(
-    () => (
-      <Button
-        size="sm"
-        variant="secondary"
-        label={t("refresh")}
-        isLoading={refreshing}
-        onClick={() => void load()}
-      />
-    ),
-    [load, refreshing, t],
-  );
-  const hasTopNavActions = usePageActions(refreshAction);
-
   if (loading && !status)
     return <StatusLoadingState label={t("loadingStatus")} />;
 
@@ -266,12 +240,9 @@ export const StatusPage = ({
 
   return (
     <main className="status-page" data-testid="status-page">
-      <HStack gap={2} justify="between" align="center">
-        <Heading level={1} className="product-page-title-hidden">
-          {t("statusHeading")}
-        </Heading>
-        {!hasTopNavActions && refreshAction}
-      </HStack>
+      <Heading level={1} className="product-page-title-hidden">
+        {t("statusHeading")}
+      </Heading>
 
       {error && (
         <div className="status-page__error" role="alert">

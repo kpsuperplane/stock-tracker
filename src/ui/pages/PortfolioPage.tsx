@@ -1,11 +1,4 @@
-import {
-  Banner,
-  Button,
-  Heading,
-  Icon,
-  Link,
-  VStack,
-} from "@astryxdesign/core";
+import { Banner, Button, Heading, Link, VStack } from "@astryxdesign/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   PortfolioHistoryReadModelDto,
@@ -13,7 +6,6 @@ import type {
 } from "../../shared/contracts";
 import { useAccountScope } from "../accounts/AccountScopeContext";
 import { ApiClientError } from "../api";
-import { RefreshIcon } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
 import { downloadPortfolioPoints } from "../portfolio/download";
 import {
@@ -146,7 +138,7 @@ export const PortfolioPage = ({
     [],
   );
 
-  const currencies = currenciesFor(history);
+  const currencies = useMemo(() => currenciesFor(history), [history]);
   const selectedCurrency =
     (state.currency && currencies.includes(state.currency)
       ? state.currency
@@ -176,22 +168,6 @@ export const PortfolioPage = ({
   }, [currencyResult, history?.endDate, history?.startDate, state.metric]);
 
   const retry = useCallback(() => void load(), [load]);
-  const pageActions = useMemo(
-    () => (
-      <Button
-        variant="secondary"
-        size="sm"
-        label={refreshing ? t("portfolioHistoryRefreshing") : t("refresh")}
-        tooltip={refreshing ? t("portfolioHistoryRefreshing") : t("refresh")}
-        icon={<Icon icon={RefreshIcon} size="sm" />}
-        isIconOnly
-        isLoading={refreshing}
-        onClick={retry}
-      />
-    ),
-    [refreshing, retry, t],
-  );
-  const hasTopNavActions = usePageActions(pageActions);
 
   const eventsHref = useMemo(() => {
     const query = new URLSearchParams();
@@ -217,27 +193,51 @@ export const PortfolioPage = ({
     [state, updateState],
   );
 
+  const changeCustomRange = useCallback(
+    (startDate: string, endDate: string) =>
+      updateState({ ...state, range: "custom", startDate, endDate }),
+    [state, updateState],
+  );
+
+  const changeCurrency = useCallback(
+    (currency: "CAD" | "USD") => updateState({ ...state, currency }),
+    [state, updateState],
+  );
+
+  const portfolioControls = useMemo(
+    () => (
+      <div className="portfolio-page-actions">
+        <PortfolioRangeControls
+          state={state}
+          currencies={currencies}
+          coverage={currencyResult?.coverage ?? null}
+          canDownload={Boolean(currencyResult?.points.length)}
+          onDownload={downloadCurrentData}
+          onRangeChange={changeRange}
+          onCustomRangeChange={changeCustomRange}
+          onCurrencyChange={changeCurrency}
+        />
+      </div>
+    ),
+    [
+      changeCurrency,
+      changeCustomRange,
+      changeRange,
+      currencies,
+      currencyResult,
+      downloadCurrentData,
+      state,
+    ],
+  );
+  const hasTopNavActions = usePageActions(portfolioControls);
+
   return (
     <VStack gap={3} data-testid="portfolio-page">
       <Heading level={1} className="product-page-title-hidden">
         {t("portfolioHeading")}
       </Heading>
-      {!hasTopNavActions && (
-        <div className="portfolio-page-actions">{pageActions}</div>
-      )}
 
-      <PortfolioRangeControls
-        state={state}
-        currencies={currencies}
-        coverage={currencyResult?.coverage ?? null}
-        canDownload={Boolean(currencyResult?.points.length)}
-        onDownload={downloadCurrentData}
-        onRangeChange={changeRange}
-        onCustomRangeChange={(startDate, endDate) =>
-          updateState({ ...state, range: "custom", startDate, endDate })
-        }
-        onCurrencyChange={(currency) => updateState({ ...state, currency })}
-      />
+      {!hasTopNavActions && portfolioControls}
 
       {error && (
         <Banner

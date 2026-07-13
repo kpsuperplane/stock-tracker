@@ -142,12 +142,12 @@ export const PeriodDividendSummary = ({
         <Button
           variant="secondary"
           size="sm"
-          label={label}
+          label={compact ? totalLabel(summary, locale) : label}
           {...(compact
             ? {
+                "aria-label": label,
                 tooltip: label,
                 icon: <Icon icon={CashIcon} size="sm" />,
-                isIconOnly: true,
               }
             : {})}
         />

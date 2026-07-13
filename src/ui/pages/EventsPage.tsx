@@ -42,7 +42,6 @@ import {
 import {
   EditIcon,
   PlusIcon,
-  RefreshIcon,
   TrashIcon,
   UploadIcon,
 } from "../components/ProductIcons";
@@ -491,22 +490,11 @@ export const EventsPage = ({
     void load(true);
   };
 
-  const refresh = useCallback(() => void load(true), [load]);
   const openImport = useCallback(() => setIsImportOpen(true), []);
   const openAdd = useCallback(() => setIsAddOpen(true), []);
   const pageActions = useMemo(
     () => (
       <HStack gap={1} wrap="nowrap">
-        <Button
-          variant="secondary"
-          size="sm"
-          label={t("refresh")}
-          tooltip={t("refresh")}
-          icon={<Icon icon={RefreshIcon} size="sm" />}
-          isIconOnly
-          isLoading={isLoading}
-          onClick={refresh}
-        />
         <Button
           variant="secondary"
           size="sm"
@@ -527,7 +515,7 @@ export const EventsPage = ({
         />
       </HStack>
     ),
-    [isLoading, openAdd, openImport, refresh, t],
+    [openAdd, openImport, t],
   );
   const hasTopNavActions = usePageActions(pageActions);
 

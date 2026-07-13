@@ -101,6 +101,7 @@ export const PortfolioRangeControls = ({
             placement="below"
             alignment="start"
             width="min(24rem, calc(100vw - 2rem))"
+            hasCloseButton={false}
             content={
               <div className="portfolio-coverage-popover">
                 <strong>{t(coverageTitleKey)}</strong>

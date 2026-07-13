@@ -684,6 +684,16 @@ html[lang="zh-CN"]
     padding-inline-start: 0.5rem;
   }
 
+  .product-top-nav-end:has(.product-top-nav-actions) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .product-top-nav-end .product-top-nav-actions {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   .product-top-nav-desktop-utilities {
     display: none;
   }

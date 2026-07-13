@@ -29,7 +29,7 @@ import { MarketCalendar } from "../calendar/MarketCalendar";
 import { MoverDialog } from "../calendar/MoverDialog";
 import { PeriodDividendSummary } from "../calendar/PeriodDividendSummary";
 import { useI18n } from "../i18n/I18nProvider";
-import { usePageActions } from "../system/PageActionsContext";
+import { usePageActions, usePageTitle } from "../system/PageActionsContext";
 
 export interface CalendarPageProps {
   apiClient?: CalendarApiClient;
@@ -233,6 +233,18 @@ export const CalendarPage = ({
   const displayedCalendar = calendar ?? (loading ? loadingCalendar : null);
   const calendarBusy = loading || refreshing;
 
+  const pageTitle = useMemo(
+    () =>
+      calendar ? (
+        <CalendarToolbar
+          view={view}
+          anchorDate={anchorDate}
+          today={todayDate}
+          onNavigate={setAnchorDate}
+        />
+      ) : null,
+    [anchorDate, calendar, todayDate, view],
+  );
   const pageActions = useMemo(() => {
     if (!calendar) return null;
     const visibleRange = rangeForView(anchorDate, view);
@@ -249,12 +261,6 @@ export const CalendarPage = ({
           <SegmentedControlItem value="month" label={t("month")} />
           <SegmentedControlItem value="week" label={t("week")} />
         </SegmentedControl>
-        <CalendarToolbar
-          view={view}
-          anchorDate={anchorDate}
-          today={todayDate}
-          onNavigate={setAnchorDate}
-        />
         <PeriodDividendSummary
           dividends={calendar.dividends}
           view={view}
@@ -264,7 +270,8 @@ export const CalendarPage = ({
         />
       </div>
     );
-  }, [anchorDate, calendar, t, todayDate, view]);
+  }, [anchorDate, calendar, t, view]);
+  const hasTopNavTitle = usePageTitle(pageTitle);
   const hasTopNavActions = usePageActions(pageActions);
 
   return (
@@ -272,6 +279,7 @@ export const CalendarPage = ({
       <Heading level={1} className="product-page-title-hidden">
         {calendarPeriodTitle(view, anchorDate, locale)}
       </Heading>
+      {!hasTopNavTitle && pageTitle}
       {!hasTopNavActions && pageActions}
 
       {error && (

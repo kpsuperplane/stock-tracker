@@ -167,9 +167,6 @@ describe("CalendarPage", () => {
     const controlsEnd = markup.indexOf('class="calendar-page__content"');
     const controls = markup.slice(controlsStart, controlsEnd);
     expect(controls.indexOf('role="radiogroup"')).toBeLessThan(
-      controls.indexOf("calendar-toolbar"),
-    );
-    expect(controls.indexOf("calendar-toolbar")).toBeLessThan(
       controls.indexOf("calendar-dividend-summary"),
     );
   });

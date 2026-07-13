@@ -105,6 +105,7 @@ describe("PortfolioPage", () => {
     expect(markup).toContain("USD");
     expect(markup).toContain("Download portfolio data");
     expect(markup).toContain('role="combobox" aria-label="Select date range"');
+    expect(markup).not.toContain("Close popover");
     expect(markup).not.toContain("Track securities value");
     expect(markup).not.toContain("Data through");
     expect(markup).not.toContain("Show chart data");
