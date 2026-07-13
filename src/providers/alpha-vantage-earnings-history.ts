@@ -4,6 +4,7 @@ import {
   alphaVantageEarningsProvider,
   alphaVantageSymbol,
 } from "./alpha-vantage-earnings";
+import { throwIfAlphaVantageError } from "./alpha-vantage-errors";
 import type {
   EarningsHistoryProvider,
   EarningsHistoryRange,
@@ -65,13 +66,7 @@ export class AlphaVantageEarningsHistoryProvider
     });
     if (!response.ok) throw new Error(`provider_http_${response.status}`);
     const raw = await readBoundedJson(response);
-    if (
-      typeof raw === "object" &&
-      raw !== null &&
-      ("Information" in raw || "Note" in raw)
-    ) {
-      throw new Error("provider_rate_limited");
-    }
+    throwIfAlphaVantageError(raw);
     let payload: z.infer<typeof historySchema>;
     try {
       payload = historySchema.parse(raw);

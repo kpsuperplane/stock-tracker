@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseCsv } from "../shared/csv";
+import { throwIfAlphaVantageTextError } from "./alpha-vantage-errors";
 import type {
   EarningsEventRange,
   EarningsInstrumentReference,
@@ -80,9 +81,11 @@ export class AlphaVantageEarningsProvider implements EarningsProvider {
     });
     if (!response.ok) throw new Error(`provider_http_${response.status}`);
 
+    const body = (await readBoundedText(response)).replace(/^\uFEFF/, "");
+    throwIfAlphaVantageTextError(body);
     let rows: string[][] | null;
     try {
-      rows = parseCsv((await readBoundedText(response)).replace(/^\uFEFF/, ""));
+      rows = parseCsv(body);
     } catch (error) {
       if (
         error instanceof Error &&

@@ -4,6 +4,7 @@ import type {
   EarningsHistoryProvider,
   EarningsHistoryRange,
 } from "../../src/providers/earnings";
+import { ProviderResponseError } from "../../src/providers/provider-errors";
 import { EarningsHistoryBackfillService } from "../../src/services/earnings-history-backfill";
 
 const firstRun = "2026-07-13T12:00:00.000Z";
@@ -182,5 +183,41 @@ describe("EarningsHistoryBackfillService", () => {
       newId: () => "lease-recovery-event",
     }).refreshDue();
     expect(summary.secCompleted).toBe(1);
+  });
+
+  it("persists the classified Alpha failure and sanitized provider message", async () => {
+    await seed();
+    const summary = await new EarningsHistoryBackfillService({
+      db: env.DB,
+      secProvider: {
+        getEarningsHistory: async () => {
+          throw new Error("provider_history_unavailable");
+        },
+      },
+      alphaProvider: {
+        getEarningsHistory: async () => {
+          throw new ProviderResponseError(
+            "provider_daily_limit",
+            "Standard limit is 25 requests per day for apikey=secret.",
+          );
+        },
+      },
+      now: () => new Date(firstRun),
+    }).refreshDue();
+
+    expect(summary).toMatchObject({ attempted: 1, retried: 1 });
+    expect(
+      await env.DB.prepare(
+        `SELECT status, last_error_code, last_error_message, next_attempt_at
+           FROM earnings_history_coverage
+          WHERE instrument_id = 'history-ibm'`,
+      ).first(),
+    ).toEqual({
+      status: "retry",
+      last_error_code: "provider_daily_limit",
+      last_error_message:
+        "Standard limit is 25 requests per day for credential=[REDACTED]",
+      next_attempt_at: "2026-07-14T12:00:00.000Z",
+    });
   });
 });

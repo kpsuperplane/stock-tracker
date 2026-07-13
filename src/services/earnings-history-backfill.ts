@@ -5,6 +5,11 @@ import type {
   EarningsHistoryProvider,
   EarningsHistoryRange,
 } from "../providers/earnings";
+import {
+  describeProviderError,
+  type ProviderFailure,
+  providerFailure,
+} from "../providers/provider-errors";
 import { secEarningsProvider } from "../providers/sec-earnings";
 import { easternMarketDate } from "../shared/dates";
 
@@ -30,14 +35,6 @@ export interface EarningsHistoryBackfillSummary {
 
 const addMilliseconds = (timestamp: string, milliseconds: number): string =>
   new Date(Date.parse(timestamp) + milliseconds).toISOString();
-
-const errorCode = (error: unknown): string => {
-  const message =
-    error instanceof Error ? error.message : "provider_unavailable";
-  return message.startsWith("provider_")
-    ? message.slice(0, 120)
-    : "provider_unavailable";
-};
 
 const fallbackImmediately = new Set([
   "provider_symbol_unavailable",
@@ -155,20 +152,23 @@ export class EarningsHistoryBackfillService {
 
   private async markRetry(
     instrumentId: string,
-    code: string,
+    failure: ProviderFailure,
     timestamp: string,
   ): Promise<void> {
+    const retryDelay =
+      failure.code === "provider_rate_limited" ? 15 * 60_000 : 86_400_000;
     await this.dependencies.db
       .prepare(
         `UPDATE earnings_history_coverage
             SET status = 'retry', next_attempt_at = ?1, lease_until = NULL,
-                last_error_code = ?2, last_error_message = ?2,
-                updated_at = ?3
-          WHERE instrument_id = ?4`,
+                last_error_code = ?2, last_error_message = ?3,
+                updated_at = ?4
+          WHERE instrument_id = ?5`,
       )
       .bind(
-        addMilliseconds(timestamp, 86_400_000),
-        code,
+        addMilliseconds(timestamp, retryDelay),
+        failure.code,
+        failure.message,
         timestamp,
         instrumentId,
       )
@@ -312,7 +312,7 @@ export class EarningsHistoryBackfillService {
       summary.attempted += 1;
       const startDate = row.requested_start_date;
       let range: EarningsHistoryRange | null = null;
-      let secFailure = "provider_sec_unavailable";
+      let secFailure = providerFailure("provider_sec_unavailable");
       if (this.dependencies.secProvider) {
         try {
           range = await this.dependencies.secProvider.getEarningsHistory(
@@ -321,12 +321,12 @@ export class EarningsHistoryBackfillService {
             endDate,
           );
         } catch (error) {
-          secFailure = errorCode(error);
+          secFailure = describeProviderError(error);
         }
       }
       const shouldFallback =
         range === null &&
-        (fallbackImmediately.has(secFailure) || row.attempt_count >= 2);
+        (fallbackImmediately.has(secFailure.code) || row.attempt_count >= 2);
       if (shouldFallback) {
         if (
           !this.dependencies.alphaProvider ||
@@ -335,7 +335,11 @@ export class EarningsHistoryBackfillService {
           const code = this.dependencies.alphaProvider
             ? "provider_fallback_budget_deferred"
             : "provider_fallback_unavailable";
-          await this.markRetry(row.instrument_id, code, timestamp);
+          await this.markRetry(
+            row.instrument_id,
+            providerFailure(code),
+            timestamp,
+          );
           summary.retried += 1;
           summary.fallbackDeferred += 1;
           continue;
@@ -348,7 +352,11 @@ export class EarningsHistoryBackfillService {
             endDate,
           );
         } catch (error) {
-          await this.markRetry(row.instrument_id, errorCode(error), timestamp);
+          await this.markRetry(
+            row.instrument_id,
+            describeProviderError(error),
+            timestamp,
+          );
           summary.retried += 1;
           continue;
         }
@@ -362,7 +370,11 @@ export class EarningsHistoryBackfillService {
         this.validateRange(row, range, startDate, endDate);
         await this.persist(row, range, timestamp);
       } catch (error) {
-        await this.markRetry(row.instrument_id, errorCode(error), timestamp);
+        await this.markRetry(
+          row.instrument_id,
+          describeProviderError(error),
+          timestamp,
+        );
         summary.retried += 1;
         continue;
       }

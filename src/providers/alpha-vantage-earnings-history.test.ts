@@ -52,7 +52,7 @@ describe("AlphaVantageEarningsHistoryProvider", () => {
     expect(url.searchParams.get("function")).toBe("EARNINGS");
   });
 
-  it("recognizes quota responses returned with HTTP 200", async () => {
+  it("classifies daily quota responses returned with HTTP 200", async () => {
     const provider = new AlphaVantageEarningsHistoryProvider(
       "key",
       vi.fn(async () =>
@@ -61,6 +61,9 @@ describe("AlphaVantageEarningsHistoryProvider", () => {
     );
     await expect(
       provider.getEarningsHistory(instrument, "2026-01-01", "2026-07-13"),
-    ).rejects.toThrow("provider_rate_limited");
+    ).rejects.toMatchObject({
+      message: "provider_daily_limit",
+      providerMessage: "25 requests per day",
+    });
   });
 });

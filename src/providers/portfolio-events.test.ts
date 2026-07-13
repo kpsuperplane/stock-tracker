@@ -429,6 +429,22 @@ describe("normalized portfolio event provider contracts", () => {
     ).rejects.toThrow("provider_schema");
   });
 
+  it("classifies Alpha Vantage dividend notices before schema parsing", async () => {
+    const { AlphaVantageDividendEventProvider } = await import(
+      "./alpha-vantage-dividends"
+    );
+    const provider = new AlphaVantageDividendEventProvider("key", async () =>
+      Response.json({ Note: "API call frequency is 5 requests per minute." }),
+    );
+
+    await expect(
+      provider.getDividends("CASE", "2026-01-01", "2026-12-31", "USD"),
+    ).rejects.toMatchObject({
+      message: "provider_rate_limited",
+      providerMessage: "API call frequency is 5 requests per minute.",
+    });
+  });
+
   it("rejects impossible provider dividend dates", async () => {
     const { AlphaVantageDividendEventProvider } = await import(
       "./alpha-vantage-dividends"

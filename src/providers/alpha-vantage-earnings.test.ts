@@ -114,4 +114,18 @@ describe("AlphaVantageEarningsProvider", () => {
       unavailable.getEarningsCalendar(instruments, "2026-07-13", "2026-10-13"),
     ).rejects.toThrow("provider_http_429");
   });
+
+  it("classifies JSON notices returned by the CSV endpoint", async () => {
+    const provider = new AlphaVantageEarningsProvider("test-key", async () =>
+      Response.json({
+        Information: "This premium endpoint requires a subscription.",
+      }),
+    );
+    await expect(
+      provider.getEarningsCalendar(instruments, "2026-07-13", "2026-10-13"),
+    ).rejects.toMatchObject({
+      message: "provider_entitlement",
+      providerMessage: "This premium endpoint requires a subscription.",
+    });
+  });
 });

@@ -10,6 +10,10 @@ import type {
   EarningsInstrumentReference,
   EarningsProvider,
 } from "../providers/earnings";
+import {
+  describeProviderError,
+  providerFailure,
+} from "../providers/provider-errors";
 import { easternMarketDate } from "../shared/dates";
 
 interface HeldInstrumentRow {
@@ -26,14 +30,6 @@ export interface EarningsRefreshSummary {
   markedStale: number;
   coverageStatus: "current" | "stale" | "unavailable";
 }
-
-const providerErrorCode = (error: unknown): string => {
-  const message =
-    error instanceof Error ? error.message : "provider_unavailable";
-  return message.startsWith("provider_")
-    ? message.slice(0, 120)
-    : "provider_unavailable";
-};
 
 const addMonthsClamped = (date: string, months: number): string => {
   const [year, month, day] = date.split("-").map(Number);
@@ -93,6 +89,7 @@ export class ScheduledEarningsRefreshService {
     startDate: string;
     endDate: string;
     errorCode: string;
+    errorMessage: string;
     timestamp: string;
   }): Promise<"stale" | "unavailable"> {
     const existing = await this.earnings.coverage(alphaVantageEarningsProvider);
@@ -108,7 +105,7 @@ export class ScheduledEarningsRefreshService {
       observedAt: existing?.observedAt ?? null,
       status,
       errorCode: input.errorCode,
-      errorMessage: input.errorCode,
+      errorMessage: input.errorMessage,
       updatedAt: input.timestamp,
     };
     await this.dependencies.db.batch([
@@ -128,10 +125,12 @@ export class ScheduledEarningsRefreshService {
     const startDate = easternMarketDate(timestamp);
     const endDate = addMonthsClamped(startDate, 3);
     if (!this.dependencies.provider) {
+      const failure = providerFailure("provider_key_unavailable");
       const coverageStatus = await this.recordCoverageFailure({
         startDate,
         endDate,
-        errorCode: "provider_key_unavailable",
+        errorCode: failure.code,
+        errorMessage: failure.message,
         timestamp,
       });
       return {
@@ -151,10 +150,12 @@ export class ScheduledEarningsRefreshService {
         endDate,
       );
     } catch (error) {
+      const failure = describeProviderError(error);
       const coverageStatus = await this.recordCoverageFailure({
         startDate,
         endDate,
-        errorCode: providerErrorCode(error),
+        errorCode: failure.code,
+        errorMessage: failure.message,
         timestamp,
       });
       return {
@@ -171,10 +172,12 @@ export class ScheduledEarningsRefreshService {
       range.range.requestedStartDate !== startDate ||
       range.range.requestedEndDate !== endDate
     ) {
+      const failure = providerFailure("provider_snapshot_mismatch");
       const coverageStatus = await this.recordCoverageFailure({
         startDate,
         endDate,
-        errorCode: "provider_snapshot_mismatch",
+        errorCode: failure.code,
+        errorMessage: failure.message,
         timestamp,
       });
       return {
@@ -282,10 +285,12 @@ export class ScheduledEarningsRefreshService {
         }
       }
     } catch (error) {
+      const failure = describeProviderError(error);
       const coverageStatus = await this.recordCoverageFailure({
         startDate,
         endDate,
-        errorCode: providerErrorCode(error),
+        errorCode: failure.code,
+        errorMessage: failure.message,
         timestamp,
       });
       return {

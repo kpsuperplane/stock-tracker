@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { throwIfAlphaVantageError } from "./alpha-vantage-errors";
 import type {
   DividendEventRange,
   DividendProvider,
@@ -82,7 +83,9 @@ export class AlphaVantageDividendEventProvider implements DividendProvider {
         { signal: AbortSignal.timeout(10_000) },
       );
       if (!response.ok) throw new Error(`provider_http_${response.status}`);
-      return readBoundedJson(response);
+      const payload = await readBoundedJson(response);
+      throwIfAlphaVantageError(payload);
+      return payload;
     };
     const rawDividends = await request("DIVIDENDS");
     const rawOverview = currency ? null : await request("OVERVIEW");

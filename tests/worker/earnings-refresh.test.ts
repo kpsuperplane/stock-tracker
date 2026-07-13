@@ -4,6 +4,7 @@ import type {
   EarningsEventRange,
   EarningsProvider,
 } from "../../src/providers/earnings";
+import { ProviderResponseError } from "../../src/providers/provider-errors";
 import { ScheduledEarningsRefreshService } from "../../src/services/earnings-refresh";
 
 const now = "2026-07-13T12:00:00.000Z";
@@ -155,6 +156,37 @@ describe("ScheduledEarningsRefreshService", () => {
     });
     expect(await missingKey.refreshHeldInstruments()).toMatchObject({
       coverageStatus: "unavailable",
+    });
+  });
+
+  it("stores the classified Alpha error and sanitized provider message", async () => {
+    await seedInstrument();
+    const service = new ScheduledEarningsRefreshService({
+      db: env.DB,
+      provider: {
+        getEarningsCalendar: async () => {
+          throw new ProviderResponseError(
+            "provider_entitlement",
+            "A premium subscription is required for apikey=secret.",
+          );
+        },
+      },
+      now: () => new Date(now),
+    });
+
+    expect(await service.refreshHeldInstruments()).toMatchObject({
+      coverageStatus: "unavailable",
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT error_code, error_message
+           FROM earnings_calendar_coverage
+          WHERE provider = 'alpha-vantage-earnings'`,
+      ).first(),
+    ).toEqual({
+      error_code: "provider_entitlement",
+      error_message:
+        "A premium subscription is required for credential=[REDACTED]",
     });
   });
 });
