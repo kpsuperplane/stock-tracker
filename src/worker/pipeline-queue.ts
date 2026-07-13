@@ -3,6 +3,7 @@ import {
   DispatchBatchRepository,
 } from "../db/dispatch-batches";
 import { type WorkItemRecord, WorkItemRepository } from "../db/work-items";
+import { PipelineJobSettlementService } from "../services/pipeline-job-settlement";
 import { isWithinDelayedBarHorizon } from "../services/scheduled-reconciliation";
 import {
   isPipelineDispatchMessage,
@@ -78,6 +79,7 @@ const missingOutcomes = (
 
 export class PipelineQueueConsumer {
   private readonly batches: DispatchBatchRepository;
+  private readonly jobSettlement: PipelineJobSettlementService;
   private readonly workItems: WorkItemRepository;
   private readonly now: () => Date;
   private readonly processingLeaseMs: number;
@@ -88,6 +90,7 @@ export class PipelineQueueConsumer {
     private readonly dependencies: PipelineQueueConsumerDependencies,
   ) {
     this.batches = new DispatchBatchRepository(dependencies.db);
+    this.jobSettlement = new PipelineJobSettlementService(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
     this.now = dependencies.now ?? (() => new Date());
     this.processingLeaseMs = Math.max(
@@ -481,6 +484,7 @@ export class PipelineQueueConsumer {
       dispatchBatchId: batchId,
       now: timestamp,
     });
+    await this.jobSettlement.settleForBatch(batchId, timestamp);
   }
 
   private async handleFailure(input: {

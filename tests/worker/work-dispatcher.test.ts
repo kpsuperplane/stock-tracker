@@ -4,6 +4,7 @@ import {
   type DispatchBatchRecord,
   DispatchBatchRepository,
 } from "../../src/db/dispatch-batches";
+import { PipelineJobRepository } from "../../src/db/pipeline-jobs";
 import { WorkItemRepository } from "../../src/db/work-items";
 import { YahooMarketDataProvider } from "../../src/providers/yahoo";
 import {
@@ -353,6 +354,81 @@ describe("normalized work dispatcher and queue consumer", () => {
     const duplicate = message(sent[0] as PipelineDispatchMessage);
     await consumer.handle({ messages: [duplicate] } as never);
     expect(duplicate.ack).toHaveBeenCalledOnce();
+  });
+
+  it("settles a linked pipeline job as soon as its queue work completes", async () => {
+    await insertInstrument();
+    const jobs = new PipelineJobRepository(env.DB);
+    const workItems = new WorkItemRepository(env.DB);
+    await env.DB.batch([
+      jobs.createStatement({
+        id: "queue-settlement-job",
+        triggerType: "ledger_reconciliation",
+        requestedStartDate: "2026-01-01",
+        requestedEndDate: "2026-01-01",
+        affectedInstrumentsJson: '["instrument-1"]',
+        eligibilityIntervalsJson: "[]",
+        priority: 100,
+        status: "running",
+        createdAt: now,
+        updatedAt: now,
+      }),
+      workItems.createPlanningStatement({
+        id: "queue-settlement-planner",
+        pipelineJobId: "queue-settlement-job",
+        workType: "ledger_reconciliation_plan",
+        deterministicKey: WorkItemRepository.planningKey(
+          "queue-settlement-job",
+          "ledger_reconciliation_plan",
+        ),
+        priority: 100,
+        maxAttempts: 3,
+        createdAt: now,
+        updatedAt: now,
+      }),
+      workItems.linkToJobStatement({
+        pipelineJobId: "queue-settlement-job",
+        workItemId: "queue-settlement-planner",
+        relationship: "required",
+        createdAt: now,
+      }),
+    ]);
+    await env.DB.prepare(
+      `UPDATE work_items
+          SET state = 'complete', completed_at = ?1
+        WHERE id = 'queue-settlement-planner'`,
+    )
+      .bind(now)
+      .run();
+    await insertWork({ id: "queue-settlement-work", date: "2026-01-01" });
+    await workItems.attachToJob({
+      pipelineJobId: "queue-settlement-job",
+      workItemId: "queue-settlement-work",
+      relationship: "required",
+      now,
+    });
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const queueMessage = message(sent[0] as PipelineDispatchMessage);
+
+    await new PipelineQueueConsumer({
+      db: env.DB,
+      now: () => new Date(now),
+    }).handle({ messages: [queueMessage] } as never);
+
+    expect(queueMessage.ack).toHaveBeenCalledOnce();
+    expect(
+      await env.DB.prepare(
+        `SELECT status, work_total, work_fetched, work_processed, work_failed
+           FROM pipeline_jobs WHERE id = 'queue-settlement-job'`,
+      ).first(),
+    ).toEqual({
+      status: "complete",
+      work_total: 1,
+      work_fetched: 1,
+      work_processed: 1,
+      work_failed: 0,
+    });
   });
 
   it("retries partial provider ranges and terminalizes after an exhausted retry", async () => {
