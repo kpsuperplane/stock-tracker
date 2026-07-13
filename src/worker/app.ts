@@ -6,6 +6,7 @@ import type { Env } from "./env";
 import { ApiError, safeErrorMessage } from "./errors";
 import { accountRoutes } from "./routes/accounts";
 import { backfillRoutes } from "./routes/backfills";
+import { earningsRoutes } from "./routes/earnings";
 import { eventImportRoutes } from "./routes/event-imports";
 import {
   corporateActionRoutes,
@@ -120,6 +121,7 @@ export const createApp = () => {
   app.get("/api/health", (context) => context.json({ ok: true }));
   app.route("/api/accounts", accountRoutes);
   app.route("/api/backfills", backfillRoutes);
+  app.route("/api/earnings", earningsRoutes);
   app.route("/api/corporate-actions", corporateActionRoutes);
   app.route("/api/events", eventsRoutes);
   app.route("/data/ledger", ledgerReadRoutes);

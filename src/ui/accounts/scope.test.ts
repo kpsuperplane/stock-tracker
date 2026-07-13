@@ -97,15 +97,11 @@ describe("account scope helpers", () => {
     ).toBe(false);
   });
 
-  it("builds grouped options with unambiguous owner labels", () => {
+  it("builds concise owner labels and a category-account tree", () => {
     const options = buildAccountScopeOptions(categories, {
       allAccounts: "All accounts",
       owners: "Owners",
-      owner: "Owner",
-      categories: "Categories",
-      category: "Category",
-      accounts: "Accounts",
-      account: "Account",
+      categoriesAndAccounts: "Categories & accounts",
       archived: "Archived",
     });
     expect(options).toEqual(
@@ -114,7 +110,7 @@ describe("account scope helpers", () => {
           type: "section",
           title: "Owners",
           options: expect.arrayContaining([
-            { value: "owner:Kevin", label: "Owner / Kevin" },
+            { value: "owner:Kevin", label: "Kevin" },
           ]),
         }),
       ]),
@@ -123,13 +119,19 @@ describe("account scope helpers", () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: "section",
-          title: "Accounts",
-          options: expect.arrayContaining([
+          title: "Categories & accounts",
+          options: [
+            { value: "category:registered", label: "Registered" },
             {
               value: "account:tfsa",
-              label: "Account / Registered / tfsa",
+              label: "tfsa",
             },
-          ]),
+            { value: "account:rrsp", label: "rrsp" },
+            { value: "category:taxable", label: "Taxable" },
+            { value: "account:margin", label: "margin" },
+            { value: "account:closed", label: "closed (Archived)" },
+            { value: "account:unowned", label: "unowned" },
+          ],
         }),
       ]),
     );

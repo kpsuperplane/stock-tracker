@@ -3,8 +3,6 @@ import { RunRepository } from "../db/runs";
 import { TickerRepository } from "../db/tickers";
 import { AlphaVantageDividendEventProvider } from "../providers/alpha-vantage-dividends";
 import { AlphaVantageEarningsProvider } from "../providers/alpha-vantage-earnings";
-import { AlphaVantageEarningsHistoryProvider } from "../providers/alpha-vantage-earnings-history";
-import { SecEarningsHistoryProvider } from "../providers/sec-earnings";
 import { YahooDividendEventProvider } from "../providers/yahoo-dividends";
 import { AlphaVantageRequestBudget } from "../services/alpha-vantage-budget";
 import {
@@ -12,7 +10,6 @@ import {
   backfillPipelineFlagEnabled,
 } from "../services/backfill-pipeline";
 import { ScheduledDividendRefreshService } from "../services/dividend-refresh";
-import { EarningsHistoryBackfillService } from "../services/earnings-history-backfill";
 import { ScheduledEarningsRefreshService } from "../services/earnings-refresh";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
@@ -25,6 +22,7 @@ import {
 } from "../services/scheduled-reconciliation";
 import { WorkDispatcherService } from "../services/work-dispatcher";
 import { easternMarketDate } from "../shared/dates";
+import { runEarningsHistoryBackfill } from "./earnings-history";
 import type { Env } from "./env";
 import { safeErrorMessage } from "./errors";
 import { logEvent } from "./log";
@@ -158,23 +156,7 @@ export const handleScheduled = async (
   let earningsHistoryRefresh: string | null = null;
   try {
     earningsHistoryRefresh = JSON.stringify(
-      await new EarningsHistoryBackfillService({
-        db: env.DB,
-        ...(env.SEC_USER_AGENT
-          ? {
-              secProvider: new SecEarningsHistoryProvider(env.SEC_USER_AGENT),
-            }
-          : {}),
-        ...(env.ALPHA_VANTAGE_API_KEY
-          ? {
-              alphaProvider: new AlphaVantageEarningsHistoryProvider(
-                env.ALPHA_VANTAGE_API_KEY,
-                alphaBudget.fetcher("earnings_history"),
-              ),
-            }
-          : {}),
-        now: () => new Date(now),
-      }).refreshDue(),
+      await runEarningsHistoryBackfill(env, new Date(now), alphaBudget),
     );
     logEvent("earnings_history_refresh_scheduled", {
       scheduledTime: now,

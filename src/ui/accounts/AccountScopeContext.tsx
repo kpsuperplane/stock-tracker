@@ -1,4 +1,4 @@
-import { Selector, VStack } from "@astryxdesign/core";
+import { Selector, SelectorOption, VStack } from "@astryxdesign/core";
 import {
   createContext,
   type ReactNode,
@@ -139,11 +139,7 @@ export const AccountScopeBar = () => {
       buildAccountScopeOptions(categories, {
         allAccounts: t("allAccounts"),
         owners: t("owners"),
-        owner: t("owner"),
-        categories: t("categories"),
-        category: t("category"),
-        accounts: t("accounts"),
-        account: t("account"),
+        categoriesAndAccounts: t("categoriesAndAccounts"),
         archived: t("archived"),
       }),
     [categories, t],
@@ -157,6 +153,16 @@ export const AccountScopeBar = () => {
         aria-label={t("accountScope")}
         options={options}
         value={value}
+        renderOption={(option) => (
+          <SelectorOption
+            label={option.label ?? option.value}
+            className={
+              option.value.startsWith("account:")
+                ? "account-scope-option account-scope-option--account"
+                : "account-scope-option"
+            }
+          />
+        )}
         onChange={(next) => {
           if (next === "all") setSelection({ scopeType: "all" });
           else if (next.startsWith("owner:")) {

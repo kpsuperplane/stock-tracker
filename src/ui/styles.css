@@ -101,6 +101,18 @@ body {
   min-width: 0;
 }
 
+.account-scope-option--account {
+  position: relative;
+  padding-inline-start: 1.5rem;
+}
+
+.account-scope-option--account::before {
+  position: absolute;
+  inset-inline-start: 0.375rem;
+  color: var(--color-text-secondary);
+  content: "\21b3";
+}
+
 @media (max-width: 520px) {
   .events-filter-row {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;

@@ -8,11 +8,7 @@ import type {
 interface AccountScopeOptionLabels {
   allAccounts: string;
   owners: string;
-  owner: string;
-  categories: string;
-  category: string;
-  accounts: string;
-  account: string;
+  categoriesAndAccounts: string;
   archived: string;
 }
 
@@ -101,28 +97,24 @@ export const buildAccountScopeOptions = (
             title: labels.owners,
             options: owners.map((owner) => ({
               value: `owner:${owner}`,
-              label: `${labels.owner} / ${owner}`,
+              label: owner,
             })),
           },
         ]
       : []),
     {
       type: "section",
-      title: labels.categories,
-      options: categories.map((category) => ({
-        value: `category:${category.id}`,
-        label: `${labels.category} / ${category.name}${category.archivedAt ? ` (${labels.archived})` : ""}`,
-      })),
-    },
-    {
-      type: "section",
-      title: labels.accounts,
-      options: categories.flatMap((category) =>
-        category.accounts.map((account) => ({
+      title: labels.categoriesAndAccounts,
+      options: categories.flatMap((category) => [
+        {
+          value: `category:${category.id}`,
+          label: `${category.name}${category.archivedAt ? ` (${labels.archived})` : ""}`,
+        },
+        ...category.accounts.map((account) => ({
           value: `account:${account.id}`,
-          label: `${labels.account} / ${category.name} / ${account.name}${account.archivedAt ? ` (${labels.archived})` : ""}`,
+          label: `${account.name}${account.archivedAt ? ` (${labels.archived})` : ""}`,
         })),
-      ),
+      ]),
     },
   ];
 };
