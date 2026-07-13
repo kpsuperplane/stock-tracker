@@ -98,7 +98,7 @@ export const handleScheduled = async (
     const plannerContinuation = await new ScheduledReconciliationService({
       db: env.DB,
       now: () => scheduledTime,
-    }).continueScheduledPlanning(scheduledTime);
+    }).continueAutomaticPlanning(scheduledTime);
     await continueActiveBackfills(env, scheduledTime.toISOString());
     const result = await new WorkDispatcherService({
       db: env.DB,

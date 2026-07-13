@@ -170,19 +170,20 @@ describe("deployment safety", () => {
     });
   });
 
-  it("keeps writes and migration off while production reads are enabled", () => {
+  it("enables the production pipeline while keeping rollback-sensitive flags off", () => {
     const production = readJsonc("wrangler.jsonc");
     const test = readJsonc("wrangler.test.jsonc");
     expect(production.vars?.PORTFOLIO_NEW_READS_ENABLED).toBe("true");
     expect(production.vars?.CALENDAR_READ_MODELS_ENABLED).toBe("true");
     expect(production.vars?.JOB_READ_MODELS_ENABLED).toBe("true");
-    for (const config of [production, test]) {
-      for (const key of flagKeys.filter(
-        (candidate) => candidate !== "PORTFOLIO_NEW_READS_ENABLED",
-      )) {
-        expect(config.vars?.[key]).toBe("false");
-      }
+    expect(production.vars?.PORTFOLIO_NEW_WRITES_ENABLED).toBe("true");
+    for (const key of [
+      "PORTFOLIO_DUAL_WRITE_ENABLED",
+      "PORTFOLIO_MIGRATOR_ENABLED",
+    ] as const) {
+      expect(production.vars?.[key]).toBe("false");
     }
+    for (const key of flagKeys) expect(test.vars?.[key]).toBe("false");
     expect(test.vars?.PORTFOLIO_NEW_READS_ENABLED).toBe("false");
   });
 

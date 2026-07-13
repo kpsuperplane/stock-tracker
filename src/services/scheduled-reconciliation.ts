@@ -101,6 +101,14 @@ export const previousTorontoWeekday = (date: string): string => {
   return formatDate(value);
 };
 
+const latestTorontoWeekday = (date: string): string => {
+  let value = dateAtNoonUtc(date);
+  while (value.getUTCDay() === 0 || value.getUTCDay() === 6) {
+    value = new Date(value.getTime() - 86_400_000);
+  }
+  return formatDate(value);
+};
+
 import {
   type PipelineJobRecord,
   PipelineJobRepository,
@@ -349,11 +357,11 @@ export class ScheduledReconciliationService {
   }
 
   /**
-   * Continue bounded scheduled planning from the recurring dispatcher.  A
-   * large scheduled snapshot must not depend on the second DST cron candidate
-   * (which is intentionally a no-op) to advance its persisted cursor.
+   * Continue bounded automatic planning from the recurring dispatcher.
+   * Scheduled snapshots and ledger mutations both persist planning work, so
+   * both must be resumable without a browser request remaining alive.
    */
-  async continueScheduledPlanning(
+  async continueAutomaticPlanning(
     at: Date = this.now(),
     maxJobs = 10,
   ): Promise<{ jobs: number; pages: number; workItems: number }> {
@@ -362,7 +370,7 @@ export class ScheduledReconciliationService {
       .prepare(
         `SELECT id, requested_end_date AS requestedEndDate
          FROM pipeline_jobs
-         WHERE trigger_type = 'scheduled'
+         WHERE trigger_type IN ('scheduled', 'ledger_reconciliation')
            AND status IN ('pending', 'planning', 'running')
          ORDER BY priority DESC, created_at, id
          LIMIT ?1`,
@@ -389,6 +397,7 @@ export class ScheduledReconciliationService {
     tradingDate: string,
     timestamp: string,
   ): Promise<{ pages: number; workItems: number }> {
+    const latestCompletedTradingDate = latestTorontoWeekday(tradingDate);
     let pages = 0;
     let workItems = 0;
     for (; pages < 10; pages += 1) {
@@ -420,8 +429,10 @@ export class ScheduledReconciliationService {
           ? { plannerLeaseUntil: job.plannerLeaseUntil }
           : {}),
         pageSize: this.plannerPageSize,
-        latestCompletedTradingDate: tradingDate,
-        previousCompletedTradingDate: previousTorontoWeekday(tradingDate),
+        latestCompletedTradingDate,
+        previousCompletedTradingDate: previousTorontoWeekday(
+          latestCompletedTradingDate,
+        ),
       });
       workItems += page.globalWork.length;
       if (page.dividendRecalculations.length > 0) {

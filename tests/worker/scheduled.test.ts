@@ -247,7 +247,7 @@ describe("scheduled handler", () => {
          WHERE id = 'scheduled:portfolio:2026-03-10'`,
       ).first(),
     ).toEqual({ planner_cursor: "10" });
-    const continuation = await service.continueScheduledPlanning(new Date(now));
+    const continuation = await service.continueAutomaticPlanning(new Date(now));
     expect(continuation).toEqual({ jobs: 1, pages: 1, workItems: 1 });
     expect(
       await env.DB.prepare(

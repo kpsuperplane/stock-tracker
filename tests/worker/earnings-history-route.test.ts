@@ -9,6 +9,17 @@ const headers = {
 };
 
 describe("earnings history maintenance route", () => {
+  it("serves an authenticated manual trigger", async () => {
+    const response = await exports.default.fetch(
+      new Request("http://local/api/earnings/history-backfill", { headers }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("Run one batch");
+    expect(body).toContain('headers: { "X-Stock-Tracker-Request": "1" }');
+  });
+
   it("runs one bounded batch and persists retry state", async () => {
     const now = new Date().toISOString();
     await env.DB.batch([
