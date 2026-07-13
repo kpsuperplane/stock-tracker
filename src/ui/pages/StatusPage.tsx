@@ -6,8 +6,21 @@ import {
   HStack,
   Skeleton,
   StatusDot,
+  Table,
+  TableBody,
+  TableCell,
+  TableHeader,
+  TableHeaderCell,
+  TableRow,
 } from "@astryxdesign/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   JobReadModelDto,
   StatusReadModelDto,
@@ -378,97 +391,122 @@ export const StatusPage = ({
         </div>
 
         {status && status.jobs.length > 0 ? (
-          <div className="status-job-list">
-            <div className="status-job-list__header" aria-hidden="true">
-              <span>{t("syncJob")}</span>
-              <span>{t("status")}</span>
-              <span>{t("workProgress")}</span>
-              <span>{t("fetched")}</span>
-              <span>{t("analyzed")}</span>
-              <span>{t("reused")}</span>
-              <span>{t("skipped")}</span>
-              <span>{t("failures")}</span>
-              <span>{t("lastActivity")}</span>
-            </div>
-            {status.jobs.map((job) => {
-              const range = jobRange(job, locale);
-              const progress = job.progress;
-              return (
-                <article className="status-job" key={job.id}>
-                  <div className="status-job__main">
-                    <div className="status-job__identity">
-                      <strong>{t(jobTriggerKey(job.triggerType))}</strong>
-                      <span className="status-job__identity-meta">
-                        <span className="status-job__id" title={job.id}>
-                          {job.id}
-                        </span>
-                        {range && (
-                          <span className="status-job__range">{range}</span>
-                        )}
-                      </span>
-                    </div>
-                    <div className="status-job__state">
-                      <Badge
-                        variant={jobBadgeVariant(job.status)}
-                        label={t(jobStatusKey(job.status))}
-                      />
-                    </div>
-                    <dl className="status-job__metrics">
-                      <div>
-                        <dt>{t("workProgress")}</dt>
-                        <dd className="status-job__progress">
-                          {progress.workProcessed} / {progress.workTotal}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>{t("fetched")}</dt>
-                        <dd>{progress.workFetched}</dd>
-                      </div>
-                      <div>
-                        <dt>{t("analyzed")}</dt>
-                        <dd>{progress.workAnalyzed}</dd>
-                      </div>
-                      <div>
-                        <dt>{t("reused")}</dt>
-                        <dd>{progress.workReused}</dd>
-                      </div>
-                      <div>
-                        <dt>{t("skipped")}</dt>
-                        <dd>{progress.workSkipped}</dd>
-                      </div>
-                      <div>
-                        <dt>{t("failures")}</dt>
-                        <dd>{progress.workFailed}</dd>
-                      </div>
-                    </dl>
-                    <time
-                      className="status-job__updated"
-                      dateTime={job.updatedAt}
-                    >
-                      {formatDateTime(job.updatedAt, locale)}
-                    </time>
-                  </div>
-                  {job.errors.length > 0 && (
-                    <div className="status-job__errors">
-                      <strong>{t("jobErrors")}</strong>
-                      <ul>
-                        {job.errors.map((jobError) => (
-                          <li key={jobError.workItemId}>
-                            {jobError.effectiveDate
-                              ? `${formatDate(jobError.effectiveDate, locale)} - `
-                              : ""}
-                            {jobError.message ??
-                              jobError.code ??
-                              t("unknownStatus")}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-          </div>
+          <Table
+            tableProps={{ className: "status-job-table" }}
+            density="compact"
+            dividers="rows"
+            textOverflow="truncate"
+            aria-label={t("recentJobs")}
+          >
+            <TableHeader>
+              <TableRow isHeaderRow>
+                <TableHeaderCell>{t("syncJob")}</TableHeaderCell>
+                <TableHeaderCell>{t("status")}</TableHeaderCell>
+                <TableHeaderCell className="status-job-table__number-cell">
+                  {t("workProgress")}
+                </TableHeaderCell>
+                <TableHeaderCell className="status-job-table__number-cell">
+                  {t("fetched")}
+                </TableHeaderCell>
+                <TableHeaderCell className="status-job-table__number-cell">
+                  {t("analyzed")}
+                </TableHeaderCell>
+                <TableHeaderCell className="status-job-table__number-cell">
+                  {t("reused")}
+                </TableHeaderCell>
+                <TableHeaderCell className="status-job-table__number-cell">
+                  {t("skipped")}
+                </TableHeaderCell>
+                <TableHeaderCell className="status-job-table__number-cell">
+                  {t("failures")}
+                </TableHeaderCell>
+                <TableHeaderCell>{t("lastActivity")}</TableHeaderCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {status.jobs.map((job) => {
+                const range = jobRange(job, locale);
+                const progress = job.progress;
+                return (
+                  <Fragment key={job.id}>
+                    <TableRow>
+                      <TableCell>
+                        <div className="status-job-table__identity">
+                          <strong>{t(jobTriggerKey(job.triggerType))}</strong>
+                          <span className="status-job-table__identity-meta">
+                            <span
+                              className="status-job-table__id"
+                              title={job.id}
+                            >
+                              {job.id}
+                            </span>
+                            {range && (
+                              <span className="status-job-table__range">
+                                {range}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={jobBadgeVariant(job.status)}
+                          label={t(jobStatusKey(job.status))}
+                        />
+                      </TableCell>
+                      <TableCell className="status-job-table__number-cell">
+                        {progress.workProcessed} / {progress.workTotal}
+                      </TableCell>
+                      <TableCell className="status-job-table__number-cell">
+                        {progress.workFetched}
+                      </TableCell>
+                      <TableCell className="status-job-table__number-cell">
+                        {progress.workAnalyzed}
+                      </TableCell>
+                      <TableCell className="status-job-table__number-cell">
+                        {progress.workReused}
+                      </TableCell>
+                      <TableCell className="status-job-table__number-cell">
+                        {progress.workSkipped}
+                      </TableCell>
+                      <TableCell className="status-job-table__number-cell">
+                        {progress.workFailed}
+                      </TableCell>
+                      <TableCell>
+                        <time
+                          className="status-job-table__updated"
+                          dateTime={job.updatedAt}
+                        >
+                          {formatDateTime(job.updatedAt, locale)}
+                        </time>
+                      </TableCell>
+                    </TableRow>
+                    {job.errors.length > 0 && (
+                      <TableRow className="status-job-table__error-row">
+                        <TableCell colSpan={9}>
+                          <div className="status-job-table__errors">
+                            <strong>{t("jobErrors")}</strong>
+                            <ul>
+                              {job.errors.map((jobError) => (
+                                <li key={jobError.workItemId}>
+                                  {jobError.effectiveDate
+                                    ? `${formatDate(jobError.effectiveDate, locale)} - `
+                                    : ""}
+                                  {jobError.message ??
+                                    jobError.code ??
+                                    t("unknownStatus")}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </TableBody>
+          </Table>
         ) : (
           <EmptyState
             isCompact

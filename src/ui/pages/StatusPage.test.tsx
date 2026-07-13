@@ -55,8 +55,8 @@ describe("StatusPage", () => {
     expect(markup).toContain("Earnings calendar");
     expect(markup).toContain("Scheduled sync");
     expect(markup).toContain("8 / 8");
-    expect(markup).toContain('class="status-job-list__header"');
-    expect(markup).toContain('class="status-job__progress"');
+    expect(markup).toContain("<table");
+    expect(markup).toContain("status-job-table");
     expect(markup).toContain("Fetched");
     expect(markup).toContain("Failures");
   });
@@ -100,6 +100,7 @@ describe("StatusPage", () => {
     expect(markup).toContain("Alpha Vantage rate limit reached.");
     expect(markup).toContain("Price provider unavailable.");
     expect(markup).toContain("Complete with errors");
+    expect(markup).toContain('colSpan="9"');
   });
 
   it("gives active jobs precedence while a sync is running", () => {
