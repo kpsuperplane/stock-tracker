@@ -9,6 +9,7 @@ export interface ReadModelTagInput {
   model: "portfolio" | "calendar";
   locale: ReadModelLocale;
   positionBasisRevision: number;
+  accountStructureRevision?: number;
   bucketKeys: readonly string[];
   /** Query-shape input that makes validators safe across different ranges/pages. */
   representationKey?: string;
@@ -67,6 +68,7 @@ export const readModelTag = async (
     input.locale,
     `representation:${input.representationKey ?? ""}`,
     `position:${input.positionBasisRevision}`,
+    `accounts:${input.accountStructureRevision ?? 0}`,
     ...buckets.map((bucket) => `${bucket}:${revisions[bucket] ?? 0}`),
   ].join("|");
   return { etag: `"read-${await digest(canonical)}"`, revisions };

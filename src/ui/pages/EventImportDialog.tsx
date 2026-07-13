@@ -8,6 +8,7 @@ import {
   FormLayout,
   HStack,
   Icon,
+  Selector,
   Table,
   TableBody,
   TableCell,
@@ -17,6 +18,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { useRef, useState } from "react";
+import { useAccountScope } from "../accounts/AccountScopeContext";
 import {
   ApiClientError,
   type EventImportsApiClient,
@@ -152,6 +154,7 @@ const SplitReviewCard = ({
           <Table
             density="compact"
             dividers="rows"
+            textOverflow="truncate"
             aria-label={t("splitReviewTitle")}
           >
             <TableHeader>
@@ -190,6 +193,20 @@ export const EventImportDialog = ({
   initialPreview,
 }: EventImportDialogProps) => {
   const { t } = useI18n();
+  const { selection, categories } = useAccountScope();
+  const accountOptions = categories.flatMap((category) =>
+    category.accounts
+      .filter((account) => account.archivedAt === null)
+      .map((account) => ({
+        value: account.id,
+        label: `${category.name} / ${account.name}`,
+      })),
+  );
+  const [accountId, setAccountId] = useState(
+    selection.scopeType === "account"
+      ? (selection.scopeId ?? "")
+      : (accountOptions[0]?.value ?? ""),
+  );
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<ImportPreviewResponse | null>(
     initialPreview ?? null,
@@ -234,7 +251,7 @@ export const EventImportDialog = ({
     setIsPreviewing(true);
     setError(null);
     try {
-      const result = await apiClient.preview(requestFile);
+      const result = await apiClient.preview(requestFile, accountId);
       if (
         !isCurrentPreviewRequest(
           requestId,
@@ -362,6 +379,16 @@ export const EventImportDialog = ({
       />
       <VStack gap={4}>
         <FormLayout>
+          <Selector
+            label={t("account")}
+            aria-label={t("account")}
+            options={accountOptions}
+            value={accountId}
+            onChange={setAccountId}
+            isDisabled={
+              isPreviewing || isCommitting || accountOptions.length === 0
+            }
+          />
           <FileInput
             label={t("csvFile")}
             value={file}
@@ -410,7 +437,7 @@ export const EventImportDialog = ({
               density="compact"
               dividers="rows"
               hasHover
-              textOverflow="wrap"
+              textOverflow="truncate"
               aria-label={t("csvImportTitle")}
             >
               <TableHeader>
@@ -457,6 +484,7 @@ export const EventImportDialog = ({
               <Table
                 density="compact"
                 dividers="rows"
+                textOverflow="truncate"
                 aria-label={t("projectedHoldings")}
               >
                 <TableHeader>

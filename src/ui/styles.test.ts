@@ -18,12 +18,16 @@ describe("product stylesheet", () => {
   it("keeps custom product CSS scoped to the calendar and phone fallback", () => {
     expect(calendarStyles).toContain(".calendar-grid");
     expect(calendarStyles).toContain("prefers-reduced-motion");
-    expect(styles).toContain(".backfill-date-layout");
     expect(styles).toContain('content: "∙ 必填"');
     expect(styles).toContain(".product-top-nav");
     expect(styles).toContain(
       "background-color: var(--color-background-surface)",
     );
+    expect(styles).toContain("white-space: nowrap");
+    expect(styles).toContain("overflow-wrap: normal");
+    expect(styles).toContain("word-break: normal");
+    expect(styles).toContain(".portfolio-summary-cell");
+    expect(styles).toContain("white-space: normal");
     expect(styles).not.toContain(".horizontal-scroll-hint");
     expect(styles).toContain(".calendar-mover-dialog__body");
     expect(styles).not.toContain(".product-page {");

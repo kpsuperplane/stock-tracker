@@ -5,8 +5,9 @@ import {
   eventDate,
 } from "./CalendarEvent";
 import { CalendarToolbar } from "./CalendarToolbar";
-import type { CalendarView } from "./dateMath";
+import { type CalendarView, rangeForView } from "./dateMath";
 import { MonthGrid } from "./MonthGrid";
+import { PeriodDividendSummary } from "./PeriodDividendSummary";
 import { WeekGrid } from "./WeekGrid";
 
 export interface MarketCalendarProps {
@@ -52,6 +53,7 @@ export const MarketCalendar = ({
 }: MarketCalendarProps) => {
   const eventsByDate = groupEvents(calendar.events);
   const pendingByDate = groupPending(calendar);
+  const visibleRange = rangeForView(anchorDate, view);
   return (
     <>
       <CalendarToolbar
@@ -60,6 +62,12 @@ export const MarketCalendar = ({
         today={today}
         onViewChange={onViewChange}
         onNavigate={onNavigate}
+      />
+      <PeriodDividendSummary
+        dividends={calendar.dividends}
+        view={view}
+        startDate={visibleRange.startDate}
+        endDate={visibleRange.endDate}
       />
       {view === "month" ? (
         <MonthGrid

@@ -64,7 +64,7 @@ describe("EventsPage", () => {
 
     expect(markup).toContain('data-testid="events-page"');
     expect(markup).toContain("AAPL");
-    expect(markup).toContain("Apple Inc.");
+    expect(markup).not.toContain("Apple Inc.");
     expect(markup).toContain("Buy");
     expect(markup).toContain("Split");
     expect(markup).not.toContain(">Status<");

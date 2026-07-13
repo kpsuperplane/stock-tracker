@@ -1,5 +1,7 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
+import { AccountRepository } from "../../db/accounts";
+import { AccountService } from "../../services/accounts";
 import { CalendarReadModelService } from "../../services/calendar-read-model";
 import { JobReadModelService } from "../../services/job-read-model";
 import { PortfolioReadModelService } from "../../services/portfolio-read-model";
@@ -14,6 +16,24 @@ import { ApiError } from "../errors";
 
 const isoDate = z.iso.date();
 const localeSchema = z.enum(["en", "cn"]);
+
+const resolveScope = async (db: D1Database, query: Record<string, string>) => {
+  const scopeType = query.scopeType ?? "all";
+  const accountService = new AccountService(new AccountRepository(db));
+  if (scopeType === "all") {
+    if (query.scopeId) {
+      throw new ApiError(422, "invalid_scope", "The account scope is invalid.");
+    }
+    return accountService.resolveScope({ scopeType: "all" });
+  }
+  if ((scopeType !== "category" && scopeType !== "account") || !query.scopeId) {
+    throw new ApiError(422, "invalid_scope", "The account scope is invalid.");
+  }
+  return accountService.resolveScope({
+    scopeType,
+    scopeId: query.scopeId,
+  });
+};
 
 const isEnabled = (
   env: Env,
@@ -165,6 +185,10 @@ portfolioRoutes.get("/", async (context) => {
     ? parseDate(query.today, "today")
     : easternMarketDate(new Date());
   const locale = parseLocale(query.locale);
+  const scope = await resolveScope(context.env.DB, query);
+  const accountStructure = await new AccountService(
+    new AccountRepository(context.env.DB),
+  ).structure();
   const limit = parseLimit(query.limit, 100, 100);
   const cursor = decodeCursor(
     query.cursor,
@@ -187,7 +211,13 @@ portfolioRoutes.get("/", async (context) => {
     model: "portfolio",
     locale,
     positionBasisRevision: positionRevision,
-    representationKey: JSON.stringify({ today, limit, cursor }),
+    accountStructureRevision: accountStructure.revision,
+    representationKey: JSON.stringify({
+      today,
+      limit,
+      cursor,
+      scope: scope.fingerprint,
+    }),
     bucketKeys: [
       ...(includeLatestBucket ? ["latest"] : []),
       ...(query.today ? [today.slice(0, 7)] : []),
@@ -200,6 +230,7 @@ portfolioRoutes.get("/", async (context) => {
   const portfolio = await new PortfolioReadModelService(context.env.DB).read({
     today,
     locale,
+    accountIds: scope.accountIds,
     limit,
     cursor,
   });
@@ -214,6 +245,10 @@ calendarRoutes.get("/", async (context) => {
     ? parseDate(query.asOfDate, "asOfDate")
     : easternMarketDate(new Date());
   const locale = parseLocale(query.locale);
+  const scope = await resolveScope(context.env.DB, query);
+  const accountStructure = await new AccountService(
+    new AccountRepository(context.env.DB),
+  ).structure();
   const view = query.view ?? "month";
   if (view !== "week" && view !== "month") {
     throw new ApiError(
@@ -280,6 +315,7 @@ calendarRoutes.get("/", async (context) => {
     model: "calendar",
     locale,
     positionBasisRevision: positionRevision,
+    accountStructureRevision: accountStructure.revision,
     representationKey: JSON.stringify({
       startDate,
       endDate,
@@ -287,6 +323,7 @@ calendarRoutes.get("/", async (context) => {
       view,
       limit,
       cursor,
+      scope: scope.fingerprint,
     }),
     bucketKeys: [
       ...(latestIntersectsRange ? ["latest"] : []),
@@ -302,6 +339,7 @@ calendarRoutes.get("/", async (context) => {
     endDate,
     asOfDate,
     locale,
+    accountIds: scope.accountIds,
     limit,
     cursor,
   });

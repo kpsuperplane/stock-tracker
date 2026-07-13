@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-export type AppRoute = "portfolio" | "events" | "calendar" | "backfill";
+export type AppRoute = "portfolio" | "events" | "calendar" | "accounts";
 
 export interface AppRouteDefinition {
   id: AppRoute;
@@ -11,7 +11,7 @@ export const APP_ROUTES: readonly AppRouteDefinition[] = [
   { id: "portfolio", path: "/portfolio" },
   { id: "events", path: "/events" },
   { id: "calendar", path: "/calendar" },
-  { id: "backfill", path: "/backfill" },
+  { id: "accounts", path: "/accounts" },
 ];
 
 const stripQueryAndHash = (pathname: string) =>
@@ -36,7 +36,9 @@ export const routeForPath = (pathname: string): AppRoute => {
 };
 
 export const readPathname = () =>
-  typeof window === "undefined" ? "/portfolio" : window.location.pathname;
+  typeof window === "undefined"
+    ? "/portfolio"
+    : `${window.location.pathname}${window.location.search}`;
 
 export const isPlainLeftClick = (event: {
   button: number;
@@ -62,13 +64,16 @@ export const useAppRouter = (initialPath?: string): AppRouter => {
 
   useEffect(() => {
     if (initialPath !== undefined || typeof window === "undefined") return;
-    const onPopState = () => setPathname(window.location.pathname);
+    const onPopState = () =>
+      setPathname(`${window.location.pathname}${window.location.search}`);
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [initialPath]);
 
   const navigate = useCallback((route: AppRoute) => {
-    const nextPath = pathForRoute(route);
+    const nextPath = `${pathForRoute(route)}${
+      typeof window === "undefined" ? "" : window.location.search
+    }`;
     if (typeof window === "undefined") {
       setPathname(nextPath);
       return;

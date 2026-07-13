@@ -7,8 +7,9 @@ import {
   Popover,
   VStack,
 } from "@astryxdesign/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarReadModelDto } from "../../shared/contracts";
+import { useAccountScope } from "../accounts/AccountScopeContext";
 import {
   ApiClientError,
   type CalendarApiClient,
@@ -24,6 +25,7 @@ import {
 import { MarketCalendar } from "../calendar/MarketCalendar";
 import { MoverDialog } from "../calendar/MoverDialog";
 import { useI18n } from "../i18n/I18nProvider";
+import { usePageActions } from "../system/PageActionsContext";
 
 export interface CalendarPageProps {
   apiClient?: CalendarApiClient;
@@ -121,6 +123,7 @@ export const CalendarPage = ({
   initialAnchorDate,
 }: CalendarPageProps) => {
   const { locale, t } = useI18n();
+  const { selection: scopeSelection } = useAccountScope();
   const todayDate = today ?? todayInToronto();
   const [view, setView] = useState<CalendarView>(initialView);
   const [anchorDate, setAnchorDate] = useState(
@@ -157,6 +160,7 @@ export const CalendarPage = ({
       const range = rangeForView(anchorDate, view);
       const options: CalendarReadOptions = {
         locale,
+        scope: scopeSelection,
         view,
         startDate: range.startDate,
         endDate: range.endDate,
@@ -189,7 +193,7 @@ export const CalendarPage = ({
         }
       }
     },
-    [apiClient, anchorDate, locale, t, todayDate, view],
+    [apiClient, anchorDate, locale, scopeSelection, t, todayDate, view],
   );
 
   const loadMore = useCallback(() => {
@@ -210,109 +214,120 @@ export const CalendarPage = ({
     void load();
   }, [load]);
 
-  const pendingWithoutDate =
-    calendar?.pending.filter((item) => !item.date) ?? [];
+  const pendingWithoutDate = useMemo(
+    () => calendar?.pending.filter((item) => !item.date) ?? [],
+    [calendar],
+  );
+
+  const pageActions = useMemo(
+    () =>
+      calendar ? (
+        <HStack gap={1} wrap="nowrap">
+          {calendar.futureDividendStatus === "not_currently_known" && (
+            <Popover
+              label={t("futureDividendsUnknown")}
+              width="min(22rem, calc(100vw - 2rem))"
+              content={
+                <VStack gap={1}>
+                  <strong>{t("futureDividendsUnknown")}</strong>
+                  <div>{t("futureDividendsUnknownDescription")}</div>
+                </VStack>
+              }
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                label={t("futureDividendsUnknown")}
+                tooltip={t("futureDividendsUnknown")}
+                icon={<Icon icon="warning" color="warning" size="sm" />}
+                isIconOnly
+              />
+            </Popover>
+          )}
+          {calendar.conflicts.length > 0 && (
+            <Popover
+              label={t("calendarConflict")}
+              width="min(28rem, calc(100vw - 2rem))"
+              content={
+                <VStack gap={1}>
+                  <strong>{t("calendarConflict")}</strong>
+                  {calendar.conflicts.map((conflict, index) => (
+                    <div
+                      key={`${conflict.code}-${conflict.instrumentId ?? index}`}
+                    >
+                      {conflict.message}
+                    </div>
+                  ))}
+                </VStack>
+              }
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                label={t("calendarConflict")}
+                tooltip={t("calendarConflict")}
+                icon={
+                  <Icon
+                    icon={
+                      calendarConflictBannerStatus(calendar.conflicts) ===
+                      "error"
+                        ? "error"
+                        : "warning"
+                    }
+                    color={
+                      calendarConflictBannerStatus(calendar.conflicts) ===
+                      "error"
+                        ? "error"
+                        : "warning"
+                    }
+                    size="sm"
+                  />
+                }
+                isIconOnly
+              />
+            </Popover>
+          )}
+          {pendingWithoutDate.length > 0 && (
+            <Popover
+              label={t("calendarPending")}
+              width="min(28rem, calc(100vw - 2rem))"
+              content={
+                <VStack gap={1}>
+                  <strong>{t("calendarPending")}</strong>
+                  {pendingWithoutDate.map((item, index) => (
+                    <div key={`${item.kind}-${item.instrumentId ?? index}`}>
+                      {item.kind === "split_review"
+                        ? t("pendingSplitReview")
+                        : t("pendingMarketData")}
+                      {item.message ? `: ${item.message}` : ""}
+                    </div>
+                  ))}
+                </VStack>
+              }
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                label={t("calendarPending")}
+                tooltip={t("calendarPending")}
+                icon={<Icon icon="info" color="accent" size="sm" />}
+                isIconOnly
+              />
+            </Popover>
+          )}
+        </HStack>
+      ) : null,
+    [calendar, pendingWithoutDate, t],
+  );
+  const hasTopNavActions = usePageActions(pageActions);
 
   return (
     <VStack gap={3} data-testid="calendar-page">
       <HStack gap={2} justify="between" align="center">
-        <Heading level={1}>{t("calendarHeading")}</Heading>
-        {calendar && (
-          <HStack gap={1} wrap="nowrap">
-            {calendar.futureDividendStatus === "not_currently_known" && (
-              <Popover
-                label={t("futureDividendsUnknown")}
-                width="min(22rem, calc(100vw - 2rem))"
-                content={
-                  <VStack gap={1}>
-                    <strong>{t("futureDividendsUnknown")}</strong>
-                    <div>{t("futureDividendsUnknownDescription")}</div>
-                  </VStack>
-                }
-              >
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  label={t("futureDividendsUnknown")}
-                  tooltip={t("futureDividendsUnknown")}
-                  icon={<Icon icon="warning" color="warning" size="sm" />}
-                  isIconOnly
-                />
-              </Popover>
-            )}
-            {calendar.conflicts.length > 0 && (
-              <Popover
-                label={t("calendarConflict")}
-                width="min(28rem, calc(100vw - 2rem))"
-                content={
-                  <VStack gap={1}>
-                    <strong>{t("calendarConflict")}</strong>
-                    {calendar.conflicts.map((conflict, index) => (
-                      <div
-                        key={`${conflict.code}-${conflict.instrumentId ?? index}`}
-                      >
-                        {conflict.message}
-                      </div>
-                    ))}
-                  </VStack>
-                }
-              >
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  label={t("calendarConflict")}
-                  tooltip={t("calendarConflict")}
-                  icon={
-                    <Icon
-                      icon={
-                        calendarConflictBannerStatus(calendar.conflicts) ===
-                        "error"
-                          ? "error"
-                          : "warning"
-                      }
-                      color={
-                        calendarConflictBannerStatus(calendar.conflicts) ===
-                        "error"
-                          ? "error"
-                          : "warning"
-                      }
-                      size="sm"
-                    />
-                  }
-                  isIconOnly
-                />
-              </Popover>
-            )}
-            {pendingWithoutDate.length > 0 && (
-              <Popover
-                label={t("calendarPending")}
-                width="min(28rem, calc(100vw - 2rem))"
-                content={
-                  <VStack gap={1}>
-                    <strong>{t("calendarPending")}</strong>
-                    {pendingWithoutDate.map((item, index) => (
-                      <div key={`${item.kind}-${item.instrumentId ?? index}`}>
-                        {item.kind === "split_review"
-                          ? t("pendingSplitReview")
-                          : t("pendingMarketData")}
-                        {item.message ? `: ${item.message}` : ""}
-                      </div>
-                    ))}
-                  </VStack>
-                }
-              >
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  label={t("calendarPending")}
-                  tooltip={t("calendarPending")}
-                  icon={<Icon icon="info" color="accent" size="sm" />}
-                  isIconOnly
-                />
-              </Popover>
-            )}
-          </HStack>
-        )}
+        <Heading level={1} className="product-page-title-hidden">
+          {t("calendarHeading")}
+        </Heading>
+        {!hasTopNavActions && pageActions}
       </HStack>
 
       {error && (

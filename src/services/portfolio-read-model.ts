@@ -11,6 +11,7 @@ import type {
 
 interface TransactionRow {
   instrument_id: string;
+  account_id: string;
   trade_date: string;
   quantity_decimal: string;
   price_decimal: string;
@@ -92,6 +93,7 @@ interface ActionRow {
 export interface PortfolioReadModelInput {
   today: string;
   locale: ReadModelLocale;
+  accountIds: readonly string[];
   limit?: number;
   cursor?: { symbol: string; instrumentId: string } | null;
 }
@@ -185,6 +187,7 @@ export class PortfolioReadModelService {
 
   private latestFactsQuery(
     asOfDate: string,
+    accountIds: readonly string[],
     validOnly: boolean,
   ): Promise<D1Result<FactRow>> {
     const candidateFilter = validOnly
@@ -192,8 +195,12 @@ export class PortfolioReadModelService {
       : "";
     return this.db
       .prepare(
-        `WITH held_instruments AS (
-           SELECT DISTINCT instrument_id FROM transactions
+        `WITH scoped_transactions AS (
+           SELECT t.* FROM transactions t
+            WHERE t.account_id IN (SELECT value FROM json_each(?1))
+         ),
+         held_instruments AS (
+           SELECT DISTINCT instrument_id FROM scoped_transactions
          ),
          latest_dates AS (
            SELECT held.instrument_id,
@@ -201,7 +208,7 @@ export class PortfolioReadModelService {
                     SELECT candidate.trading_date
                       FROM daily_market_facts candidate
                      WHERE candidate.instrument_id = held.instrument_id
-                       AND candidate.trading_date <= ?1
+                       AND candidate.trading_date <= ?2
                        ${candidateFilter}
                      ORDER BY candidate.trading_date DESC
                      LIMIT 1
@@ -220,7 +227,7 @@ export class PortfolioReadModelService {
             AND f.trading_date = latest.trading_date
          ORDER BY f.instrument_id`,
       )
-      .bind(asOfDate)
+      .bind(JSON.stringify(accountIds), asOfDate)
       .all<FactRow>();
   }
 
@@ -235,28 +242,39 @@ export class PortfolioReadModelService {
       this.db
         .prepare(
           `SELECT id, instrument_id, trade_date, side,
-                    quantity_decimal, price_decimal
-             FROM transactions ORDER BY instrument_id, trade_date, id`,
+                    quantity_decimal, price_decimal, account_id
+             FROM transactions
+            WHERE account_id IN (SELECT value FROM json_each(?1))
+             ORDER BY instrument_id, trade_date, id`,
         )
+        .bind(JSON.stringify(input.accountIds))
         .all<TransactionRow>(),
       this.db
         .prepare(
           `SELECT DISTINCT i.id AS instrument_id, i.symbol, i.company_name,
                     i.exchange, i.currency
              FROM instruments i JOIN transactions t ON t.instrument_id = i.id
+            WHERE t.account_id IN (SELECT value FROM json_each(?1))
              ORDER BY i.symbol, i.id`,
         )
+        .bind(JSON.stringify(input.accountIds))
         .all<InstrumentRow>(),
       this.db
         .prepare(
           `SELECT id, instrument_id, effective_date,
                     split_numerator, split_denominator
-             FROM corporate_actions WHERE status = 'active'
+             FROM corporate_actions
+            WHERE status = 'active'
+              AND instrument_id IN (
+                SELECT DISTINCT instrument_id FROM transactions
+                 WHERE account_id IN (SELECT value FROM json_each(?1))
+              )
              ORDER BY instrument_id, effective_date, id`,
         )
+        .bind(JSON.stringify(input.accountIds))
         .all<SplitRow>(),
-      this.latestFactsQuery(input.today, false),
-      this.latestFactsQuery(input.today, true),
+      this.latestFactsQuery(input.today, input.accountIds, false),
+      this.latestFactsQuery(input.today, input.accountIds, true),
     ]);
 
     const transactionsByInstrument = new Map<string, TransactionRow[]>();

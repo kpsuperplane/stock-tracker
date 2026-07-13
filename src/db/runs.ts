@@ -817,7 +817,7 @@ export class RunRepository {
     const movers = await this.db
       .prepare(
         `SELECT s.id AS screeningId, s.symbol,
-         s.company_name AS companyName, s.exchange, s.currency,
+         s.exchange, s.currency,
          s.current_price AS currentPrice, s.change_amount AS changeAmount,
          s.change_pct AS changePct, s.qualified,
          a.explanation_zh_cn AS explanationZhCn, a.status AS analysisStatus

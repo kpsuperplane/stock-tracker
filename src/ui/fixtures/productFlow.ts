@@ -3,12 +3,12 @@ import type {
   CalendarReadModelDto,
   PortfolioReadModelDto,
 } from "../../shared/contracts";
-import type { BackfillJob, ImportPreviewResponse } from "../api";
+import type { ImportPreviewResponse } from "../api";
 
 /**
  * Small deterministic product-flow fixture shared by the integration test and
  * local UI review. It represents one imported buy flowing into the derived
- * Portfolio, a qualifying Calendar mover, and a completed Backfill run.
+ * Portfolio and a qualifying Calendar mover.
  */
 const movement = {
   tradingDate: "2026-07-10",
@@ -116,22 +116,4 @@ export const productFlowFixture = {
     conflicts: [],
     nextCursor: null,
   } satisfies CalendarReadModelDto,
-  backfill: {
-    id: "backfill-fixture-1",
-    triggerType: "backfill",
-    status: "complete",
-    dates_total: 1,
-    dates_processed: 1,
-    ticker_jobs_total: 1,
-    ticker_jobs_processed: 1,
-    ticker_jobs_failed: 0,
-    work_reused: 1,
-    work_skipped: 0,
-    work_fetched: 0,
-    work_analyzed: 0,
-    work_processed: 1,
-    work_failed: 0,
-    runs: [{ tradingDate: "2026-07-10", status: "complete", tickersFailed: 0 }],
-    errors: [],
-  } satisfies BackfillJob,
 } as const;

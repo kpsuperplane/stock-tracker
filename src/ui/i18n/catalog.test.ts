@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { type Locale, messageCatalog } from "./catalog";
 
 describe("static locale catalog", () => {
-  it("contains the four destinations and language control in both locales", () => {
+  it("contains the product destinations and language control in both locales", () => {
     const requiredKeys = [
       "appName",
       "navigation",
       "portfolio",
       "events",
       "calendar",
-      "backfill",
+      "accounts",
       "language",
       "english",
       "chinese",

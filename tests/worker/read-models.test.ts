@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AccountRepository } from "../../src/db/accounts";
 import { WorkItemRepository } from "../../src/db/work-items";
 import type { Env } from "../../src/worker/env";
 
@@ -31,19 +32,21 @@ const insertInstrument = async (input: {
 const insertTransaction = async (input: {
   id: string;
   instrumentId: string;
+  accountId?: string;
   date?: string;
   quantity: string;
   price?: string;
 }): Promise<void> => {
   await env.DB.prepare(
     `INSERT INTO transactions
-     (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
-      revision, created_at, updated_at)
-     VALUES (?1, ?2, ?3, 'buy', ?4, ?5, 1, ?6, ?6)`,
+     (id, instrument_id, account_id, trade_date, side, quantity_decimal,
+      price_decimal, revision, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, 'buy', ?5, ?6, 1, ?7, ?7)`,
   )
     .bind(
       input.id,
       input.instrumentId,
+      input.accountId ?? "account-default",
       input.date ?? "2026-01-02",
       input.quantity,
       input.price ?? "10",
@@ -130,6 +133,116 @@ describe("portfolio and calendar read models", () => {
         "work_items_fact_date_idx",
       ]),
     );
+  });
+
+  it("scopes portfolio and calendar representations to an account", async () => {
+    const accounts = new AccountRepository(env.DB);
+    await accounts.insertCategory({
+      id: "scope-category",
+      name: "Scope Category",
+      sortOrder: 1,
+      now,
+    });
+    await accounts.insertAccount({
+      id: "scope-account-one",
+      categoryId: "scope-category",
+      name: "Account One",
+      sortOrder: 0,
+      now,
+    });
+    await accounts.insertAccount({
+      id: "scope-account-two",
+      categoryId: "scope-category",
+      name: "Account Two",
+      sortOrder: 1,
+      now,
+    });
+    await insertInstrument({
+      id: "scope-instrument-one",
+      symbol: "SCOPE.ONE",
+      currency: "CAD",
+    });
+    await insertInstrument({
+      id: "scope-instrument-two",
+      symbol: "SCOPE.TWO",
+      currency: "CAD",
+    });
+    await insertTransaction({
+      id: "scope-buy-one",
+      instrumentId: "scope-instrument-one",
+      accountId: "scope-account-one",
+      quantity: "10",
+    });
+    await insertTransaction({
+      id: "scope-buy-two",
+      instrumentId: "scope-instrument-two",
+      accountId: "scope-account-two",
+      quantity: "20",
+    });
+    await insertFact({
+      id: "scope-fact-one",
+      instrumentId: "scope-instrument-one",
+      date: "2026-07-09",
+      previous: "10",
+      current: "11",
+      pct: "10",
+    });
+    await insertFact({
+      id: "scope-fact-two",
+      instrumentId: "scope-instrument-two",
+      date: "2026-07-09",
+      previous: "20",
+      current: "21",
+      pct: "5",
+    });
+
+    const accountPortfolio = await exports.default.fetch(
+      new Request(
+        "http://local/api/portfolio?today=2026-07-10&scopeType=account&scopeId=scope-account-one",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(accountPortfolio.status).toBe(200);
+    const portfolioPayload = await accountPortfolio.json<{
+      portfolio: {
+        positions: Array<{ symbol: string; quantityDecimal: string }>;
+      };
+    }>();
+    expect(portfolioPayload.portfolio.positions).toEqual([
+      expect.objectContaining({ symbol: "SCOPE.ONE", quantityDecimal: "10" }),
+    ]);
+
+    const categoryCalendar = await exports.default.fetch(
+      new Request(
+        "http://local/api/calendar?startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10&scopeType=category&scopeId=scope-category",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(categoryCalendar.status).toBe(200);
+    const calendarPayload = await categoryCalendar.json<{
+      calendar: { movers: Array<{ symbol: string }> };
+    }>();
+    expect(calendarPayload.calendar.movers.map(({ symbol }) => symbol)).toEqual(
+      expect.arrayContaining(["SCOPE.ONE", "SCOPE.TWO"]),
+    );
+
+    const events = await exports.default.fetch(
+      new Request(
+        "http://local/api/events?scopeType=account&scopeId=scope-account-two",
+        { headers: { Authorization: authorization } },
+      ),
+    );
+    expect(events.status).toBe(200);
+    const eventPayload = await events.json<{
+      events: Array<{ type: string; symbol: string; accountId?: string }>;
+    }>();
+    expect(eventPayload.events).toEqual([
+      expect.objectContaining({
+        type: "transaction",
+        symbol: "SCOPE.TWO",
+        accountId: "scope-account-two",
+      }),
+    ]);
   });
 
   it("drives latest fact lookups from held instruments", async () => {

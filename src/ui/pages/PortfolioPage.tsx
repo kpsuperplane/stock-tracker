@@ -14,12 +14,20 @@ import {
   TableRow,
   VStack,
 } from "@astryxdesign/core";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   PortfolioMovementDto,
   PortfolioPositionDto,
   PortfolioReadModelDto,
 } from "../../shared/contracts";
+import { useAccountScope } from "../accounts/AccountScopeContext";
 import {
   ApiClientError,
   type PortfolioApiClient,
@@ -33,6 +41,7 @@ import {
   formatDecimalString,
   formatNativeCurrency,
 } from "../system/formatters";
+import { usePageActions } from "../system/PageActionsContext";
 
 export interface PortfolioPageProps {
   apiClient?: PortfolioApiClient;
@@ -240,10 +249,6 @@ const PositionRow = ({
       <TableRow>
         <TableCell>
           <strong>{position.symbol}</strong>
-          <div>{position.companyName}</div>
-          <div>
-            {position.exchange} · {position.currency}
-          </div>
         </TableCell>
         <TableCell style={numericStyle}>
           {safeDecimal(position.quantityDecimal, locale)}
@@ -272,6 +277,7 @@ const PositionRow = ({
       {hasAnalysis && (
         <TableRow>
           <TableCell
+            className="portfolio-summary-cell"
             colSpan={5}
             style={{
               color: "var(--color-text-secondary)",
@@ -295,6 +301,7 @@ export const PortfolioPage = ({
   today,
 }: PortfolioPageProps) => {
   const { locale, t } = useI18n();
+  const { selection } = useAccountScope();
   const [portfolio, setPortfolio] = useState<PortfolioReadModelDto | null>(
     initialPortfolio ?? null,
   );
@@ -318,6 +325,7 @@ export const PortfolioPage = ({
     setReadModelDisabled(false);
     const options: PortfolioReadOptions = {
       locale,
+      scope: selection,
       ...(today ? { today } : {}),
     };
     try {
@@ -339,19 +347,37 @@ export const PortfolioPage = ({
         setRefreshing(false);
       }
     }
-  }, [apiClient, locale, t, today]);
+  }, [apiClient, locale, selection, t, today]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const retry = () => void load();
+  const retry = useCallback(() => void load(), [load]);
+  const pageActions = useMemo(
+    () => (
+      <Button
+        variant="secondary"
+        size="sm"
+        label={refreshing ? t("portfolioRefreshing") : t("refresh")}
+        tooltip={refreshing ? t("portfolioRefreshing") : t("refresh")}
+        icon={<Icon icon={RefreshIcon} size="sm" />}
+        isIconOnly
+        isLoading={refreshing}
+        onClick={retry}
+      />
+    ),
+    [refreshing, retry, t],
+  );
+  const hasTopNavActions = usePageActions(pageActions);
 
   return (
     <VStack gap={3} data-testid="portfolio-page">
       <HStack gap={3} justify="between" align="start" wrap="wrap">
         <VStack gap={0.5}>
-          <Heading level={1}>{t("portfolioHeading")}</Heading>
+          <Heading level={1} className="product-page-title-hidden">
+            {t("portfolioHeading")}
+          </Heading>
           {portfolio && (
             <div className="product-page-meta">
               {formatDate(portfolio.asOfDate, locale)} · {t("latestClose")}{" "}
@@ -361,16 +387,7 @@ export const PortfolioPage = ({
             </div>
           )}
         </VStack>
-        <Button
-          variant="secondary"
-          size="sm"
-          label={refreshing ? t("portfolioRefreshing") : t("refresh")}
-          tooltip={refreshing ? t("portfolioRefreshing") : t("refresh")}
-          icon={<Icon icon={RefreshIcon} size="sm" />}
-          isIconOnly
-          isLoading={refreshing}
-          onClick={retry}
-        />
+        {!hasTopNavActions && pageActions}
       </HStack>
 
       {error && (
@@ -425,7 +442,7 @@ export const PortfolioPage = ({
                 density="compact"
                 dividers="rows"
                 hasHover
-                textOverflow="wrap"
+                textOverflow="truncate"
                 aria-label={t("positions")}
               >
                 <TableHeader>

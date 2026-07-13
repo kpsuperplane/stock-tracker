@@ -1,4 +1,6 @@
 import type {
+  AccountCategoryDto,
+  AccountScopeSelection,
   CalendarReadModelDto,
   EventsTimelineDto,
   JobReadModelDto,
@@ -107,68 +109,19 @@ export type Ticker = {
   active: boolean;
 };
 
-export type BackfillJob = {
-  id: string;
-  triggerType?: string;
-  requestedStartDate?: string | null;
-  requestedEndDate?: string | null;
-  start_date?: string | null;
-  end_date?: string | null;
-  created_at?: string;
-  updated_at?: string;
-  completed_at?: string | null;
-  reprocess_existing?: boolean;
-  reprocessExisting?: boolean;
-  pipeline_job_id?: string | null;
-  status: string;
-  dates_total: number;
-  dates_processed: number;
-  ticker_jobs_total: number;
-  ticker_jobs_processed: number;
-  ticker_jobs_failed: number;
-  work_reused?: number;
-  work_skipped?: number;
-  work_fetched?: number;
-  work_analyzed?: number;
-  work_processed?: number;
-  work_failed?: number;
-  /** List responses intentionally carry counts instead of row-level details. */
-  runs_total?: number;
-  errors_total?: number;
-  details_truncated?: boolean;
-  progress?: JobReadModelDto["progress"];
-  pipeline?: {
-    triggerType?: string;
-    status?: string;
-    progress?: JobReadModelDto["progress"];
-  };
-  runs: Array<{
-    tradingDate: string;
-    status: string;
-    tickersFailed: number;
-  }>;
-  errors: Array<{
-    workItemId?: string;
-    screeningId: string;
-    symbol: string;
-    tradingDate: string;
-    errorCode: string | null;
-    errorMessage: string | null;
-    retryable: boolean;
-  }>;
-  nextCursor?: string | null;
-};
-
 export type EventFilters = {
   instrumentId?: string;
   symbol?: string;
   type?: "transaction" | "split";
   cursor?: string;
   limit?: number;
+  scopeType?: AccountScopeSelection["scopeType"];
+  scopeId?: string;
 };
 
 export type PortfolioReadOptions = {
   locale: "en" | "cn";
+  scope?: AccountScopeSelection;
   today?: string;
   cursor?: string;
   limit?: number;
@@ -188,6 +141,7 @@ export interface PortfolioApiClient {
 
 export type CalendarReadOptions = {
   locale: "en" | "cn";
+  scope?: AccountScopeSelection;
   view: "month" | "week";
   startDate: string;
   endDate: string;
@@ -210,6 +164,7 @@ export interface CalendarApiClient {
 
 export type TransactionMutationInput = {
   symbol?: string;
+  accountId?: string;
   tradeDate: string;
   side: "buy" | "sell";
   quantityDecimal: string;
@@ -317,7 +272,7 @@ export interface EventsApiClient {
 }
 
 export interface EventImportsApiClient {
-  preview: (file: File) => Promise<ImportPreviewResponse>;
+  preview: (file: File, accountId?: string) => Promise<ImportPreviewResponse>;
   commit: (
     batchId: string,
     positionBasisRevision: number,
@@ -386,9 +341,10 @@ export const eventsApi: EventsApiClient = {
 };
 
 export const eventImportsApi: EventImportsApiClient = {
-  preview: (file) => {
+  preview: (file, accountId) => {
     const form = new FormData();
     form.append("file", file);
+    if (accountId) form.append("accountId", accountId);
     return request<ImportPreviewResponse>("/api/event-imports/preview", {
       method: "POST",
       headers: { "X-Stock-Tracker-Request": "1" },
@@ -427,6 +383,9 @@ const portfolioQuery = (options: PortfolioReadOptions): string => {
   if (options.today) params.set("today", options.today);
   if (options.cursor) params.set("cursor", options.cursor);
   if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.scope?.scopeType)
+    params.set("scopeType", options.scope.scopeType);
+  if (options.scope?.scopeId) params.set("scopeId", options.scope.scopeId);
   return `?${params.toString()}`;
 };
 
@@ -473,6 +432,9 @@ const calendarQuery = (options: CalendarReadOptions): string => {
   });
   if (options.cursor) params.set("cursor", options.cursor);
   if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.scope?.scopeType)
+    params.set("scopeType", options.scope.scopeType);
+  if (options.scope?.scopeId) params.set("scopeId", options.scope.scopeId);
   return `?${params.toString()}`;
 };
 
@@ -510,6 +472,58 @@ export const calendarApi: CalendarApiClient = {
 };
 
 export const api = {
+  accounts: {
+    tree: (includeArchived = true) =>
+      request<{
+        categories: AccountCategoryDto[];
+        structureRevision: number;
+      }>(`/api/accounts?includeArchived=${includeArchived ? "true" : "false"}`),
+    createCategory: (input: { name: string; sortOrder?: number }) =>
+      request<{ category: AccountCategoryDto }>("/api/accounts/categories", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    updateCategory: (
+      id: string,
+      input: { name?: string; sortOrder?: number; archived?: boolean },
+      revision: number,
+    ) =>
+      request<{ category: AccountCategoryDto }>(
+        `/api/accounts/categories/${encodeURIComponent(id)}`,
+        {
+          method: "PATCH",
+          headers: { "If-Match": String(revision) },
+          body: JSON.stringify(input),
+        },
+      ),
+    createAccount: (input: {
+      categoryId: string;
+      name: string;
+      sortOrder?: number;
+    }) =>
+      request<{ account: AccountCategoryDto["accounts"][number] }>(
+        "/api/accounts/accounts",
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    updateAccount: (
+      id: string,
+      input: {
+        categoryId?: string;
+        name?: string;
+        sortOrder?: number;
+        archived?: boolean;
+      },
+      revision: number,
+    ) =>
+      request<{ account: AccountCategoryDto["accounts"][number] }>(
+        `/api/accounts/accounts/${encodeURIComponent(id)}`,
+        {
+          method: "PATCH",
+          headers: { "If-Match": String(revision) },
+          body: JSON.stringify(input),
+        },
+      ),
+  },
   portfolio: portfolioApi,
   calendar: calendarApi,
   events: eventsApi,
@@ -537,26 +551,6 @@ export const api = {
     }),
   removeTicker: (id: string) =>
     request<void>(`/api/tickers/${id}`, { method: "DELETE" }),
-  startBackfill: (input: {
-    startDate: string;
-    endDate: string;
-    reprocessExisting: boolean;
-  }) =>
-    request<{ id: string }>("/api/backfills", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  backfill: (id: string) =>
-    request<{ job: BackfillJob }>(`/api/backfills/${id}`),
-  backfills: (limit?: number, cursor?: string) => {
-    const params = new URLSearchParams();
-    if (limit !== undefined) params.set("limit", String(limit));
-    if (cursor) params.set("cursor", cursor);
-    const query = params.toString();
-    return request<{ jobs: BackfillJob[]; nextCursor: string | null }>(
-      `/api/backfills${query ? `?${query}` : ""}`,
-    );
-  },
   jobs: (limit?: number, cursor?: string) => {
     const params = new URLSearchParams();
     if (limit !== undefined) params.set("limit", String(limit));
@@ -575,9 +569,4 @@ export const api = {
       `/api/jobs/${encodeURIComponent(id)}${query ? `?${query}` : ""}`,
     );
   },
-  retryBackfill: (pipelineJobId: string, workItemId: string) =>
-    request<{ queued: true }>(`/api/backfills/${pipelineJobId}/retry`, {
-      method: "POST",
-      body: JSON.stringify({ workItemId }),
-    }),
 };

@@ -21,11 +21,12 @@ import {
   useToast,
   VStack,
 } from "@astryxdesign/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   EventsTimelineDto,
   TransactionEventDto,
 } from "../../shared/contracts";
+import { useAccountScope } from "../accounts/AccountScopeContext";
 import {
   ApiClientError,
   type EventFilters,
@@ -46,6 +47,7 @@ import {
   UploadIcon,
 } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
+import { usePageActions } from "../system/PageActionsContext";
 import { EventImportDialog } from "./EventImportDialog";
 
 type TransactionInput = Required<Pick<TransactionMutationInput, "symbol">> &
@@ -181,6 +183,24 @@ const TransactionDialog = ({
     transaction?.priceDecimal ?? "",
   );
   const [validationError, setValidationError] = useState<string | null>(null);
+  const { selection, categories } = useAccountScope();
+  const accountOptions = categories.flatMap((category) =>
+    category.accounts
+      .filter(
+        (account) =>
+          account.archivedAt === null || account.id === transaction?.accountId,
+      )
+      .map((account) => ({
+        value: account.id,
+        label: `${category.name} / ${account.name}${account.archivedAt ? " · archived" : ""}`,
+      })),
+  );
+  const [accountId, setAccountId] = useState(
+    transaction?.accountId ??
+      (selection.scopeType === "account" ? selection.scopeId : undefined) ??
+      accountOptions[0]?.value ??
+      "",
+  );
 
   const submit = async () => {
     if ((!transaction && symbol.trim() === "") || tradeDate === "") {
@@ -197,6 +217,7 @@ const TransactionDialog = ({
       side,
       quantityDecimal,
       priceDecimal,
+      ...(accountId ? { accountId } : {}),
     } as const;
     if (transaction) {
       await onSave(common);
@@ -234,6 +255,15 @@ const TransactionDialog = ({
             {...(tradeDate ? { value: asIsoDate(tradeDate) } : {})}
             onChange={(next) => setTradeDate(next ?? "")}
             isRequired
+          />
+          <Selector
+            label={t("account")}
+            aria-label={t("account")}
+            placeholder={t("selectPlaceholder")}
+            options={accountOptions}
+            value={accountId}
+            onChange={setAccountId}
+            isDisabled={accountOptions.length === 0}
           />
           <Selector
             label={t("transactionSide")}
@@ -328,6 +358,7 @@ const SplitReviewDialog = ({
             tableProps={{ className: "product-split-table" }}
             density="compact"
             dividers="rows"
+            textOverflow="truncate"
             aria-label={t("splitReviewTitle")}
           >
             <TableHeader>
@@ -378,6 +409,7 @@ export const EventsPage = ({
   initialTimeline,
 }: EventsPageProps) => {
   const { t } = useI18n();
+  const { selection } = useAccountScope();
   const toast = useToast();
   const [symbolFilter, setSymbolFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
@@ -408,6 +440,8 @@ export const EventsPage = ({
       try {
         const timeline = await apiClient.list({
           ...filters,
+          scopeType: selection.scopeType,
+          ...(selection.scopeId ? { scopeId: selection.scopeId } : {}),
           ...(cursor ? { cursor } : {}),
         });
         setEvents((previous) =>
@@ -421,7 +455,7 @@ export const EventsPage = ({
         setIsLoading(false);
       }
     },
-    [apiClient, filters, t],
+    [apiClient, filters, selection, t],
   );
 
   useEffect(() => {
@@ -438,7 +472,11 @@ export const EventsPage = ({
       setIsLoading(true);
       setLoadError(null);
       try {
-        const timeline = await apiClient.list(nextFilters);
+        const timeline = await apiClient.list({
+          ...nextFilters,
+          scopeType: selection.scopeType,
+          ...(selection.scopeId ? { scopeId: selection.scopeId } : {}),
+        });
         setEvents(timeline.events);
         setNextCursor(timeline.nextCursor);
         setPositionBasisRevision(timeline.positionBasisRevision);
@@ -614,40 +652,53 @@ export const EventsPage = ({
     void load(true);
   };
 
+  const refresh = useCallback(() => void load(true), [load]);
+  const openImport = useCallback(() => setIsImportOpen(true), []);
+  const openAdd = useCallback(() => setIsAddOpen(true), []);
+  const pageActions = useMemo(
+    () => (
+      <HStack gap={1} wrap="nowrap">
+        <Button
+          variant="secondary"
+          size="sm"
+          label={t("refresh")}
+          tooltip={t("refresh")}
+          icon={<Icon icon={RefreshIcon} size="sm" />}
+          isIconOnly
+          isLoading={isLoading}
+          onClick={refresh}
+        />
+        <Button
+          variant="secondary"
+          size="sm"
+          label={t("importCsv")}
+          tooltip={t("importCsv")}
+          icon={<Icon icon={UploadIcon} size="sm" />}
+          isIconOnly
+          onClick={openImport}
+        />
+        <Button
+          variant="primary"
+          size="sm"
+          label={t("addEvent")}
+          tooltip={t("addEvent")}
+          icon={<Icon icon={PlusIcon} size="sm" />}
+          isIconOnly
+          onClick={openAdd}
+        />
+      </HStack>
+    ),
+    [isLoading, openAdd, openImport, refresh, t],
+  );
+  const hasTopNavActions = usePageActions(pageActions);
+
   return (
     <VStack gap={3} data-testid="events-page">
       <HStack gap={2} justify="between" align="center" wrap="nowrap">
-        <Heading level={1}>{t("eventsHeading")}</Heading>
-        <HStack gap={1} wrap="nowrap">
-          <Button
-            variant="secondary"
-            size="sm"
-            label={t("refresh")}
-            tooltip={t("refresh")}
-            icon={<Icon icon={RefreshIcon} size="sm" />}
-            isIconOnly
-            isLoading={isLoading}
-            onClick={() => void load(true)}
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            label={t("importCsv")}
-            tooltip={t("importCsv")}
-            icon={<Icon icon={UploadIcon} size="sm" />}
-            isIconOnly
-            onClick={() => setIsImportOpen(true)}
-          />
-          <Button
-            variant="primary"
-            size="sm"
-            label={t("addEvent")}
-            tooltip={t("addEvent")}
-            icon={<Icon icon={PlusIcon} size="sm" />}
-            isIconOnly
-            onClick={() => setIsAddOpen(true)}
-          />
-        </HStack>
+        <Heading level={1} className="product-page-title-hidden">
+          {t("eventsHeading")}
+        </Heading>
+        {!hasTopNavActions && pageActions}
       </HStack>
 
       {pendingJobId && (
@@ -721,13 +772,14 @@ export const EventsPage = ({
           density="compact"
           dividers="rows"
           hasHover
-          textOverflow="wrap"
+          textOverflow="truncate"
           aria-label={t("eventsHeading")}
         >
           <TableHeader>
             <TableRow isHeaderRow>
               <TableHeaderCell>{t("date")}</TableHeaderCell>
               <TableHeaderCell>{t("instrument")}</TableHeaderCell>
+              <TableHeaderCell>{t("account")}</TableHeaderCell>
               <TableHeaderCell>{t("side")}</TableHeaderCell>
               <TableHeaderCell>{t("quantity")}</TableHeaderCell>
               <TableHeaderCell>{t("price")}</TableHeaderCell>
@@ -741,7 +793,11 @@ export const EventsPage = ({
                   <TableCell>{event.tradeDate}</TableCell>
                   <TableCell>
                     <strong>{event.symbol}</strong>
-                    <div>{event.companyName}</div>
+                  </TableCell>
+                  <TableCell>
+                    {event.categoryName && event.accountName
+                      ? `${event.categoryName} / ${event.accountName}`
+                      : (event.accountName ?? "—")}
                   </TableCell>
                   <TableCell>
                     <Badge
@@ -754,7 +810,7 @@ export const EventsPage = ({
                     {event.priceDecimal} {event.currency}
                   </TableCell>
                   <TableCell>
-                    <HStack gap={1} wrap="wrap">
+                    <HStack gap={1} wrap="nowrap">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -781,8 +837,8 @@ export const EventsPage = ({
                   <TableCell>{event.effectiveDate}</TableCell>
                   <TableCell>
                     <strong>{event.symbol}</strong>
-                    <div>{event.companyName}</div>
                   </TableCell>
+                  <TableCell>—</TableCell>
                   <TableCell>
                     <Badge variant="neutral" label={t("split")} />
                   </TableCell>

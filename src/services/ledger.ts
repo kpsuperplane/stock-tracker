@@ -37,6 +37,8 @@ export type LedgerProposal =
   | {
       kind: "create";
       instrumentId: string;
+      /** Account owning the event. Omitted only for legacy clients. */
+      accountId?: string;
       tradeDate: string;
       side: TransactionSide;
       quantityDecimal: string;
@@ -46,6 +48,8 @@ export type LedgerProposal =
       kind: "update";
       eventId: string;
       expectedEventRevision: number;
+      /** Moving an event between accounts is supported atomically. */
+      accountId?: string;
       tradeDate: string;
       side: TransactionSide;
       quantityDecimal: string;
@@ -103,6 +107,8 @@ interface ResolvedProposal {
   changedStartDate: string;
   transactionToWrite: TransactionRecord | null;
   mutationKind: LedgerMutationKind;
+  /** Account used by the transaction mutation (source for delete). */
+  accountId: string;
 }
 
 interface CoverageRow {
@@ -159,6 +165,85 @@ const splitFromSnapshot = (event: NormalizedSplitEvent): ActiveSplit => ({
   numerator: event.numerator,
   denominator: event.denominator,
 });
+
+type HoldingsByAccount = Map<string, ReturnType<typeof deriveHoldings>>;
+
+const accountKey = (record: TransactionRecord): string =>
+  record.accountId ?? "account-default";
+
+const transactionsByAccount = (
+  records: readonly TransactionRecord[],
+): Map<string, TransactionRecord[]> => {
+  const grouped = new Map<string, TransactionRecord[]>();
+  for (const record of records) {
+    const accountId = accountKey(record);
+    const rows = grouped.get(accountId) ?? [];
+    rows.push(record);
+    grouped.set(accountId, rows);
+  }
+  return grouped;
+};
+
+/**
+ * Fold each account independently. A global fold can hide an invalid sale
+ * when another account happens to own enough shares, so all mutation paths
+ * use this helper before committing.
+ */
+const holdingsByAccount = (input: {
+  today: string;
+  transactions: readonly TransactionRecord[];
+  activeSplits: readonly ActiveSplit[];
+}): HoldingsByAccount => {
+  const result: HoldingsByAccount = new Map();
+  for (const [accountId, records] of transactionsByAccount(
+    input.transactions,
+  )) {
+    result.set(
+      accountId,
+      deriveHoldings({
+        today: input.today,
+        transactions: records.map(toLedgerTransaction),
+        activeSplits: input.activeSplits,
+      }),
+    );
+  }
+  return result;
+};
+
+const anyAccountEligible = (
+  holdings: HoldingsByAccount,
+  date: string,
+): boolean => {
+  for (const value of holdings.values()) {
+    if (value.isEligibleForScreening(date)) return true;
+  }
+  return false;
+};
+
+const mergedHeldIntervals = (
+  holdings: HoldingsByAccount,
+  startDate: string,
+  endDate: string,
+): { startDate: string; endDate: string }[] => {
+  const intervals = [...holdings.values()].flatMap((value) =>
+    value.heldIntervals({ startDate, endDate }),
+  );
+  return intervals
+    .sort(
+      (left, right) =>
+        left.startDate.localeCompare(right.startDate) ||
+        left.endDate.localeCompare(right.endDate),
+    )
+    .reduce<{ startDate: string; endDate: string }[]>((merged, interval) => {
+      const previous = merged.at(-1);
+      if (!previous || interval.startDate > nextDate(previous.endDate)) {
+        merged.push({ ...interval });
+      } else if (interval.endDate > previous.endDate) {
+        previous.endDate = interval.endDate;
+      }
+      return merged;
+    }, []);
+};
 
 const minDate = (dates: readonly string[]): string | null =>
   dates.length === 0
@@ -282,11 +367,11 @@ export class LedgerService {
     ).filter((action) => action.status === "active");
     const candidateSplits = this.proposedSplits(activeActions, snapshot);
 
-    let proposedHoldings: ReturnType<typeof deriveHoldings>;
+    let proposedHoldings: HoldingsByAccount;
     try {
-      proposedHoldings = deriveHoldings({
+      proposedHoldings = holdingsByAccount({
         today,
-        transactions: resolved.after.map(toLedgerTransaction),
+        transactions: resolved.after,
         activeSplits: candidateSplits,
       });
     } catch {
@@ -328,11 +413,11 @@ export class LedgerService {
       return { kind: "review_required", snapshot };
     }
 
-    let beforeHoldings: ReturnType<typeof deriveHoldings>;
+    let beforeHoldings: HoldingsByAccount;
     try {
-      beforeHoldings = deriveHoldings({
+      beforeHoldings = holdingsByAccount({
         today,
-        transactions: resolved.before.map(toLedgerTransaction),
+        transactions: resolved.before,
         activeSplits: activeActions.map(toActiveSplit),
       });
     } catch {
@@ -505,17 +590,17 @@ export class LedgerService {
     const transactions = await this.transactions.listForInstrument(
       input.instrumentId,
     );
-    let beforeHoldings: ReturnType<typeof deriveHoldings>;
-    let afterHoldings: ReturnType<typeof deriveHoldings>;
+    let beforeHoldings: HoldingsByAccount;
+    let afterHoldings: HoldingsByAccount;
     try {
-      beforeHoldings = deriveHoldings({
+      beforeHoldings = holdingsByAccount({
         today,
-        transactions: transactions.map(toLedgerTransaction),
+        transactions,
         activeSplits: activeActions.map(toActiveSplit),
       });
-      afterHoldings = deriveHoldings({
+      afterHoldings = holdingsByAccount({
         today,
-        transactions: transactions.map(toLedgerTransaction),
+        transactions,
         activeSplits: this.proposedSplits(activeActions, snapshot),
       });
     } catch {
@@ -612,9 +697,13 @@ export class LedgerService {
       const before = await this.transactions.listForInstrument(
         proposal.instrumentId,
       );
+      const accountId = await this.resolveAccountId(proposal.accountId);
+      if (!accountId)
+        return { kind: "validation_error", code: "account_not_found" };
       const record = this.newTransaction({
         id: this.newId(),
         instrumentId: proposal.instrumentId,
+        accountId,
         proposal,
         timestamp,
       });
@@ -630,6 +719,7 @@ export class LedgerService {
           record.tradeDate,
         transactionToWrite: record,
         mutationKind: "transaction_create",
+        accountId,
       };
     }
 
@@ -641,6 +731,12 @@ export class LedgerService {
     const before = await this.transactions.listForInstrument(
       existing.instrumentId,
     );
+    const accountId = await this.resolveAccountId(
+      proposal.kind === "update" ? proposal.accountId : existing.accountId,
+      existing,
+    );
+    if (!accountId)
+      return { kind: "validation_error", code: "account_not_found" };
     if (proposal.kind === "delete") {
       return {
         instrumentId: existing.instrumentId,
@@ -651,11 +747,13 @@ export class LedgerService {
           minDate(before.map((row) => row.tradeDate)) ?? existing.tradeDate,
         transactionToWrite: null,
         mutationKind: "transaction_delete",
+        accountId: existing.accountId ?? accountId,
       };
     }
     const updated = this.newTransaction({
       id: existing.id,
       instrumentId: existing.instrumentId,
+      accountId,
       proposal,
       timestamp,
       revision: existing.revision,
@@ -673,12 +771,14 @@ export class LedgerService {
         updated.tradeDate,
       transactionToWrite: updated,
       mutationKind: "transaction_update",
+      accountId,
     };
   }
 
   private newTransaction(input: {
     id: string;
     instrumentId: string;
+    accountId: string;
     proposal: Exclude<LedgerProposal, { kind: "delete" }>;
     timestamp: string;
     revision?: number;
@@ -704,6 +804,7 @@ export class LedgerService {
       return {
         id: input.id,
         instrumentId: input.instrumentId,
+        accountId: input.accountId,
         tradeDate: input.proposal.tradeDate,
         side: input.proposal.side,
         quantityDecimal,
@@ -721,7 +822,7 @@ export class LedgerService {
     const row = await this.dependencies.db
       .prepare(
         `SELECT id, instrument_id, trade_date, side, quantity_decimal,
-              price_decimal, revision, created_at, updated_at
+              price_decimal, account_id, revision, created_at, updated_at
        FROM transactions WHERE id = ?1`,
       )
       .bind(id)
@@ -732,6 +833,7 @@ export class LedgerService {
         side: TransactionSide;
         quantity_decimal: string;
         price_decimal: string;
+        account_id: string | null;
         revision: number;
         created_at: string;
         updated_at: string;
@@ -740,6 +842,7 @@ export class LedgerService {
       ? {
           id: row.id,
           instrumentId: row.instrument_id,
+          accountId: row.account_id ?? "account-default",
           tradeDate: row.trade_date,
           side: row.side,
           quantityDecimal: row.quantity_decimal,
@@ -749,6 +852,27 @@ export class LedgerService {
           updatedAt: row.updated_at,
         }
       : null;
+  }
+
+  /**
+   * Resolve and validate an account at mutation time. The default account is
+   * retained for clients that predate account selection, while explicit IDs
+   * must be active so archived accounts cannot receive new events.
+   */
+  private async resolveAccountId(
+    requested: string | undefined,
+    existing?: TransactionRecord,
+  ): Promise<string | null> {
+    const fallback = existing?.accountId ?? "account-default";
+    const accountId = requested?.trim() || fallback;
+    const row = await this.dependencies.db
+      .prepare(
+        `SELECT id FROM accounts
+         WHERE id = ?1 AND (archived_at IS NULL OR id = ?2)`,
+      )
+      .bind(accountId, existing?.id ? fallback : "__no_fallback__")
+      .first<{ id: string }>();
+    return row?.id ?? null;
   }
 
   private async coverageFor(
@@ -1024,8 +1148,8 @@ export class LedgerService {
   }
 
   private changedEligibilityIntervals(
-    before: ReturnType<typeof deriveHoldings>,
-    after: ReturnType<typeof deriveHoldings>,
+    before: HoldingsByAccount,
+    after: HoldingsByAccount,
     startDate: string,
     today: string,
   ): { startDate: string; endDate: string }[] {
@@ -1033,8 +1157,7 @@ export class LedgerService {
     let intervalStart: string | null = null;
     for (let date = startDate; date <= today; date = nextDate(date)) {
       const changed =
-        before.isEligibleForScreening(date) !==
-        after.isEligibleForScreening(date);
+        anyAccountEligible(before, date) !== anyAccountEligible(after, date);
       if (changed && !intervalStart) intervalStart = date;
       if (!changed && intervalStart) {
         const endDate = new Date(`${date}T12:00:00.000Z`);
@@ -1052,8 +1175,8 @@ export class LedgerService {
   }
 
   private splitPromotionIntervals(input: {
-    beforeHoldings: ReturnType<typeof deriveHoldings>;
-    afterHoldings: ReturnType<typeof deriveHoldings>;
+    beforeHoldings: HoldingsByAccount;
+    afterHoldings: HoldingsByAccount;
     activeActions: readonly CorporateActionRecord[];
     snapshot: SplitEventRange;
     today: string;
@@ -1102,15 +1225,16 @@ export class LedgerService {
     const intervals: { startDate: string; endDate: string }[] = [];
     for (const effectiveDate of [...changedDates].sort()) {
       if (
-        !input.beforeHoldings.isEligibleForScreening(effectiveDate) ||
+        !anyAccountEligible(input.beforeHoldings, effectiveDate) ||
         effectiveDate > input.today
       ) {
         continue;
       }
-      const affectedHeldInterval = input.afterHoldings.heldIntervals({
-        startDate: effectiveDate,
-        endDate: input.today,
-      })[0];
+      const affectedHeldInterval = mergedHeldIntervals(
+        input.afterHoldings,
+        effectiveDate,
+        input.today,
+      )[0];
       if (affectedHeldInterval) intervals.push(affectedHeldInterval);
     }
 
@@ -1150,12 +1274,21 @@ export class LedgerService {
               .filter((action) => action.status === "active")
               .map(toActiveSplit);
       try {
+        const scoped = holdingsByAccount({
+          today: input.today,
+          transactions,
+          activeSplits: actions,
+        });
+        // Validate every account and count the instrument once globally.
+        for (const holdings of scoped.values()) {
+          // currentQuantity() is reached only after deriveHoldings has
+          // successfully validated the complete account history.
+          void holdings.currentQuantity();
+        }
         if (
-          deriveHoldings({
-            today: input.today,
-            transactions: transactions.map(toLedgerTransaction),
-            activeSplits: actions,
-          }).currentQuantity() !== "0"
+          [...scoped.values()].some(
+            (holdings) => holdings.currentQuantity() !== "0",
+          )
         )
           positive += 1;
       } catch {

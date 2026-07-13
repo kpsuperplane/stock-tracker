@@ -47,6 +47,28 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM corporate_action_coverage"),
     env.DB.prepare("DELETE FROM corporate_actions"),
     env.DB.prepare("DELETE FROM transactions"),
+    env.DB.prepare("DELETE FROM accounts WHERE id <> 'account-default'"),
+    env.DB.prepare(
+      "DELETE FROM account_categories WHERE id <> 'account-category-uncategorized'",
+    ),
+    env.DB.prepare(
+      `UPDATE account_categories
+          SET name = 'Uncategorized', sort_order = 0, revision = 1,
+              archived_at = NULL, updated_at = datetime('now')
+        WHERE id = 'account-category-uncategorized'`,
+    ),
+    env.DB.prepare(
+      `UPDATE accounts
+          SET category_id = 'account-category-uncategorized',
+              name = 'Default Account', sort_order = 0, revision = 1,
+              archived_at = NULL, updated_at = datetime('now')
+        WHERE id = 'account-default'`,
+    ),
+    env.DB.prepare(
+      `UPDATE account_structure_state
+          SET revision = 0, updated_at = NULL, last_mutation_id = NULL
+        WHERE id = 1`,
+    ),
     env.DB.prepare("DELETE FROM pipeline_jobs"),
     env.DB.prepare("DELETE FROM ledger_mutations"),
     env.DB.prepare(

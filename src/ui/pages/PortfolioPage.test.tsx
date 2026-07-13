@@ -111,6 +111,8 @@ describe("PortfolioPage", () => {
     expect(markup).not.toContain("CAD total");
     expect(markup).toContain("close Jul 10, 2026");
     expect(markup).toContain("AAPL");
+    expect(markup).not.toContain("Apple Inc.");
+    expect(markup).not.toContain("Shopify Inc.");
     expect(markup.indexOf("AAPL")).toBeLessThan(markup.indexOf("SHOP.TO"));
     expect(markup).toContain("+5.32%");
     expect(markup).toContain("+$20.20");

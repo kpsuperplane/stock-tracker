@@ -94,6 +94,7 @@ export type ImportPreviewResult =
   | {
       kind: "preview";
       batchId: string;
+      accountId: string;
       basePositionBasisRevision: number;
       rows: ImportPreviewRow[];
       reviews: ImportSplitReview[];
@@ -305,6 +306,7 @@ export class EventImportsService {
   async preview(input: {
     originalFilename: string;
     file: Uint8Array;
+    accountId?: string;
   }): Promise<ImportPreviewResult> {
     if (!input.originalFilename || input.originalFilename.length > 255)
       return { kind: "invalid_file", code: "invalid_filename" };
@@ -320,6 +322,8 @@ export class EventImportsService {
     const parsed = parseCsv(text.replace(/^\uFEFF/, ""));
     if (!parsed || parsed.length === 0 || parsed[0]?.join(",") !== HEADER)
       return { kind: "invalid_file", code: "invalid_header" };
+    const accountId = await this.resolveAccountId(input.accountId);
+    if (!accountId) return { kind: "invalid_file", code: "account_not_found" };
     const sourceRows = parsed
       .slice(1)
       .filter((row) => row.some((cell) => cell.trim() !== ""));
@@ -333,7 +337,11 @@ export class EventImportsService {
 
     await this.cleanup();
 
-    const digest = await hexDigest(input.file);
+    // Keep the historical default-account digest stable so existing staged
+    // imports remain deduplicated. Explicit accounts get an account-scoped
+    // digest, allowing the same broker export to be imported into two
+    // accounts independently.
+    const digest = await this.accountDigest(input.file, accountId);
     const duplicate = await this.imports.findBatchByDigest(digest);
     if (duplicate)
       return {
@@ -366,8 +374,10 @@ export class EventImportsService {
     }
 
     const instrumentIds = [...validByInstrument.keys()];
-    const transactionsByInstrument =
-      await this.transactionsByInstrument(instrumentIds);
+    const transactionsByInstrument = await this.transactionsByInstrument(
+      instrumentIds,
+      accountId,
+    );
     const actionsByInstrument =
       await this.activeActionsByInstrument(instrumentIds);
     const snapshots = new Map<string, SplitEventRange>();
@@ -471,6 +481,7 @@ export class EventImportsService {
     const batch: ImportBatchRecord = {
       id: batchId,
       fileDigest: digest,
+      accountId,
       originalFilename: input.originalFilename,
       basePositionBasisRevision,
       projectedHoldingsJson: JSON.stringify(projectedHoldings),
@@ -562,6 +573,7 @@ export class EventImportsService {
     return {
       kind: "preview",
       batchId,
+      accountId,
       basePositionBasisRevision,
       rows: rows.map((row) => this.toPreviewRow(row)),
       reviews,
@@ -585,6 +597,8 @@ export class EventImportsService {
       };
     const batch = await this.batch(input.batchId);
     if (!batch) return { kind: "not_found" };
+    if (!(await this.resolveAccountId(batch.accountId)))
+      return { kind: "validation_error", code: "account_not_found" };
     if (
       batch.status === "expired" ||
       batch.expiresAt <= this.now().toISOString()
@@ -626,8 +640,10 @@ export class EventImportsService {
 
     const instrumentIds = [...byInstrument.keys()];
     const instrumentsById = await this.instrumentsById(instrumentIds);
-    const transactionsByInstrument =
-      await this.transactionsByInstrument(instrumentIds);
+    const transactionsByInstrument = await this.transactionsByInstrument(
+      instrumentIds,
+      batch.accountId,
+    );
     const actionsByInstrument =
       await this.activeActionsByInstrument(instrumentIds);
 
@@ -721,6 +737,7 @@ export class EventImportsService {
         byInstrument,
         refreshed,
         this.now().toISOString().slice(0, 10),
+        batch.accountId ?? "account-default",
       ))
     ) {
       return { kind: "validation_error", code: "position_limit" };
@@ -762,10 +779,11 @@ export class EventImportsService {
       this.dependencies.db
         .prepare(
           `INSERT INTO transactions
-         (id, instrument_id, trade_date, side, quantity_decimal, price_decimal,
-          revision, created_at, updated_at)
+         (id, instrument_id, account_id, trade_date, side, quantity_decimal,
+          price_decimal, revision, created_at, updated_at)
          SELECT ?1 || ':' || import_rows.row_number,
                 json_extract(import_rows.normalized_transaction_json, '$.instrumentId'),
+                import_batches.account_id,
                 json_extract(import_rows.normalized_transaction_json, '$.tradeDate'),
                 json_extract(import_rows.normalized_transaction_json, '$.side'),
                 json_extract(import_rows.normalized_transaction_json, '$.quantityDecimal'),
@@ -1051,22 +1069,29 @@ export class EventImportsService {
 
   private async transactionsByInstrument(
     instrumentIds: readonly string[],
-  ): Promise<Map<string, LedgerTransaction[]>> {
-    const result = new Map<string, LedgerTransaction[]>();
+    accountId?: string,
+  ): Promise<Map<string, Array<LedgerTransaction & { accountId: string }>>> {
+    const result = new Map<
+      string,
+      Array<LedgerTransaction & { accountId: string }>
+    >();
     const requestedIds = [...new Set(instrumentIds)];
     if (requestedIds.length === 0) return result;
     const rows = await this.dependencies.db
       .prepare(
-        `SELECT transactions.id, transactions.instrument_id, transactions.trade_date,
+        `SELECT transactions.id, transactions.instrument_id, transactions.account_id,
+                transactions.trade_date,
                 transactions.side, transactions.quantity_decimal
          FROM transactions JOIN json_each(?1) AS requested
            ON transactions.instrument_id = requested.value
+         WHERE (?2 IS NULL OR transactions.account_id = ?2)
          ORDER BY transactions.instrument_id, transactions.trade_date, transactions.id`,
       )
-      .bind(JSON.stringify(requestedIds))
+      .bind(JSON.stringify(requestedIds), accountId ?? null)
       .all<{
         id: string;
         instrument_id: string;
+        account_id: string | null;
         trade_date: string;
         side: Side;
         quantity_decimal: string;
@@ -1075,6 +1100,7 @@ export class EventImportsService {
       const transactions = result.get(row.instrument_id) ?? [];
       transactions.push({
         id: row.id,
+        accountId: row.account_id ?? "account-default",
         tradeDate: row.trade_date,
         side: row.side,
         quantityDecimal: row.quantity_decimal,
@@ -1204,6 +1230,32 @@ export class EventImportsService {
     };
   }
 
+  private async resolveAccountId(requested?: string): Promise<string | null> {
+    const normalized = requested?.trim();
+    if (!normalized) return "account-default";
+    const accountId = normalized;
+    const row = await this.dependencies.db
+      .prepare(
+        `SELECT id FROM accounts
+         WHERE id = ?1 AND archived_at IS NULL`,
+      )
+      .bind(accountId)
+      .first<{ id: string }>();
+    return row?.id ?? null;
+  }
+
+  private async accountDigest(
+    file: Uint8Array,
+    accountId: string,
+  ): Promise<string> {
+    if (accountId === "account-default") return hexDigest(file);
+    const prefix = new TextEncoder().encode(`${accountId}\u0000`);
+    const payload = new Uint8Array(prefix.byteLength + file.byteLength);
+    payload.set(prefix);
+    payload.set(file, prefix.byteLength);
+    return hexDigest(payload);
+  }
+
   private async batch(id: string): Promise<BatchRow | null> {
     const batch = await this.dependencies.db
       .prepare("SELECT * FROM import_batches WHERE id = ?1")
@@ -1211,6 +1263,7 @@ export class EventImportsService {
       .first<{
         id: string;
         file_digest: string;
+        account_id: string | null;
         original_filename: string;
         base_position_basis_revision: number;
         projected_holdings_json: string | null;
@@ -1244,6 +1297,7 @@ export class EventImportsService {
     return {
       id: batch.id,
       fileDigest: batch.file_digest,
+      accountId: batch.account_id ?? "account-default",
       originalFilename: batch.original_filename,
       basePositionBasisRevision: batch.base_position_basis_revision,
       projectedHoldingsJson: batch.projected_holdings_json,
@@ -1329,6 +1383,7 @@ export class EventImportsService {
     imported: Map<string, NormalizedImportTransaction[]>,
     refreshed: { instrument: InstrumentRecord; snapshot: SplitEventRange }[],
     today: string,
+    importedAccountId: string,
   ): Promise<boolean> {
     const snapshots = new Map(
       refreshed.map(({ instrument, snapshot }) => [instrument.id, snapshot]),
@@ -1346,17 +1401,31 @@ export class EventImportsService {
       for (const { id } of instruments.results) {
         const actions = actionsByInstrument.get(id) ?? [];
         const snapshot = snapshots.get(id);
-        const holdings = deriveHoldings({
-          today,
-          transactions: [
-            ...(transactionsByInstrument.get(id) ?? []),
-            ...(imported.get(id) ?? []).map(toLedgerTransaction),
-          ],
-          activeSplits: snapshot
-            ? this.proposedSplits(actions, snapshot)
-            : actions.map(toActiveSplit),
-        });
-        if (holdings.currentQuantity() !== "0") currentPositions += 1;
+        const byAccount = new Map<string, LedgerTransaction[]>();
+        for (const transaction of transactionsByInstrument.get(id) ?? []) {
+          const rows = byAccount.get(transaction.accountId) ?? [];
+          rows.push(transaction);
+          byAccount.set(transaction.accountId, rows);
+        }
+        const importedRows = imported.get(id) ?? [];
+        if (importedRows.length > 0) {
+          const rows = byAccount.get(importedAccountId) ?? [];
+          rows.push(...importedRows.map(toLedgerTransaction));
+          byAccount.set(importedAccountId, rows);
+        }
+        const activeSplits = snapshot
+          ? this.proposedSplits(actions, snapshot)
+          : actions.map(toActiveSplit);
+        let instrumentHeld = false;
+        for (const transactions of byAccount.values()) {
+          const holdings = deriveHoldings({
+            today,
+            transactions,
+            activeSplits,
+          });
+          if (holdings.currentQuantity() !== "0") instrumentHeld = true;
+        }
+        if (instrumentHeld) currentPositions += 1;
         if (currentPositions > MAX_CURRENT_POSITIONS) return false;
       }
     } catch {

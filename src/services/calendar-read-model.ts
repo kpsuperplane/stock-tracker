@@ -91,6 +91,7 @@ export interface CalendarReadModelInput {
   endDate: string;
   asOfDate: string;
   locale: ReadModelLocale;
+  accountIds: readonly string[];
   cursor?: { date: string; kind: string; id: string } | null;
   limit?: number;
 }
@@ -162,20 +163,33 @@ export class CalendarReadModelService {
       this.db
         .prepare(
           `SELECT id, instrument_id, trade_date, side, quantity_decimal
-             FROM transactions ORDER BY instrument_id, trade_date, id`,
+             FROM transactions
+            WHERE account_id IN (SELECT value FROM json_each(?1))
+             ORDER BY instrument_id, trade_date, id`,
         )
+        .bind(JSON.stringify(input.accountIds))
         .all<TransactionRow>(),
       this.db
         .prepare(
           `SELECT id, instrument_id, effective_date,
                     split_numerator, split_denominator
-             FROM corporate_actions WHERE status = 'active'
+             FROM corporate_actions
+            WHERE status = 'active'
+              AND instrument_id IN (
+                SELECT DISTINCT instrument_id FROM transactions
+                 WHERE account_id IN (SELECT value FROM json_each(?1))
+              )
              ORDER BY instrument_id, effective_date, id`,
         )
+        .bind(JSON.stringify(input.accountIds))
         .all<SplitRow>(),
       this.db
         .prepare(
-          `SELECT f.id, f.instrument_id, i.symbol, i.company_name,
+          `WITH scoped_instruments AS (
+             SELECT DISTINCT instrument_id FROM transactions
+              WHERE account_id IN (SELECT value FROM json_each(?1))
+           )
+           SELECT f.id, f.instrument_id, i.symbol, i.company_name,
                     i.exchange, i.currency, f.trading_date,
                     f.previous_trading_date, f.previous_raw_close_decimal,
                     f.current_raw_close_decimal,
@@ -184,35 +198,46 @@ export class CalendarReadModelService {
                     f.raw_close_difference_decimal, f.movement_basis, f.status,
                     f.error_code, f.error_message
              FROM daily_market_facts f JOIN instruments i ON i.id = f.instrument_id
-             WHERE f.trading_date >= ?1 AND f.trading_date <= ?2
+             JOIN scoped_instruments scoped ON scoped.instrument_id = f.instrument_id
+             WHERE f.trading_date >= ?2 AND f.trading_date <= ?3
              ORDER BY f.trading_date, i.symbol, f.id`,
         )
-        .bind(input.startDate, input.endDate)
+        .bind(JSON.stringify(input.accountIds), input.startDate, input.endDate)
         .all<FactRow>(),
       this.db
         .prepare(
-          `SELECT d.id, d.instrument_id, i.symbol, i.company_name,
+          `WITH scoped_instruments AS (
+             SELECT DISTINCT instrument_id FROM transactions
+              WHERE account_id IN (SELECT value FROM json_each(?1))
+           )
+           SELECT d.id, d.instrument_id, i.symbol, i.company_name,
                     i.currency, d.ex_date, d.payment_date,
                     d.amount_per_share_decimal, d.status,
                     d.error_code, d.error_message, d.source_url,
                     d.provider
              FROM dividend_events d JOIN instruments i ON i.id = d.instrument_id
-             WHERE d.ex_date >= ?1 AND d.ex_date <= ?2
+             JOIN scoped_instruments scoped ON scoped.instrument_id = d.instrument_id
+             WHERE d.ex_date >= ?2 AND d.ex_date <= ?3
                AND d.status <> 'superseded'
              ORDER BY d.ex_date, i.symbol, d.id`,
         )
-        .bind(input.startDate, input.endDate)
+        .bind(JSON.stringify(input.accountIds), input.startDate, input.endDate)
         .all<DividendRow>(),
       this.db
         .prepare(
-          `SELECT w.instrument_id, i.symbol, w.effective_date, w.state
+          `WITH scoped_instruments AS (
+             SELECT DISTINCT instrument_id FROM transactions
+              WHERE account_id IN (SELECT value FROM json_each(?1))
+           )
+           SELECT w.instrument_id, i.symbol, w.effective_date, w.state
              FROM work_items w LEFT JOIN instruments i ON i.id = w.instrument_id
+             JOIN scoped_instruments scoped ON scoped.instrument_id = w.instrument_id
              WHERE w.scope = 'global_fact' AND w.work_type = 'market_fact'
-               AND w.effective_date >= ?1 AND w.effective_date <= ?2
+               AND w.effective_date >= ?2 AND w.effective_date <= ?3
                AND w.state NOT IN ('complete', 'terminal')
              ORDER BY w.effective_date, i.symbol, w.id`,
         )
-        .bind(input.startDate, input.endDate)
+        .bind(JSON.stringify(input.accountIds), input.startDate, input.endDate)
         .all<{
           instrument_id: string | null;
           symbol: string | null;
@@ -221,22 +246,28 @@ export class CalendarReadModelService {
         }>(),
       this.db
         .prepare(
-          `SELECT a.instrument_id, i.symbol, a.effective_date AS date,
+          `WITH scoped_instruments AS (
+             SELECT DISTINCT instrument_id FROM transactions
+              WHERE account_id IN (SELECT value FROM json_each(?1))
+           )
+           SELECT a.instrument_id, i.symbol, a.effective_date AS date,
                     a.status, 'split_review' AS kind
              FROM corporate_actions a JOIN instruments i ON i.id = a.instrument_id
+             JOIN scoped_instruments scoped ON scoped.instrument_id = a.instrument_id
              WHERE a.status IN ('candidate', 'quarantined')
-               AND a.effective_date >= ?1 AND a.effective_date <= ?2
+               AND a.effective_date >= ?2 AND a.effective_date <= ?3
              UNION ALL
              SELECT c.instrument_id, i.symbol, NULL AS date,
                     c.status, 'split_review' AS kind
              FROM corporate_action_coverage c LEFT JOIN instruments i
                ON i.id = c.instrument_id
+             JOIN scoped_instruments scoped ON scoped.instrument_id = c.instrument_id
              WHERE c.status IN ('review_required', 'conflict', 'refreshing', 'unavailable')
-               AND c.requested_start_date <= ?2
-               AND c.requested_end_date >= ?1
+               AND c.requested_start_date <= ?3
+               AND c.requested_end_date >= ?2
              ORDER BY date`,
         )
-        .bind(input.startDate, input.endDate)
+        .bind(JSON.stringify(input.accountIds), input.startDate, input.endDate)
         .all<{
           instrument_id: string;
           symbol: string | null;
@@ -711,9 +742,6 @@ export class CalendarReadModelService {
     const selectedMovers = movers.filter((mover) =>
       selectedIds.has(`mover:${mover.id}`),
     );
-    const selectedDividends = dividends.filter((dividend) =>
-      selectedIds.has(`dividend:${dividend.id}`),
-    );
     const last = selectedEvents.at(-1);
     const nextCursor =
       last && offset + selectedEvents.length < eventRows.length
@@ -737,7 +765,9 @@ export class CalendarReadModelService {
       locale: input.locale,
       actualTradingDates,
       movers: selectedMovers,
-      dividends: selectedDividends,
+      // Keep the period's complete dividend set available for totals and the
+      // breakdown even when the mixed calendar event stream is paginated.
+      dividends,
       events: selectedEvents,
       pending,
       pendingFacts: pendingFactRows,

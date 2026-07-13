@@ -7,6 +7,7 @@ import type {
 } from "../../shared/contracts";
 import { ApiClientError } from "../api";
 import { MoverDialog } from "../calendar/MoverDialog";
+import { summarizePeriodDividends } from "../calendar/PeriodDividendSummary";
 import { I18nProvider } from "../i18n/I18nProvider";
 import {
   CalendarPage,
@@ -108,6 +109,8 @@ describe("CalendarPage", () => {
     expect(markup).toContain("Market calendar");
     expect(markup).toContain("+5.32%");
     expect(markup).toContain("AAPL $0.50");
+    expect(markup).toContain("Monthly dividends: USD $0.50");
+    expect(markup).toContain("Dividend breakdown");
     expect(markup).toContain('aria-label="AAPL, Dividend, AAPL $0.50"');
     expect(markup).toContain(
       "Future dividend coverage is not currently known.",
@@ -183,8 +186,48 @@ describe("CalendarPage", () => {
     );
 
     expect(markup).toContain("Week");
+    expect(markup).toContain("Weekly dividends: $0.00");
     expect(markup).toContain("Market data pending: Waiting for close.");
     expect(markup).not.toContain("No movers or dividends in this range.");
+  });
+
+  it("totals period dividends exactly by native currency", () => {
+    const summary = summarizePeriodDividends(
+      [
+        dividend,
+        {
+          ...dividend,
+          id: "dividend-2",
+          symbol: "MSFT",
+          expectedTotalValueDecimal: "0.20",
+        },
+        {
+          ...dividend,
+          id: "dividend-3",
+          symbol: "SHOP.TO",
+          currency: "CAD",
+          expectedTotalValueDecimal: "1.25",
+        },
+        {
+          ...dividend,
+          id: "dividend-4",
+          symbol: "UNKNOWN",
+          expectedTotalValueDecimal: null,
+        },
+        {
+          ...dividend,
+          id: "dividend-outside",
+          exDate: "2026-08-01",
+          expectedTotalValueDecimal: "100",
+        },
+      ],
+      "2026-07-01",
+      "2026-07-31",
+    );
+
+    expect(summary.totals).toEqual({ USD: "0.7", CAD: "1.25" });
+    expect(summary.dividends).toHaveLength(4);
+    expect(summary.unavailableCount).toBe(1);
   });
 
   it("discloses busy dates and keeps a truly empty range explicit", () => {

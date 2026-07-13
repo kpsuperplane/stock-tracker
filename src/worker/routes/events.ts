@@ -33,6 +33,7 @@ const confirmationSchema = z
 const createSchema = z
   .object({
     symbol: z.string().min(1).max(32),
+    accountId: z.string().min(1).max(128).optional(),
     tradeDate: z.iso.date(),
     side: z.enum(["buy", "sell"]),
     quantityDecimal: z.string().min(1).max(64),
@@ -43,6 +44,7 @@ const createSchema = z
 
 const updateSchema = z
   .object({
+    accountId: z.string().min(1).max(128).optional(),
     tradeDate: z.iso.date(),
     side: z.enum(["buy", "sell"]),
     quantityDecimal: z.string().min(1).max(64),
@@ -68,6 +70,8 @@ const timelineQuerySchema = z.object({
   instrumentId: z.string().min(1).max(128).optional(),
   symbol: z.string().min(1).max(32).optional(),
   type: z.enum(["transaction", "split"]).optional(),
+  scopeType: z.enum(["all", "category", "account"]).optional(),
+  scopeId: z.string().min(1).max(128).optional(),
   cursor: z.string().min(1).max(1_024).optional(),
   limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).optional(),
 });
@@ -96,12 +100,17 @@ interface TimelineRow {
   conflict_message: string | null;
   created_at: string | null;
   updated_at: string | null;
+  account_id: string | null;
+  account_name: string | null;
+  category_id: string | null;
+  category_name: string | null;
 }
 
 interface TimelineCursor {
   date: string;
   type: "transaction" | "split";
   id: string;
+  scopeKey?: string | undefined;
 }
 
 const error = (
@@ -139,6 +148,7 @@ const parseCursor = (value: string | undefined): TimelineCursor | null => {
         date: z.iso.date(),
         type: z.enum(["transaction", "split"]),
         id: z.string().min(1).max(256),
+        scopeKey: z.string().min(1).max(256).optional(),
       })
       .strict()
       .parse(parsed);
@@ -158,6 +168,10 @@ const toTransactionDto = (row: TimelineRow): TransactionEventDto => ({
   symbol: row.symbol,
   companyName: row.company_name,
   currency: row.currency,
+  accountId: row.account_id ?? "account-default",
+  accountName: row.account_name,
+  categoryId: row.category_id,
+  categoryName: row.category_name,
   tradeDate: row.event_date,
   side: row.side as "buy" | "sell",
   quantityDecimal: row.quantity_decimal as string,
@@ -244,12 +258,19 @@ const timelineSql = `
       NULL AS provider, NULL AS provider_event_id, NULL AS provider_revision,
       NULL AS retrieved_at, transactions.revision, NULL AS status,
       NULL AS conflict_code, NULL AS conflict_message,
-      transactions.created_at, transactions.updated_at
+      transactions.created_at, transactions.updated_at,
+      transactions.account_id, accounts.name AS account_name,
+      accounts.category_id, account_categories.name AS category_name
     FROM transactions
     JOIN instruments ON instruments.id = transactions.instrument_id
-    WHERE (?1 IS NULL OR transactions.instrument_id = ?1)
-      AND (?2 IS NULL OR instruments.symbol = ?2)
-      AND (?3 IS NULL OR ?3 = 'transaction')
+    LEFT JOIN accounts ON accounts.id = transactions.account_id
+    LEFT JOIN account_categories ON account_categories.id = accounts.category_id
+    WHERE (?2 IS NULL OR transactions.instrument_id = ?2)
+      AND (?3 IS NULL OR instruments.symbol = ?3)
+      AND (?4 IS NULL OR ?4 = 'transaction')
+      AND (?1 IS NULL OR transactions.account_id IN (
+        SELECT value FROM json_each(?1)
+      ))
     UNION ALL
     SELECT
       'split' AS event_type, corporate_actions.id AS event_id,
@@ -262,21 +283,30 @@ const timelineSql = `
       corporate_actions.retrieved_at, corporate_actions.revision,
       corporate_actions.status, corporate_actions.conflict_code,
       corporate_actions.conflict_message, NULL AS created_at,
-      corporate_actions.updated_at
+      corporate_actions.updated_at,
+      NULL AS account_id, NULL AS account_name,
+      NULL AS category_id, NULL AS category_name
     FROM corporate_actions
     JOIN instruments ON instruments.id = corporate_actions.instrument_id
-    WHERE (?1 IS NULL OR corporate_actions.instrument_id = ?1)
-      AND (?2 IS NULL OR instruments.symbol = ?2)
-      AND (?3 IS NULL OR ?3 = 'split')
+    WHERE (?2 IS NULL OR corporate_actions.instrument_id = ?2)
+      AND (?3 IS NULL OR instruments.symbol = ?3)
+      AND (?4 IS NULL OR ?4 = 'split')
+      AND (?1 IS NULL OR EXISTS (
+        SELECT 1 FROM transactions AS scoped_transactions
+        WHERE scoped_transactions.instrument_id = corporate_actions.instrument_id
+          AND scoped_transactions.account_id IN (
+            SELECT value FROM json_each(?1)
+          )
+      ))
   )
   WHERE (
-    ?4 IS NULL
-    OR event_date < ?4
-    OR (event_date = ?4 AND event_type > ?5)
-    OR (event_date = ?4 AND event_type = ?5 AND event_id < ?6)
+    ?5 IS NULL
+    OR event_date < ?5
+    OR (event_date = ?5 AND event_type > ?6)
+    OR (event_date = ?5 AND event_type = ?6 AND event_id < ?7)
   )
   ORDER BY event_date DESC, event_type ASC, event_id DESC
-  LIMIT ?7`;
+  LIMIT ?8`;
 
 const transactionById = async (
   db: D1Database,
@@ -289,8 +319,12 @@ const transactionById = async (
         instruments.id AS instrument_id, instruments.symbol, instruments.company_name,
         instruments.currency, transactions.trade_date AS event_date,
         transactions.side, transactions.quantity_decimal, transactions.price_decimal,
-        transactions.revision, transactions.created_at, transactions.updated_at
+        transactions.revision, transactions.created_at, transactions.updated_at,
+        transactions.account_id, accounts.name AS account_name,
+        accounts.category_id, account_categories.name AS category_name
        FROM transactions JOIN instruments ON instruments.id = transactions.instrument_id
+       LEFT JOIN accounts ON accounts.id = transactions.account_id
+       LEFT JOIN account_categories ON account_categories.id = accounts.category_id
        WHERE transactions.id = ?1`,
     )
     .bind(id)
@@ -362,6 +396,7 @@ const mutationResponse = async (
     const messages: Record<string, string> = {
       instrument_not_found: "The selected instrument does not exist.",
       invalid_transaction: "Enter a valid completed transaction.",
+      account_not_found: "The selected account does not exist or is archived.",
       invalid_position_basis_revision: "The portfolio revision is invalid.",
       invalid_confirmation: "Confirm split history through the current date.",
       negative_holdings:
@@ -438,10 +473,86 @@ const futureTrade = (
       )
     : null;
 
+interface ResolvedEventScope {
+  key: string;
+  accountIds: string[] | null;
+}
+
+const resolveEventScope = async (
+  context: EventContext,
+  scopeType: "all" | "category" | "account" | undefined,
+  scopeId: string | undefined,
+): Promise<ResolvedEventScope | Response> => {
+  const type = scopeType ?? "all";
+  if (type === "all") {
+    if (scopeId)
+      return error(
+        context,
+        422,
+        "invalid_scope",
+        "The account scope is invalid.",
+      );
+    return { key: "all", accountIds: null };
+  }
+  if (!scopeId)
+    return error(
+      context,
+      422,
+      "invalid_scope",
+      "The account scope is invalid.",
+    );
+  if (type === "account") {
+    const account = await context.env.DB.prepare(
+      "SELECT id FROM accounts WHERE id = ?1",
+    )
+      .bind(scopeId)
+      .first<{ id: string }>();
+    if (!account)
+      return error(
+        context,
+        422,
+        "scope_not_found",
+        "The selected account does not exist.",
+      );
+    return { key: `account:${account.id}`, accountIds: [account.id] };
+  }
+  const category = await context.env.DB.prepare(
+    "SELECT id FROM account_categories WHERE id = ?1",
+  )
+    .bind(scopeId)
+    .first<{ id: string }>();
+  if (!category)
+    return error(
+      context,
+      422,
+      "scope_not_found",
+      "The selected category does not exist.",
+    );
+  const accounts = await context.env.DB.prepare(
+    "SELECT id FROM accounts WHERE category_id = ?1 ORDER BY sort_order, id",
+  )
+    .bind(category.id)
+    .all<{ id: string }>();
+  return {
+    key: `category:${category.id}`,
+    accountIds: accounts.results.map(({ id }) => id),
+  };
+};
+
 const timeline = async (context: EventContext) => {
   const query = timelineQuerySchema.parse(context.req.query());
+  const scope = await resolveEventScope(
+    context,
+    query.scopeType,
+    query.scopeId,
+  );
+  if (scope instanceof Response) return scope;
   const cursor = parseCursor(query.cursor);
-  if (query.cursor && !cursor) {
+  if (
+    query.cursor &&
+    (!cursor ||
+      (cursor.scopeKey !== undefined && cursor.scopeKey !== scope.key))
+  ) {
     return error(
       context,
       422,
@@ -452,6 +563,7 @@ const timeline = async (context: EventContext) => {
   const pageSize = query.limit ?? DEFAULT_PAGE_SIZE;
   const result = await context.env.DB.prepare(timelineSql)
     .bind(
+      scope.accountIds ? JSON.stringify(scope.accountIds) : null,
       query.instrumentId ?? null,
       query.symbol?.toUpperCase() ?? null,
       query.type ?? null,
@@ -471,6 +583,7 @@ const timeline = async (context: EventContext) => {
           date: rows.at(-1)?.event_date ?? tail.event_date,
           type: rows.at(-1)?.event_type ?? tail.event_type,
           id: rows.at(-1)?.event_id ?? tail.event_id,
+          scopeKey: scope.key,
         })
       : null,
     positionBasisRevision,
@@ -513,6 +626,7 @@ const createTransaction = async (context: EventContext) => {
     proposal: {
       kind: "create",
       instrumentId: instrument.id,
+      ...(body.accountId ? { accountId: body.accountId } : {}),
       tradeDate: body.tradeDate,
       side: body.side,
       quantityDecimal: body.quantityDecimal,
@@ -542,6 +656,7 @@ const updateTransaction = async (context: EventContext) => {
     kind: "update",
     eventId,
     expectedEventRevision: eventRevision,
+    ...(body.accountId ? { accountId: body.accountId } : {}),
     tradeDate: body.tradeDate,
     side: body.side,
     quantityDecimal: body.quantityDecimal,

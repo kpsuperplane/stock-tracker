@@ -8,6 +8,7 @@ export type ImportRowStatus = "valid" | "invalid";
 export interface ImportBatchRecord {
   id: string;
   fileDigest: string;
+  accountId?: string;
   originalFilename: string;
   basePositionBasisRevision: number;
   projectedHoldingsJson: string | null;
@@ -40,14 +41,15 @@ export class ImportRepository {
     return this.db
       .prepare(
         `INSERT INTO import_batches
-         (id, file_digest, original_filename, base_position_basis_revision,
+         (id, file_digest, account_id, original_filename, base_position_basis_revision,
           projected_holdings_json, status, result_pipeline_job_id, expires_at,
           committed_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+         VALUES (?1, ?2, COALESCE(?3, 'account-default'), ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
       )
       .bind(
         batch.id,
         batch.fileDigest,
+        batch.accountId ?? null,
         batch.originalFilename,
         batch.basePositionBasisRevision,
         batch.projectedHoldingsJson,

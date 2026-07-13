@@ -58,6 +58,7 @@ describe("report routes", () => {
       "SHOP.TO",
       "AAPL",
     ]);
+    expect(payload.report.movers[0]).not.toHaveProperty("companyName");
     expect(payload.report.movers[1]?.sources[0]?.publisher).toBe("Reuters");
     expect(payload.report.movers[2]).toEqual(
       expect.objectContaining({

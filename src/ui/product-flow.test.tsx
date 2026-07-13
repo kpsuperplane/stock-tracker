@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { MoverDialog } from "./calendar/MoverDialog";
 import { productFlowFixture } from "./fixtures/productFlow";
 import { I18nProvider } from "./i18n/I18nProvider";
-import { BackfillPage } from "./pages/BackfillPage";
 import { CalendarPage } from "./pages/CalendarPage";
 import { EventImportDialog } from "./pages/EventImportDialog";
 import { PortfolioPage } from "./pages/PortfolioPage";
@@ -14,7 +13,7 @@ const renderProduct = (children: React.ReactNode, locale: "en" | "cn" = "en") =>
   );
 
 describe("Plan 3 product-flow fixture", () => {
-  it("connects CSV preview data to Portfolio, Calendar mover details, and Backfill progress", () => {
+  it("connects CSV preview data to Portfolio and Calendar mover details", () => {
     const importMarkup = renderProduct(
       <EventImportDialog
         isOpen
@@ -62,18 +61,6 @@ describe("Plan 3 product-flow fixture", () => {
     expect(dialogMarkup).toContain("Movement");
     expect(dialogMarkup).toContain('aria-modal="true"');
     expect(dialogMarkup).toContain('aria-label="Close"');
-
-    const backfillMarkup = renderProduct(
-      <BackfillPage
-        today="2026-07-11"
-        initialJobs={[productFlowFixture.backfill]}
-      />,
-    );
-    expect(backfillMarkup).toContain("Manual backfills");
-    expect(backfillMarkup).toContain("Complete");
-    expect(backfillMarkup).toContain("Processed: 1");
-    expect(backfillMarkup).toContain('role="status"');
-    expect(backfillMarkup).toContain('role="progressbar"');
   });
 
   it("keeps static labels bilingual while summaries remain Chinese", () => {

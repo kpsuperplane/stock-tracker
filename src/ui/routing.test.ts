@@ -13,14 +13,14 @@ describe("product routing", () => {
       portfolio: "/portfolio",
       events: "/events",
       calendar: "/calendar",
-      backfill: "/backfill",
+      accounts: "/accounts",
     };
 
     expect(APP_ROUTES.map((route) => route.id)).toEqual([
       "portfolio",
       "events",
       "calendar",
-      "backfill",
+      "accounts",
     ]);
     for (const [route, path] of Object.entries(expected) as Array<
       [AppRoute, string]
@@ -34,6 +34,7 @@ describe("product routing", () => {
 
   it("falls back to Portfolio for the root and unknown paths", () => {
     expect(routeForPath("/")).toBe("portfolio");
+    expect(routeForPath("/backfill")).toBe("portfolio");
     expect(routeForPath("/unknown")).toBe("portfolio");
     expect(routeForPath("not-a-path")).toBe("portfolio");
   });

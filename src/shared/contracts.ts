@@ -62,7 +62,6 @@ export interface SourceDto {
 export interface MoverDto {
   screeningId: string;
   symbol: string;
-  companyName: string;
   exchange: string;
   currency: string;
   currentPrice: number | null;
@@ -89,6 +88,35 @@ export interface ReportDto {
   movers: MoverDto[];
 }
 
+export interface AccountDto {
+  id: string;
+  categoryId: string;
+  name: string;
+  sortOrder: number;
+  revision: number;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountCategoryDto {
+  id: string;
+  name: string;
+  sortOrder: number;
+  revision: number;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  accounts: AccountDto[];
+}
+
+export type AccountScopeType = "all" | "category" | "account";
+
+export interface AccountScopeSelection {
+  scopeType: AccountScopeType;
+  scopeId?: string;
+}
+
 export interface SplitConfirmationDto {
   requestedStartDate: string;
   requestedEndDate: string;
@@ -102,6 +130,11 @@ export interface TransactionEventDto {
   symbol: string;
   companyName: string;
   currency: "USD" | "CAD";
+  /** Present for account-aware responses; optional for cached legacy payloads. */
+  accountId?: string;
+  accountName?: string | null;
+  categoryId?: string | null;
+  categoryName?: string | null;
   tradeDate: string;
   side: "buy" | "sell";
   quantityDecimal: string;
