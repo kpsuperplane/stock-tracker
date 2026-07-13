@@ -6,7 +6,7 @@ import {
   EventImportDialog,
   isCurrentPreviewRequest,
 } from "./EventImportDialog";
-import { EventsPage, resolveMutationBasisRevision } from "./EventsPage";
+import { EventsPage } from "./EventsPage";
 
 const timeline: EventsTimelineDto = {
   positionBasisRevision: 4,
@@ -50,11 +50,6 @@ const timeline: EventsTimelineDto = {
 };
 
 describe("EventsPage", () => {
-  it("uses the confirmed basis revision for a split-review retry", () => {
-    expect(resolveMutationBasisRevision(4, 5)).toBe(5);
-    expect(resolveMutationBasisRevision(4)).toBe(4);
-  });
-
   it("renders dense transaction and split rows from the stable timeline contract", () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">

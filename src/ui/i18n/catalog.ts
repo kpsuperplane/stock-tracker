@@ -236,7 +236,6 @@ export const messageCatalog = {
     splitReviewTitle: "Review split history",
     splitReviewDescription:
       "Confirm this provider snapshot before changing the ledger.",
-    confirmSplit: "Confirm split history",
     splitReviewIncomplete:
       "Provider coverage is incomplete for the requested range.",
     splitReviewNoEvents: "No splits were returned for this range.",
@@ -244,9 +243,12 @@ export const messageCatalog = {
     requestedRange: "Requested range",
     retrievedAt: "Retrieved",
     splitRatio: "Split ratio",
-    splitCorrection: "Provider correction requires review.",
     providerUnavailable:
       "The split-history provider is unavailable. Try again later.",
+    splitHistoryUnavailableWarning:
+      "Transaction saved. Split history will be retried automatically.",
+    splitHistoryConflictWarning:
+      "Transaction saved. A split correction was quarantined because it would make historical holdings negative.",
     negativeHoldings: "This change would create negative historical holdings.",
     instrumentNotFound:
       "That symbol is not in the watchlist. Add it to the watchlist first.",
@@ -270,11 +272,9 @@ export const messageCatalog = {
     valid: "Valid",
     invalid: "Invalid",
     errors: "Errors",
-    importReviewTitle: "Split history confirmations",
+    importReviewTitle: "Split history",
     importReviewDescription:
-      "Each review must be explicitly confirmed before commit.",
-    confirmed: "Confirmed",
-    confirmReview: "Confirm",
+      "Provider split history will be applied automatically when the import is committed.",
     commitImport: "Commit import",
     committingImport: "Committing…",
     importCommitted: "Import committed",
@@ -566,15 +566,16 @@ export const messageCatalog = {
     stalePortfolio: "编辑期间投资组合发生了变化。",
     splitReviewTitle: "审核拆股历史",
     splitReviewDescription: "更改账本前请确认此供应商快照。",
-    confirmSplit: "确认拆股历史",
     splitReviewIncomplete: "所请求日期范围的供应商覆盖不完整。",
     splitReviewNoEvents: "此范围没有返回拆股记录。",
     providerRevision: "供应商版本",
     requestedRange: "请求范围",
     retrievedAt: "获取时间",
     splitRatio: "拆股比例",
-    splitCorrection: "供应商修正需要审核。",
     providerUnavailable: "拆股历史供应商暂不可用，请稍后重试。",
+    splitHistoryUnavailableWarning: "交易已保存。系统将自动重试获取拆股历史。",
+    splitHistoryConflictWarning:
+      "交易已保存。由于会导致历史持仓为负，拆股修正已被隔离。",
     negativeHoldings: "此更改会造成历史持仓为负。",
     instrumentNotFound: "该股票代码不在自选列表中，请先添加到自选列表。",
     ledgerConflict: "投资组合已变化，请刷新后重试。",
@@ -596,10 +597,8 @@ export const messageCatalog = {
     valid: "有效",
     invalid: "无效",
     errors: "错误",
-    importReviewTitle: "拆股历史确认",
-    importReviewDescription: "提交前必须明确确认每个审核项。",
-    confirmed: "已确认",
-    confirmReview: "确认",
+    importReviewTitle: "拆股历史",
+    importReviewDescription: "提交导入时会自动应用供应商拆股历史。",
     commitImport: "提交导入",
     committingImport: "正在提交…",
     importCommitted: "导入已提交",

@@ -118,12 +118,6 @@ export interface AccountScopeSelection {
   scopeId?: string;
 }
 
-export interface SplitConfirmationDto {
-  requestedStartDate: string;
-  requestedEndDate: string;
-  providerRevision: string;
-}
-
 export interface TransactionEventDto {
   type: "transaction";
   id: string;

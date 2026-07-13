@@ -6,12 +6,12 @@ Date evaluated: 2026-07-10
 
 **APPROVED FOR BEST-EFFORT PERSONAL-APP USE.**
 
-Yahoo Finance chart v8 is selected only as an unverified split-candidate source;
-it does not establish that every split in a requested historical interval was
-retained. A later historical transaction can become authoritative only after
-the user reviews and confirms the displayed split history for its affected
-instrument and range. The confirmation is tied to the retrieved provider
-revision; a later revision or correction invalidates it and requires review.
+Yahoo Finance chart v8 is selected as a best-effort split source; it does not
+establish that every split in a requested historical interval was retained.
+Transactions remain authoritative dated facts and commit independently of the
+provider. Valid snapshots are applied automatically to derived holdings,
+provider outages are retried, and corrections are quarantined only when they
+would create negative historical holdings under the no-short ledger rule.
 
 Alpha Vantage `DIVIDENDS` plus `OVERVIEW` is selected as a source-reported,
 best-effort dividend feed. Its rows may populate Calendar facts, but absence of
@@ -29,8 +29,8 @@ or future-announcement coverage.
 
 Continue to keep the existing `YahooMarketDataProvider` and its
 `DailySeries.corporateActionDates` behavior unchanged. The new split adapter
-must never authorize a ledger mutation by itself, and neither adapter may be
-described as exhaustive.
+may update derived split facts automatically, but neither adapter may be
+described as exhaustive or rewrite a transaction quantity or price.
 
 The selected application boundary is `CorporateActionProvider` and
 `DividendProvider`. Consumers receive only normalized events and range
@@ -44,7 +44,7 @@ metadata; no Yahoo or Alpha Vantage response type crosses that boundary.
 | Reverse split | Same fields | Not evaluated because Yahoo passes | Pass: `1:10` |
 | Exact ratio | `splitRatio` is a string; adapter does not derive it from adjusted prices | N/A | Parser pass: reduced exact integer strings |
 | Split effective date | Epoch seconds in `date`, normalized in UTC | N/A | Pass, including 00:30 UTC boundary |
-| Split range coverage | **Unverified.** `period1`/`period2` shape a request, but Yahoo supplies no retention/completeness basis; `firstTradeDate` is only listing metadata | N/A | Candidate returns `basis: unverified`, null coverage bounds, `isComplete: false`, retrieval time, and derived snapshot revision; user confirmation is required later |
+| Split range coverage | **Unverified.** `period1`/`period2` shape a request, but Yahoo supplies no retention/completeness basis; `firstTradeDate` is only listing metadata | N/A | Snapshot retains `basis: unverified`, null coverage bounds, `isComplete: false`, retrieval time, and a derived revision while being applied automatically |
 | Historical dividend | Chart event has historical date/amount but no documented depth | Documentation says historical distributions | Pass: 2024 event |
 | Announced future dividend | Not selected; the unofficial chart endpoint has no stability or future-declaration coverage promise | **Best effort.** Documentation promises future declared distributions, but no authentic observed future row was available | Provider-shaped future parser case passes; a missing row means no event is currently known from this source |
 | Dividend currency | Not selected | `DIVIDENDS` omits currency; `OVERVIEW.Currency` supplies it | Parser pass: USD normalized on each source-reported event |
@@ -98,7 +98,7 @@ Neither candidate exposes an immutable event ID or revision token.
   in one response are rejected as `provider_conflicting_revision`.
 - Each range response also carries its retrieval timestamp and a derived
   snapshot revision over the requested range and normalized events. Later split
-  confirmation must bind to this revision, not merely to the instrument.
+  reconciliation records this revision so later corrections remain auditable.
 
 ## Coverage and stability limits
 
@@ -108,9 +108,9 @@ another live probe returned individual AAPL and GE split rows. Those rows prove
 event shape, not exhaustive interval retention. `meta.firstTradeDate` is
 listing metadata and cannot establish action-history coverage. The candidate
 therefore returns explicit unverified coverage with null bounds and
-`isComplete: false`. It can supply a history for user review but cannot satisfy
-the authoritative ledger gate without confirmation of that exact range and
-snapshot revision.
+`isComplete: false`. It can supply split facts for automatic derived-position
+reconciliation, but it cannot weaken transaction provenance or be described as
+an exhaustive historical record.
 
 Alpha Vantage's documentation promises historical and future declared dividend
 distributions but does not state historical depth or update latency. The demo
@@ -147,12 +147,12 @@ or claims that the synthetic `CASE` symbol exists.
 The provider decision removes the strict feasibility block but does not upgrade
 either source's evidence:
 
-1. Later schema and services must record the user-confirmed start/end range,
-   provider revision, retrieval time, and confirmation timestamp before a
-   historical mutation becomes authoritative.
-2. Any changed split snapshot revision, disappearance, or correction invalidates
-   confirmation and requires review again. Conflicting corrections remain
-   quarantined.
+1. Schema and services record requested start/end range, provider revision,
+   retrieval time, refresh status, and errors without blocking transaction
+   authority.
+2. Changed split revisions are applied automatically. A correction that would
+   make a historical position negative remains quarantined while the last valid
+   active split set continues to drive holdings.
 3. Dividend consumers preserve source, retrieval time, identity/revision, quota
    constraints, and incomplete-history warnings. They must not infer an
    unannounced event or claim that a missing future row is exhaustive.

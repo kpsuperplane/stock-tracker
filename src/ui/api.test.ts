@@ -77,15 +77,14 @@ describe("product event API clients", () => {
     expect((init.body as FormData).get("accountId")).toBeNull();
   });
 
-  it("retains conflict codes and response details for split review UI", async () => {
+  it("retains API conflict codes and response details", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           error: {
-            code: "split_review_required",
-            message: "Review split history.",
+            code: "ledger_conflict",
+            message: "Reload and try again.",
           },
-          review: { symbol: "AAPL", range: {}, events: [] },
           positionBasisRevision: 4,
         }),
         { status: 409, headers: { ETag: '"position-basis-4"' } },
@@ -109,12 +108,12 @@ describe("product event API clients", () => {
     expect(error).toBeInstanceOf(ApiClientError);
     expect(error).toMatchObject({
       status: 409,
-      code: "split_review_required",
+      code: "ledger_conflict",
       details: { positionBasisRevision: 4 },
     });
   });
 
-  it("sends an explicit split confirmation with reviewed deletes", async () => {
+  it("deletes transactions without a split-confirmation payload", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -128,20 +127,10 @@ describe("product event API clients", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await eventsApi.remove("tx-1", 4, 1, {
-      requestedStartDate: "2024-01-02",
-      requestedEndDate: "2026-07-10",
-      providerRevision: "snapshot-r2",
-    });
+    await eventsApi.remove("tx-1", 4, 1);
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toEqual({
-      confirmation: {
-        requestedStartDate: "2024-01-02",
-        requestedEndDate: "2026-07-10",
-        providerRevision: "snapshot-r2",
-      },
-    });
+    expect(init.body).toBeUndefined();
   });
 
   it("uses the cached portfolio body for conditional 304 responses", async () => {

@@ -92,13 +92,6 @@ async function insertAccount(input: {
 const csv = (rows: string[]) =>
   `${header}\n${rows.map((row) => `${row},Uncategorized,Default Account`).join("\n")}\n`;
 const multiAccountCsv = (rows: string[]) => `${header}\n${rows.join("\n")}\n`;
-const confirmation = (revision = "snapshot-r1") => ({
-  instrumentId: "instrument-1",
-  requestedStartDate: "2024-01-02",
-  requestedEndDate: "2026-07-10",
-  providerRevision: revision,
-});
-
 describe("EventImportsService", () => {
   beforeEach(async () => {
     await insertInstrument();
@@ -200,7 +193,6 @@ describe("EventImportsService", () => {
     const committed = await importService.commit({
       batchId: preview.batchId,
       expectedPositionBasisRevision: preview.basePositionBasisRevision,
-      confirmations: [confirmation()],
     });
     expect(committed.kind).toBe("committed");
     expect(
@@ -323,7 +315,6 @@ describe("EventImportsService", () => {
       service().commit({
         batchId: result.batchId,
         expectedPositionBasisRevision: 0,
-        confirmations: [],
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "validation_error" }));
   });
@@ -449,12 +440,6 @@ describe("EventImportsService", () => {
     const result = await importService.commit({
       batchId: preview.batchId,
       expectedPositionBasisRevision: 0,
-      confirmations: preview.reviews.map((review) => ({
-        instrumentId: review.instrumentId,
-        requestedStartDate: review.requestedStartDate,
-        requestedEndDate: review.requestedEndDate,
-        providerRevision: review.providerRevision,
-      })),
     });
     expect(result).toEqual(expect.objectContaining({ kind: "committed" }));
     expect(databaseCalls.mock.calls.length).toBeLessThanOrEqual(25);
@@ -573,7 +558,6 @@ describe("EventImportsService", () => {
     const result = await service({ getSplits }).commit({
       batchId: "malformed-batch",
       expectedPositionBasisRevision: 0,
-      confirmations: [],
     });
     expect(result).toEqual({
       kind: "validation_error",
@@ -592,7 +576,7 @@ describe("EventImportsService", () => {
     ).toEqual({ count: 0 });
   });
 
-  it("requires the previewed split confirmation, rejects a provider revision change, and never reparses staged bytes", async () => {
+  it("commits without confirmation and automatically accepts a newer provider revision", async () => {
     const first = await service(provider("snapshot-r1")).preview({
       originalFilename: "portfolio-events.csv",
       file: new TextEncoder().encode(csv(["2024-01-02,SHOP.TO,buy,1,1"])),
@@ -604,16 +588,26 @@ describe("EventImportsService", () => {
       service(provider("snapshot-r1")).commit({
         batchId: first.batchId,
         expectedPositionBasisRevision: 0,
-        confirmations: [],
       }),
-    ).resolves.toEqual(expect.objectContaining({ kind: "review_required" }));
+    ).resolves.toEqual(expect.objectContaining({ kind: "committed" }));
+
+    const second = await service(provider("snapshot-r1")).preview({
+      originalFilename: "portfolio-events-updated.csv",
+      file: new TextEncoder().encode(csv(["2024-01-03,SHOP.TO,buy,1,2"])),
+    });
+    expect(second.kind).toBe("preview");
+    if (second.kind !== "preview") return;
     await expect(
       service(provider("snapshot-r2")).commit({
-        batchId: first.batchId,
-        expectedPositionBasisRevision: 0,
-        confirmations: [confirmation("snapshot-r1")],
+        batchId: second.batchId,
+        expectedPositionBasisRevision: 1,
       }),
-    ).resolves.toEqual(expect.objectContaining({ kind: "review_required" }));
+    ).resolves.toEqual(expect.objectContaining({ kind: "committed" }));
+    expect(
+      await env.DB.prepare(
+        "SELECT snapshot_provider_revision FROM corporate_action_coverage",
+      ).first(),
+    ).toEqual({ snapshot_provider_revision: "snapshot-r2" });
   });
 
   it("uses a corrected split snapshot during preview and quarantines an invalid historical correction", async () => {
@@ -807,7 +801,6 @@ describe("EventImportsService", () => {
     const committed = await importService.commit({
       batchId: preview.batchId,
       expectedPositionBasisRevision: 0,
-      confirmations: [confirmation()],
     });
     expect(committed).toEqual(
       expect.objectContaining({
@@ -870,7 +863,6 @@ describe("EventImportsService", () => {
     const result = await service().commit({
       batchId: "legacy-preview",
       expectedPositionBasisRevision: 0,
-      confirmations: [confirmation()],
     });
     expect(result.kind).toBe("committed");
     expect(
@@ -912,7 +904,6 @@ describe("EventImportsService", () => {
       importService.commit({
         batchId: preview.batchId,
         expectedPositionBasisRevision: 0,
-        confirmations: [confirmation("snapshot-r2")],
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "committed" }));
     expect(
@@ -964,7 +955,6 @@ describe("EventImportsService", () => {
       importService.commit({
         batchId: preview.batchId,
         expectedPositionBasisRevision: 0,
-        confirmations: [confirmation("snapshot-r2")],
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "committed" }));
     expect(
@@ -1005,7 +995,6 @@ describe("EventImportsService", () => {
       service().commit({
         batchId: preview.batchId,
         expectedPositionBasisRevision: 0,
-        confirmations: [confirmation()],
       }),
     ).resolves.toEqual(
       expect.objectContaining({
@@ -1032,7 +1021,6 @@ describe("EventImportsService", () => {
       service().commit({
         batchId: preview.batchId,
         expectedPositionBasisRevision: 0,
-        confirmations: [confirmation()],
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "validation_error" }));
     expect(
@@ -1051,7 +1039,6 @@ describe("EventImportsService", () => {
       service().commit({
         batchId: valid.batchId,
         expectedPositionBasisRevision: 99,
-        confirmations: [confirmation()],
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "conflict" }));
   });
@@ -1077,7 +1064,6 @@ describe("EventImportsService", () => {
       importService.commit({
         batchId: preview.batchId,
         expectedPositionBasisRevision: 0,
-        confirmations: [confirmation()],
       }),
     ).resolves.toEqual(
       expect.objectContaining({
@@ -1127,7 +1113,6 @@ describe("EventImportsService", () => {
     const input = {
       batchId: preview.batchId,
       expectedPositionBasisRevision: 0,
-      confirmations: [confirmation()],
     };
     const results = await Promise.all([
       importService.commit(input),
@@ -1180,7 +1165,6 @@ describe("EventImportsService", () => {
     }).commit({
       batchId: preview.batchId,
       expectedPositionBasisRevision: 0,
-      confirmations: [confirmation()],
     });
     expect(result).toEqual({ kind: "expired" });
     expect(
@@ -1224,7 +1208,6 @@ describe("EventImportsService", () => {
       service().commit({
         batchId: preview.batchId,
         expectedPositionBasisRevision: 0,
-        confirmations: [confirmation()],
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "expired" }));
     await env.DB.prepare(

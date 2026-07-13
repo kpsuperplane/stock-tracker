@@ -1,13 +1,21 @@
 # Portfolio Ledger and Calendar Expansion — Design Specification
 
-Status: Approved; revised for best-effort providers and user-confirmed split history
+Status: Approved; split-confirmation rules superseded by the 2026-07-13 amendment
 Date: 2026-07-10
+
+> **2026-07-13 amendment:** Buy and sell transactions remain immutable dated
+> source facts. Provider-reported splits are applied automatically to the
+> derived position timeline and never rewrite transaction quantities or prices.
+> Provider outages do not block transaction commits; unavailable enrichment is
+> retried by the scheduled refresh. A provider correction is quarantined only
+> when applying it would make a no-short historical position negative. This
+> amendment supersedes every user-confirmation requirement below.
 
 ## 1. Summary
 
 Expand the current stock movement explainer into a single-user portfolio ledger with four pages: Portfolio, Events, Calendar, and Backfill.
 
-Buy and sell events become the source of truth for ownership. Current and historical holdings are derived from those events plus user-confirmed provider-reported stock splits; the application does not persist a current-holdings row or checkpoint. Daily market prices, movements, Chinese news summaries, source-reported dividends, and corporate actions are stored as reusable facts keyed by instrument and effective date.
+Buy and sell events become the source of truth for ownership. Current and historical holdings are derived from those dated events plus automatically applied provider-reported stock splits; the application does not persist a current-holdings row or checkpoint. Daily market prices, movements, Chinese news summaries, source-reported dividends, and corporate actions are stored as reusable facts keyed by instrument and effective date.
 
 An incremental reconciliation pipeline serves scheduled screening, historical ledger corrections, and explicit backfills. It reuses valid facts and fetches or analyzes only missing or stale dependencies. The frontend uses ASTRYX with its neutral theme and conservative spacing. The monthly and weekly event calendar is the only substantial custom UI component.
 

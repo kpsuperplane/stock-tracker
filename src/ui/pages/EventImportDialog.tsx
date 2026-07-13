@@ -22,7 +22,6 @@ import {
   type EventImportsApiClient,
   eventImportsApi,
   type ImportCommitResponse,
-  type ImportConfirmation,
   type ImportPreviewResponse,
   type ImportSplitReview,
 } from "../api";
@@ -110,32 +109,15 @@ export const isCurrentPreviewRequest = (
   currentFile: File | null,
 ): boolean => requestId === currentRequestId && requestFile === currentFile;
 
-const SplitReviewCard = ({
-  review,
-  isConfirmed,
-  onConfirm,
-}: {
-  review: ImportSplitReview;
-  isConfirmed: boolean;
-  onConfirm: () => void;
-}) => {
+const SplitReviewCard = ({ review }: { review: ImportSplitReview }) => {
   const { t } = useI18n();
   const range = review.snapshot.range;
   return (
     <Banner
-      status={isConfirmed ? "success" : "warning"}
+      status="info"
       title={`${review.symbol} · ${t("requestedRange")}: ${review.requestedStartDate} → ${review.requestedEndDate}`}
       description={`${t("source")}: ${review.provider} · ${t("providerRevision")}: ${review.providerRevision}`}
-      endContent={
-        <Button
-          size="sm"
-          variant={isConfirmed ? "secondary" : "primary"}
-          label={isConfirmed ? t("confirmed") : t("confirmReview")}
-          isDisabled={isConfirmed}
-          onClick={onConfirm}
-        />
-      }
-      defaultIsExpanded={!isConfirmed}
+      defaultIsExpanded={false}
     >
       <VStack gap={2}>
         <div>
@@ -198,9 +180,6 @@ export const EventImportDialog = ({
   const [preview, setPreview] = useState<ImportPreviewResponse | null>(
     initialPreview ?? null,
   );
-  const [confirmedReviews, setConfirmedReviews] = useState<Set<number>>(
-    () => new Set(initialPreview?.reviews.map((_, index) => index) ?? []),
-  );
   const [error, setError] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
@@ -210,7 +189,6 @@ export const EventImportDialog = ({
   const clearPreview = () => {
     previewRequestId.current += 1;
     setPreview(null);
-    setConfirmedReviews(new Set());
   };
 
   const reset = () => {
@@ -250,7 +228,6 @@ export const EventImportDialog = ({
         return;
       }
       setPreview(result);
-      setConfirmedReviews(new Set());
     } catch (caught) {
       if (
         !isCurrentPreviewRequest(
@@ -290,46 +267,16 @@ export const EventImportDialog = ({
       setError(t("invalidCsv"));
       return;
     }
-    if (confirmedReviews.size !== preview.reviews.length) {
-      setError(t("importReviewDescription"));
-      return;
-    }
-    const confirmations: ImportConfirmation[] = preview.reviews.map(
-      (review) => ({
-        instrumentId: review.instrumentId,
-        requestedStartDate: review.requestedStartDate,
-        requestedEndDate: review.requestedEndDate,
-        providerRevision: review.providerRevision,
-      }),
-    );
     setIsCommitting(true);
     setError(null);
     try {
       const result = await apiClient.commit(
         preview.batchId,
         positionBasisRevision,
-        confirmations,
       );
       onCommitted?.(result);
       close(false);
     } catch (caught) {
-      if (
-        caught instanceof ApiClientError &&
-        caught.code === "split_review_required" &&
-        Array.isArray(caught.details.reviews)
-      ) {
-        setPreview((previous) =>
-          previous
-            ? {
-                ...previous,
-                reviews: caught.details.reviews as ImportSplitReview[],
-              }
-            : previous,
-        );
-        setConfirmedReviews(new Set());
-        setError(t("importReviewDescription"));
-        return;
-      }
       if (
         caught instanceof ApiClientError &&
         (caught.code === "import_expired" ||
@@ -344,11 +291,10 @@ export const EventImportDialog = ({
     }
   };
 
-  const allReviewsConfirmed =
+  const canCommit =
     preview !== null &&
     preview.rows.length > 0 &&
-    !preview.rows.some((row) => row.status === "invalid") &&
-    confirmedReviews.size === preview.reviews.length;
+    !preview.rows.some((row) => row.status === "invalid");
 
   return (
     <Dialog
@@ -495,18 +441,10 @@ export const EventImportDialog = ({
                   <strong>{t("importReviewTitle")}</strong>
                   <div>{t("importReviewDescription")}</div>
                 </div>
-                {preview.reviews.map((review, index) => (
+                {preview.reviews.map((review) => (
                   <SplitReviewCard
                     key={`${review.instrumentId}-${review.providerRevision}`}
                     review={review}
-                    isConfirmed={confirmedReviews.has(index)}
-                    onConfirm={() =>
-                      setConfirmedReviews((previous) => {
-                        const next = new Set(previous);
-                        next.add(index);
-                        return next;
-                      })
-                    }
                   />
                 ))}
               </VStack>
@@ -523,7 +461,7 @@ export const EventImportDialog = ({
                 variant="primary"
                 label={isCommitting ? t("committingImport") : t("commitImport")}
                 isLoading={isCommitting}
-                isDisabled={!allReviewsConfirmed || isCommitting}
+                isDisabled={!canCommit || isCommitting}
                 onClick={handleCommit}
               />
             </HStack>

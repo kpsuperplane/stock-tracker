@@ -30,6 +30,7 @@ import { easternMarketDate } from "../shared/dates";
 
 const MAX_CURRENT_POSITIONS = 100;
 const PLANNING_WORK_TYPE = "ledger_reconciliation_plan";
+const DEFAULT_SPLIT_PROVIDER = "yahoo-chart-v8";
 
 type TransactionSide = "buy" | "sell";
 
@@ -61,22 +62,19 @@ export type LedgerProposal =
       expectedEventRevision: number;
     };
 
-export interface SplitConfirmation {
-  requestedStartDate: string;
-  requestedEndDate: string;
-  providerRevision: string;
-}
-
 export interface ApplyLedgerMutationInput {
   expectedPositionBasisRevision: number;
   proposal: LedgerProposal;
-  confirmation?: SplitConfirmation;
 }
 
-export interface ConfirmSplitHistoryInput {
+export type LedgerWarningCode =
+  | "split_history_unavailable"
+  | "split_history_conflict";
+
+export interface RefreshSplitHistoryInput {
   expectedPositionBasisRevision: number;
   instrumentId: string;
-  confirmation: SplitConfirmation;
+  requestedStartDate: string;
 }
 
 export type LedgerMutationResult =
@@ -85,8 +83,8 @@ export type LedgerMutationResult =
       positionBasisRevision: number;
       pipelineJobId: string;
       transactionId: string | null;
+      warningCode?: LedgerWarningCode;
     }
-  | { kind: "review_required"; snapshot: SplitEventRange }
   | { kind: "candidate_conflict"; snapshot: SplitEventRange }
   | { kind: "provider_unavailable"; code: string }
   | { kind: "conflict"; code: "ledger_conflict" | "event_conflict" }
@@ -256,33 +254,6 @@ const nextDate = (date: string): string => {
   return value.toISOString().slice(0, 10);
 };
 
-const snapshotsMatch = (
-  coverage: CoverageRecord | null,
-  snapshot: SplitEventRange,
-): boolean =>
-  coverage?.requestedStartDate === snapshot.range.requestedStartDate &&
-  coverage.requestedEndDate === snapshot.range.requestedEndDate &&
-  coverage.snapshotProviderRevision === snapshot.range.providerRevision;
-
-const confirmationMatches = (
-  confirmation: SplitConfirmation | undefined,
-  snapshot: SplitEventRange,
-): boolean =>
-  confirmation?.requestedStartDate === snapshot.range.requestedStartDate &&
-  confirmation.requestedEndDate === snapshot.range.requestedEndDate &&
-  confirmation.providerRevision === snapshot.range.providerRevision;
-
-const coverageIsConfirmed = (
-  coverage: CoverageRecord | null,
-  snapshot: SplitEventRange,
-): boolean =>
-  snapshotsMatch(coverage, snapshot) &&
-  coverage?.status === "confirmed" &&
-  coverage.confirmedStartDate === snapshot.range.requestedStartDate &&
-  coverage.confirmedEndDate === snapshot.range.requestedEndDate &&
-  coverage.confirmedProviderRevision === snapshot.range.providerRevision &&
-  coverage.confirmedAt !== null;
-
 function providerErrorCode(error: unknown): string {
   const message =
     error instanceof Error ? error.message : "provider_unavailable";
@@ -337,6 +308,28 @@ export class LedgerService {
     if (!instrument)
       return { kind: "validation_error", code: "instrument_not_found" };
 
+    const activeActions = (
+      await this.actions.listForInstrument(resolved.instrumentId)
+    ).filter((action) => action.status === "active");
+    const activeSplits = activeActions.map(toActiveSplit);
+
+    let beforeHoldings: HoldingsByAccount;
+    let activeProposedHoldings: HoldingsByAccount;
+    try {
+      beforeHoldings = holdingsByAccount({
+        today,
+        transactions: resolved.before,
+        activeSplits,
+      });
+      activeProposedHoldings = holdingsByAccount({
+        today,
+        transactions: resolved.after,
+        activeSplits,
+      });
+    } catch {
+      return { kind: "validation_error", code: "negative_holdings" };
+    }
+
     let snapshot: SplitEventRange;
     try {
       snapshot = await this.dependencies.corporateActionProvider.getSplits(
@@ -345,26 +338,66 @@ export class LedgerService {
         today,
       );
     } catch (error) {
-      return { kind: "provider_unavailable", code: providerErrorCode(error) };
+      const coverage = await this.coverageFor(
+        resolved.instrumentId,
+        DEFAULT_SPLIT_PROVIDER,
+      );
+      return this.commitResolvedMutation({
+        input,
+        resolved,
+        timestamp,
+        today,
+        beforeHoldings,
+        proposedHoldings: activeProposedHoldings,
+        targetSplits: activeSplits,
+        splitStatements: [
+          this.unavailableCoverageStatement({
+            instrumentId: resolved.instrumentId,
+            startDate: resolved.changedStartDate,
+            endDate: today,
+            timestamp,
+            code: providerErrorCode(error),
+            coverage,
+          }),
+        ],
+        warningCode: "split_history_unavailable",
+      });
     }
     if (
       snapshot.symbol !== instrument.providerSymbol.toUpperCase() ||
       snapshot.range.requestedStartDate !== resolved.changedStartDate ||
       snapshot.range.requestedEndDate !== today
     ) {
-      return {
-        kind: "provider_unavailable",
-        code: "provider_snapshot_mismatch",
-      };
+      const coverage = await this.coverageFor(
+        resolved.instrumentId,
+        DEFAULT_SPLIT_PROVIDER,
+      );
+      return this.commitResolvedMutation({
+        input,
+        resolved,
+        timestamp,
+        today,
+        beforeHoldings,
+        proposedHoldings: activeProposedHoldings,
+        targetSplits: activeSplits,
+        splitStatements: [
+          this.unavailableCoverageStatement({
+            instrumentId: resolved.instrumentId,
+            startDate: resolved.changedStartDate,
+            endDate: today,
+            timestamp,
+            code: "provider_snapshot_mismatch",
+            coverage,
+          }),
+        ],
+        warningCode: "split_history_unavailable",
+      });
     }
 
     const coverage = await this.coverageFor(
       resolved.instrumentId,
       snapshot.range.provider,
     );
-    const activeActions = (
-      await this.actions.listForInstrument(resolved.instrumentId)
-    ).filter((action) => action.status === "active");
     const candidateSplits = this.proposedSplits(activeActions, snapshot);
 
     let proposedHoldings: HoldingsByAccount;
@@ -375,60 +408,85 @@ export class LedgerService {
         activeSplits: candidateSplits,
       });
     } catch {
-      if (!this.isCandidateRefreshNeeded(coverage, snapshot)) {
-        return { kind: "validation_error", code: "negative_holdings" };
-      }
-      const persisted = await this.persistReviewState({
+      return this.commitResolvedMutation({
         input,
-        snapshot,
-        instrumentId: resolved.instrumentId,
-        changedStartDate: resolved.changedStartDate,
+        resolved,
         timestamp,
-        previousCoverage: coverage,
-        status: "conflict",
-        candidateStatus: "quarantined",
-        conflict: "negative_history",
-      });
-      return persisted ?? { kind: "candidate_conflict", snapshot };
-    }
-
-    const authorized =
-      coverageIsConfirmed(coverage, snapshot) ||
-      confirmationMatches(input.confirmation, snapshot);
-    if (!authorized) {
-      if (this.isCandidateRefreshNeeded(coverage, snapshot)) {
-        const persisted = await this.persistReviewState({
-          input,
-          snapshot,
-          instrumentId: resolved.instrumentId,
-          changedStartDate: resolved.changedStartDate,
-          timestamp,
-          previousCoverage: coverage,
-          status: "review_required",
-          candidateStatus: "candidate",
-          conflict: null,
-        });
-        if (persisted) return persisted;
-      }
-      return { kind: "review_required", snapshot };
-    }
-
-    let beforeHoldings: HoldingsByAccount;
-    try {
-      beforeHoldings = holdingsByAccount({
         today,
-        transactions: resolved.before,
-        activeSplits: activeActions.map(toActiveSplit),
+        beforeHoldings,
+        proposedHoldings: activeProposedHoldings,
+        targetSplits: activeSplits,
+        splitStatements: this.splitConflictStatements({
+          instrumentId: resolved.instrumentId,
+          snapshot,
+          timestamp,
+          coverage,
+          today,
+        }),
+        warningCode: "split_history_conflict",
       });
-    } catch {
-      return { kind: "validation_error", code: "negative_holdings" };
     }
 
-    const withinPositionLimit = await this.withinPositionLimit({
+    return this.commitResolvedMutation({
+      input,
+      resolved,
+      timestamp,
       today,
-      targetInstrumentId: resolved.instrumentId,
-      targetTransactions: resolved.after,
+      beforeHoldings,
+      proposedHoldings,
       targetSplits: candidateSplits,
+      splitStatements: [
+        ...this.candidateInsertStatements(
+          resolved.instrumentId,
+          snapshot,
+          timestamp,
+          "candidate",
+          null,
+        ),
+        ...this.promotionStatements(resolved.instrumentId, snapshot, timestamp),
+        ...(coverage
+          ? [
+              this.revisions.bumpRangeStatement(
+                coverage.requestedStartDate,
+                coverage.requestedEndDate,
+                timestamp,
+              ),
+              this.revisions.bumpLatestForRangeStatement(
+                coverage.requestedStartDate,
+                coverage.requestedEndDate,
+                timestamp,
+                today,
+              ),
+            ]
+          : []),
+        this.actions.upsertCoverageStatement(
+          this.coverageFromSnapshot({
+            instrumentId: resolved.instrumentId,
+            snapshot,
+            timestamp,
+            status: "confirmed",
+          }),
+        ),
+      ],
+    });
+  }
+
+  private async commitResolvedMutation(input: {
+    input: ApplyLedgerMutationInput;
+    resolved: ResolvedProposal;
+    timestamp: string;
+    today: string;
+    beforeHoldings: HoldingsByAccount;
+    proposedHoldings: HoldingsByAccount;
+    targetSplits: readonly ActiveSplit[];
+    splitStatements: D1PreparedStatement[];
+    warningCode?: LedgerWarningCode;
+  }): Promise<LedgerMutationResult> {
+    const withinPositionLimit = await this.withinPositionLimit({
+      today: input.today,
+      targetInstrumentId: input.resolved.instrumentId,
+      targetTransactions: input.resolved.after,
+      targetSplits: input.targetSplits,
     });
     if (!withinPositionLimit)
       return { kind: "validation_error", code: "position_limit" };
@@ -437,70 +495,40 @@ export class LedgerService {
     const workId = this.newId();
     const mutationId = this.newId();
     const intervals = this.changedEligibilityIntervals(
-      beforeHoldings,
-      proposedHoldings,
-      resolved.changedStartDate,
-      today,
+      input.beforeHoldings,
+      input.proposedHoldings,
+      input.resolved.changedStartDate,
+      input.today,
     );
     const statements = [
       this.mutationTokenStatement({
         id: mutationId,
-        expectedRevision: input.expectedPositionBasisRevision,
-        kind: resolved.mutationKind,
-        createdAt: timestamp,
-        eventGuard: resolved.existing,
+        expectedRevision: input.input.expectedPositionBasisRevision,
+        kind: input.resolved.mutationKind,
+        createdAt: input.timestamp,
+        eventGuard: input.resolved.existing,
       }),
-      ...this.candidateInsertStatements(
-        resolved.instrumentId,
-        snapshot,
-        timestamp,
-        "candidate",
-        null,
-      ),
-      ...this.promotionStatements(resolved.instrumentId, snapshot, timestamp),
-      ...(coverage
-        ? [
-            this.revisions.bumpRangeStatement(
-              coverage.requestedStartDate,
-              coverage.requestedEndDate,
-              timestamp,
-            ),
-            this.revisions.bumpLatestForRangeStatement(
-              coverage.requestedStartDate,
-              coverage.requestedEndDate,
-              timestamp,
-              today,
-            ),
-          ]
-        : []),
-      this.actions.upsertCoverageStatement(
-        this.coverageFromSnapshot({
-          instrumentId: resolved.instrumentId,
-          snapshot,
-          timestamp,
-          status: "confirmed",
-        }),
-      ),
-      ...this.transactionStatements(resolved),
+      ...input.splitStatements,
+      ...this.transactionStatements(input.resolved),
       ...this.reconciliationStatements({
         jobId,
         workId,
-        instrumentId: resolved.instrumentId,
-        startDate: resolved.changedStartDate,
-        endDate: today,
+        instrumentId: input.resolved.instrumentId,
+        startDate: input.resolved.changedStartDate,
+        endDate: input.today,
         intervals,
-        timestamp,
+        timestamp: input.timestamp,
       }),
       this.revisions.bumpRangeStatement(
-        resolved.changedStartDate,
-        today,
-        timestamp,
+        input.resolved.changedStartDate,
+        input.today,
+        input.timestamp,
       ),
       this.revisions.bumpLatestForRangeStatement(
-        resolved.changedStartDate,
-        today,
-        timestamp,
-        today,
+        input.resolved.changedStartDate,
+        input.today,
+        input.timestamp,
+        input.today,
       ),
     ];
     try {
@@ -511,19 +539,16 @@ export class LedgerService {
 
     return {
       kind: "committed",
-      positionBasisRevision: input.expectedPositionBasisRevision + 1,
+      positionBasisRevision: input.input.expectedPositionBasisRevision + 1,
       pipelineJobId: jobId,
-      transactionId: resolved.transactionToWrite?.id ?? null,
+      transactionId: input.resolved.transactionToWrite?.id ?? null,
+      ...(input.warningCode ? { warningCode: input.warningCode } : {}),
     };
   }
 
-  /**
-   * Promotes a previously reviewed, server-fetched split snapshot without
-   * accepting any corporate-action rows from the client. The confirmation is
-   * guarded by the same position-basis revision as transaction mutations.
-   */
-  async confirmSplitHistory(
-    input: ConfirmSplitHistoryInput,
+  /** Refreshes provider-owned split facts without rewriting transaction rows. */
+  async refreshSplitHistory(
+    input: RefreshSplitHistoryInput,
   ): Promise<LedgerMutationResult> {
     if (
       !Number.isInteger(input.expectedPositionBasisRevision) ||
@@ -537,9 +562,6 @@ export class LedgerService {
 
     const timestamp = this.now().toISOString();
     const today = easternMarketDate(timestamp);
-    if (input.confirmation.requestedEndDate !== today) {
-      return { kind: "validation_error", code: "invalid_confirmation" };
-    }
     const instrument = await this.instruments.findById(input.instrumentId);
     if (!instrument)
       return { kind: "validation_error", code: "instrument_not_found" };
@@ -548,40 +570,37 @@ export class LedgerService {
     try {
       snapshot = await this.dependencies.corporateActionProvider.getSplits(
         instrument.providerSymbol,
-        input.confirmation.requestedStartDate,
-        input.confirmation.requestedEndDate,
+        input.requestedStartDate,
+        today,
       );
     } catch (error) {
+      const coverage = await this.coverageFor(
+        input.instrumentId,
+        DEFAULT_SPLIT_PROVIDER,
+      );
+      await this.unavailableCoverageStatement({
+        instrumentId: input.instrumentId,
+        startDate: input.requestedStartDate,
+        endDate: today,
+        timestamp,
+        code: providerErrorCode(error),
+        coverage,
+      }).run();
       return { kind: "provider_unavailable", code: providerErrorCode(error) };
     }
     const coverage = await this.coverageFor(
       input.instrumentId,
       snapshot.range.provider,
     );
-    if (snapshot.symbol !== instrument.providerSymbol.toUpperCase()) {
+    if (
+      snapshot.symbol !== instrument.providerSymbol.toUpperCase() ||
+      snapshot.range.requestedStartDate !== input.requestedStartDate ||
+      snapshot.range.requestedEndDate !== today
+    ) {
       return {
         kind: "provider_unavailable",
         code: "provider_snapshot_mismatch",
       };
-    }
-    if (!confirmationMatches(input.confirmation, snapshot)) {
-      if (this.isCandidateRefreshNeeded(coverage, snapshot)) {
-        const persisted = await this.persistConfirmationReviewState({
-          expectedPositionBasisRevision: input.expectedPositionBasisRevision,
-          instrumentId: input.instrumentId,
-          snapshot,
-          timestamp,
-          previousCoverage: coverage,
-        });
-        if (persisted) return persisted;
-      }
-      return { kind: "review_required", snapshot };
-    }
-    if (
-      !snapshotsMatch(coverage, snapshot) ||
-      coverage?.status !== "review_required"
-    ) {
-      return { kind: "review_required", snapshot };
     }
 
     const activeActions = (
@@ -604,6 +623,26 @@ export class LedgerService {
         activeSplits: this.proposedSplits(activeActions, snapshot),
       });
     } catch {
+      const mutationId = this.newId();
+      try {
+        await this.dependencies.db.batch([
+          this.positionBasis.mutationTokenStatement({
+            id: mutationId,
+            expectedRevision: input.expectedPositionBasisRevision,
+            kind: "action_quarantine",
+            createdAt: timestamp,
+          }),
+          ...this.splitConflictStatements({
+            instrumentId: input.instrumentId,
+            snapshot,
+            timestamp,
+            coverage,
+            today,
+          }),
+        ]);
+      } catch (error) {
+        return this.batchFailure(error);
+      }
       return { kind: "candidate_conflict", snapshot };
     }
 
@@ -915,16 +954,6 @@ export class LedgerService {
     );
   }
 
-  private isCandidateRefreshNeeded(
-    coverage: CoverageRecord | null,
-    snapshot: SplitEventRange,
-  ): boolean {
-    // A normal invalid transaction must not be misreported as a provider
-    // conflict merely because its already-confirmed snapshot is not in review.
-    // Candidate quarantine is reserved for a newly fetched snapshot.
-    return !snapshotsMatch(coverage, snapshot);
-  }
-
   private coverageFromSnapshot(input: {
     instrumentId: string;
     snapshot: SplitEventRange;
@@ -956,6 +985,96 @@ export class LedgerService {
       errorMessage: input.errorMessage ?? null,
       updatedAt: input.timestamp,
     };
+  }
+
+  private unavailableCoverageStatement(input: {
+    instrumentId: string;
+    startDate: string;
+    endDate: string;
+    timestamp: string;
+    code: string;
+    coverage: CoverageRecord | null;
+  }): D1PreparedStatement {
+    return this.actions.upsertCoverageStatement({
+      instrumentId: input.instrumentId,
+      provider: input.coverage?.provider ?? DEFAULT_SPLIT_PROVIDER,
+      requestedStartDate: input.startDate,
+      requestedEndDate: input.endDate,
+      snapshotProviderRevision:
+        input.coverage?.snapshotProviderRevision ?? null,
+      retrievedAt: input.coverage?.retrievedAt ?? null,
+      confirmedStartDate: input.coverage?.confirmedStartDate ?? null,
+      confirmedEndDate: input.coverage?.confirmedEndDate ?? null,
+      confirmedProviderRevision:
+        input.coverage?.confirmedProviderRevision ?? null,
+      confirmedAt: input.coverage?.confirmedAt ?? null,
+      status: "unavailable",
+      errorCode: input.code,
+      errorMessage: "Split history will be retried automatically.",
+      updatedAt: input.timestamp,
+    });
+  }
+
+  private splitConflictStatements(input: {
+    instrumentId: string;
+    snapshot: SplitEventRange;
+    timestamp: string;
+    coverage: CoverageRecord | null;
+    today: string;
+  }): D1PreparedStatement[] {
+    return [
+      ...this.candidateInsertStatements(
+        input.instrumentId,
+        input.snapshot,
+        input.timestamp,
+        "quarantined",
+        "negative_history",
+      ),
+      ...input.snapshot.events.map((event) =>
+        this.dependencies.db
+          .prepare(
+            `UPDATE corporate_actions
+                SET status = 'quarantined', conflict_code = 'negative_history',
+                    conflict_message = 'candidate split would create negative historical holdings',
+                    updated_at = ?1
+              WHERE instrument_id = ?2 AND provider = ?3
+                AND provider_event_id = ?4 AND provider_revision = ?5`,
+          )
+          .bind(
+            input.timestamp,
+            input.instrumentId,
+            event.provider,
+            event.providerEventId,
+            event.providerRevision,
+          ),
+      ),
+      ...(input.coverage
+        ? [
+            this.revisions.bumpRangeStatement(
+              input.coverage.requestedStartDate,
+              input.coverage.requestedEndDate,
+              input.timestamp,
+            ),
+            this.revisions.bumpLatestForRangeStatement(
+              input.coverage.requestedStartDate,
+              input.coverage.requestedEndDate,
+              input.timestamp,
+              input.today,
+            ),
+          ]
+        : []),
+      this.actions.upsertCoverageStatement(
+        this.coverageFromSnapshot({
+          instrumentId: input.instrumentId,
+          snapshot: input.snapshot,
+          timestamp: input.timestamp,
+          status: "conflict",
+          errorCode: "negative_history",
+          errorMessage:
+            "candidate split would create negative historical holdings",
+        }),
+      ),
+    ];
   }
 
   private candidateInsertStatements(
@@ -1297,189 +1416,6 @@ export class LedgerService {
       if (positive > MAX_CURRENT_POSITIONS) return false;
     }
     return true;
-  }
-
-  private async persistReviewState(input: {
-    input: ApplyLedgerMutationInput;
-    snapshot: SplitEventRange;
-    instrumentId: string;
-    changedStartDate: string;
-    timestamp: string;
-    previousCoverage: CoverageRecord | null;
-    status: "review_required" | "conflict";
-    candidateStatus: "candidate" | "quarantined";
-    conflict: string | null;
-  }): Promise<LedgerMutationResult | null> {
-    const jobId = this.newId();
-    const workId = this.newId();
-    const mutationId = this.newId();
-    const kind: LedgerMutationKind =
-      input.status === "conflict" ? "action_quarantine" : "candidate_refresh";
-    const statements = [
-      this.positionBasis.mutationTokenStatement({
-        id: mutationId,
-        expectedRevision: input.input.expectedPositionBasisRevision,
-        kind,
-        createdAt: input.timestamp,
-      }),
-      ...this.candidateInsertStatements(
-        input.instrumentId,
-        input.snapshot,
-        input.timestamp,
-        input.candidateStatus,
-        input.conflict,
-      ),
-      ...(input.previousCoverage
-        ? [
-            this.revisions.bumpRangeStatement(
-              input.previousCoverage.requestedStartDate,
-              input.previousCoverage.requestedEndDate,
-              input.timestamp,
-            ),
-            this.revisions.bumpLatestForRangeStatement(
-              input.previousCoverage.requestedStartDate,
-              input.previousCoverage.requestedEndDate,
-              input.timestamp,
-              easternMarketDate(input.timestamp),
-            ),
-          ]
-        : []),
-      ...(input.candidateStatus === "quarantined"
-        ? input.snapshot.events.map((event) =>
-            this.dependencies.db
-              .prepare(
-                `UPDATE corporate_actions
-             SET status = 'quarantined', conflict_code = ?1, conflict_message = ?2,
-                 updated_at = ?3
-             WHERE instrument_id = ?4 AND provider = ?5 AND provider_event_id = ?6
-                   AND provider_revision = ?7`,
-              )
-              .bind(
-                input.conflict,
-                "candidate split would create negative historical holdings",
-                input.timestamp,
-                input.instrumentId,
-                event.provider,
-                event.providerEventId,
-                event.providerRevision,
-              ),
-          )
-        : []),
-      this.actions.upsertCoverageStatement(
-        this.coverageFromSnapshot({
-          instrumentId: input.instrumentId,
-          snapshot: input.snapshot,
-          timestamp: input.timestamp,
-          status: input.status,
-          errorCode: input.conflict,
-          errorMessage: input.conflict
-            ? "candidate split would create negative historical holdings"
-            : null,
-        }),
-      ),
-      ...this.reconciliationStatements({
-        jobId,
-        workId,
-        instrumentId: input.instrumentId,
-        startDate: input.changedStartDate,
-        endDate: input.snapshot.range.requestedEndDate,
-        intervals: [],
-        timestamp: input.timestamp,
-      }),
-      this.revisions.bumpRangeStatement(
-        input.changedStartDate,
-        input.snapshot.range.requestedEndDate,
-        input.timestamp,
-      ),
-      this.revisions.bumpLatestForRangeStatement(
-        input.changedStartDate,
-        input.snapshot.range.requestedEndDate,
-        input.timestamp,
-        easternMarketDate(input.timestamp),
-      ),
-    ];
-    try {
-      await this.dependencies.db.batch(statements);
-      return null;
-    } catch (error) {
-      return this.batchFailure(error);
-    }
-  }
-
-  private async persistConfirmationReviewState(input: {
-    expectedPositionBasisRevision: number;
-    instrumentId: string;
-    snapshot: SplitEventRange;
-    timestamp: string;
-    previousCoverage: CoverageRecord | null;
-  }): Promise<LedgerMutationResult | null> {
-    const jobId = this.newId();
-    const workId = this.newId();
-    const mutationId = this.newId();
-    const statements = [
-      this.positionBasis.mutationTokenStatement({
-        id: mutationId,
-        expectedRevision: input.expectedPositionBasisRevision,
-        kind: "candidate_refresh",
-        createdAt: input.timestamp,
-      }),
-      ...this.candidateInsertStatements(
-        input.instrumentId,
-        input.snapshot,
-        input.timestamp,
-        "candidate",
-        null,
-      ),
-      ...(input.previousCoverage
-        ? [
-            this.revisions.bumpRangeStatement(
-              input.previousCoverage.requestedStartDate,
-              input.previousCoverage.requestedEndDate,
-              input.timestamp,
-            ),
-            this.revisions.bumpLatestForRangeStatement(
-              input.previousCoverage.requestedStartDate,
-              input.previousCoverage.requestedEndDate,
-              input.timestamp,
-              easternMarketDate(input.timestamp),
-            ),
-          ]
-        : []),
-      this.actions.upsertCoverageStatement(
-        this.coverageFromSnapshot({
-          instrumentId: input.instrumentId,
-          snapshot: input.snapshot,
-          timestamp: input.timestamp,
-          status: "review_required",
-        }),
-      ),
-      ...this.reconciliationStatements({
-        jobId,
-        workId,
-        instrumentId: input.instrumentId,
-        startDate: input.snapshot.range.requestedStartDate,
-        endDate: input.snapshot.range.requestedEndDate,
-        intervals: [],
-        timestamp: input.timestamp,
-      }),
-      this.revisions.bumpRangeStatement(
-        input.snapshot.range.requestedStartDate,
-        input.snapshot.range.requestedEndDate,
-        input.timestamp,
-      ),
-      this.revisions.bumpLatestForRangeStatement(
-        input.snapshot.range.requestedStartDate,
-        input.snapshot.range.requestedEndDate,
-        input.timestamp,
-        easternMarketDate(input.timestamp),
-      ),
-    ];
-    try {
-      await this.dependencies.db.batch(statements);
-      return null;
-    } catch (error) {
-      return this.batchFailure(error);
-    }
   }
 
   private batchFailure(error: unknown): LedgerMutationResult {

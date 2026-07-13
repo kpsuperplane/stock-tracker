@@ -1,6 +1,5 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
-import { InstrumentRepository } from "../../db/instruments";
 import { YahooMarketDataProvider } from "../../providers/yahoo";
 import { YahooCorporateActionProvider } from "../../providers/yahoo-corporate-actions";
 import {
@@ -24,14 +23,6 @@ const APP_REQUEST_VALUE = "1";
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 50;
 
-const confirmationSchema = z
-  .object({
-    requestedStartDate: z.iso.date(),
-    requestedEndDate: z.iso.date(),
-    providerRevision: z.string().min(1).max(512),
-  })
-  .strict();
-
 const createSchema = z
   .object({
     symbol: z.string().min(1).max(32),
@@ -40,7 +31,6 @@ const createSchema = z
     side: z.enum(["buy", "sell"]),
     quantityDecimal: z.string().min(1).max(64),
     priceDecimal: z.string().min(1).max(64),
-    confirmation: confirmationSchema.optional(),
   })
   .strict();
 
@@ -51,20 +41,6 @@ const updateSchema = z
     side: z.enum(["buy", "sell"]),
     quantityDecimal: z.string().min(1).max(64),
     priceDecimal: z.string().min(1).max(64),
-    confirmation: confirmationSchema.optional(),
-  })
-  .strict();
-
-const deleteSchema = z
-  .object({
-    confirmation: confirmationSchema.optional(),
-  })
-  .strict();
-
-const confirmSchema = z
-  .object({
-    symbol: z.string().min(1).max(32),
-    confirmation: confirmationSchema,
   })
   .strict();
 
@@ -354,17 +330,6 @@ const mutationResponse = async (
   status: 200 | 201,
   options: { deleted?: true } = {},
 ): Promise<Response> => {
-  if (result.kind === "review_required") {
-    const positionBasisRevision = await currentPositionBasisRevision(context);
-    setPositionBasisHeaders(context, positionBasisRevision);
-    return error(
-      context,
-      409,
-      "split_review_required",
-      "Confirm the displayed split history before changing this transaction.",
-      { review: result.snapshot, positionBasisRevision },
-    );
-  }
   if (result.kind === "candidate_conflict") {
     const positionBasisRevision = await currentPositionBasisRevision(context);
     setPositionBasisHeaders(context, positionBasisRevision);
@@ -400,7 +365,6 @@ const mutationResponse = async (
       invalid_transaction: "Enter a valid completed transaction.",
       account_not_found: "The selected account does not exist or is archived.",
       invalid_position_basis_revision: "The portfolio revision is invalid.",
-      invalid_confirmation: "Confirm split history through the current date.",
       negative_holdings:
         "This change would create negative historical holdings.",
       position_limit: "The portfolio is limited to 100 current positions.",
@@ -434,6 +398,7 @@ const mutationResponse = async (
       ...(options.deleted ? { deleted: true } : {}),
       positionBasisRevision: result.positionBasisRevision,
       pipelineJobId: result.pipelineJobId,
+      ...(result.warningCode ? { warningCode: result.warningCode } : {}),
     },
     status,
   );
@@ -662,7 +627,6 @@ const createTransaction = async (context: EventContext) => {
       quantityDecimal: body.quantityDecimal,
       priceDecimal: body.priceDecimal,
     },
-    ...(body.confirmation ? { confirmation: body.confirmation } : {}),
   });
   return mutationResponse(context, result, 201);
 };
@@ -698,7 +662,6 @@ const updateTransaction = async (context: EventContext) => {
   }).apply({
     expectedPositionBasisRevision: positionBasisRevision,
     proposal,
-    ...(body.confirmation ? { confirmation: body.confirmation } : {}),
   });
   return mutationResponse(context, result, 200);
 };
@@ -715,11 +678,6 @@ const deleteTransaction = async (context: EventContext) => {
   const eventId = context.req.param("id");
   if (!eventId)
     return error(context, 422, "invalid_request", "The request is invalid.");
-  // DELETE requests from older clients have no body. New clients may include
-  // the server-fetched split snapshot confirmation when a review was required.
-  const body = context.req.raw.body
-    ? deleteSchema.parse(await context.req.json())
-    : {};
   const result = await new LedgerService({
     db: context.env.DB,
     corporateActionProvider: new YahooCorporateActionProvider(),
@@ -730,39 +688,8 @@ const deleteTransaction = async (context: EventContext) => {
       eventId,
       expectedEventRevision: eventRevision,
     },
-    ...(body.confirmation ? { confirmation: body.confirmation } : {}),
   });
   return mutationResponse(context, result, 200, { deleted: true });
-};
-
-const confirmSplitHistory = async (context: EventContext) => {
-  const rejected = sameOriginAndAppRequest(context);
-  if (rejected) return rejected;
-  const positionBasisRevision = expectedPositionBasis(context);
-  if (positionBasisRevision === null) return missingPrecondition(context);
-  const stale = await staleBasis(context, positionBasisRevision);
-  if (stale) return stale;
-  const body = confirmSchema.parse(await context.req.json());
-  const instrument = await new InstrumentRepository(
-    context.env.DB,
-  ).findBySymbol(body.symbol.trim().toUpperCase());
-  if (!instrument) {
-    return error(
-      context,
-      422,
-      "instrument_not_found",
-      "The selected symbol is not in the watchlist.",
-    );
-  }
-  const result = await new LedgerService({
-    db: context.env.DB,
-    corporateActionProvider: new YahooCorporateActionProvider(),
-  }).confirmSplitHistory({
-    expectedPositionBasisRevision: positionBasisRevision,
-    instrumentId: instrument.id,
-    confirmation: body.confirmation,
-  });
-  return mutationResponse(context, result, 200);
 };
 
 const methodNotAllowed = (allow: string) => (context: EventContext) => {
@@ -795,16 +722,3 @@ eventsRoutes.all("/*", methodNotAllowed("GET, POST, PATCH, DELETE"));
 // the product UI; mutations remain under `/api/events`.
 export const ledgerReadRoutes = new Hono<{ Bindings: Env }>();
 ledgerReadRoutes.get("/", timeline);
-
-export const corporateActionRoutes = new Hono<{ Bindings: Env }>();
-
-corporateActionRoutes.post("/confirm", confirmSplitHistory);
-corporateActionRoutes.all("/confirm", (context) => {
-  context.header("Allow", "POST");
-  return error(
-    context,
-    405,
-    "method_not_allowed",
-    "This corporate-action method is not supported.",
-  );
-});

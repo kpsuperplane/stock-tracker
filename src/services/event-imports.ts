@@ -37,7 +37,6 @@ import {
   withinPositionLimit,
 } from "./event-import-ledger";
 import {
-  confirmationMatches,
   coverageMatches,
   proposedSplits,
   providerErrorCode,
@@ -105,16 +104,8 @@ export type ImportPreviewResult =
   | { kind: "provider_unavailable"; code: string }
   | { kind: "conflict"; code: "ledger_conflict" };
 
-export interface ImportConfirmation {
-  instrumentId: string;
-  requestedStartDate: string;
-  requestedEndDate: string;
-  providerRevision: string;
-}
-
 export type ImportCommitResult =
   | { kind: "committed"; pipelineJobId: string; positionBasisRevision: number }
-  | { kind: "review_required"; reviews: ImportSplitReview[] }
   | { kind: "provider_unavailable"; code: string }
   | { kind: "validation_error"; code: string }
   | { kind: "conflict"; code: "ledger_conflict" }
@@ -494,7 +485,6 @@ export class EventImportsService {
   async commit(input: {
     batchId: string;
     expectedPositionBasisRevision: number;
-    confirmations: ImportConfirmation[];
   }): Promise<ImportCommitResult> {
     if (
       !Number.isInteger(input.expectedPositionBasisRevision) ||
@@ -546,12 +536,6 @@ export class EventImportsService {
       return { kind: "validation_error", code: "too_many_symbols" };
 
     await this.cleanup();
-    const confirmations = new Map(
-      input.confirmations.map((entry) => [entry.instrumentId, entry]),
-    );
-    if (confirmations.size !== input.confirmations.length)
-      return { kind: "validation_error", code: "duplicate_confirmation" };
-
     const instrumentIds = [...byInstrument.keys()];
     const resolvedInstruments = await instrumentsById(
       this.dependencies.db,
@@ -592,12 +576,11 @@ export class EventImportsService {
         snapshot.symbol !== instrument.providerSymbol.toUpperCase() ||
         snapshot.range.provider !== staged.provider ||
         snapshot.range.requestedStartDate !== staged.requestedStartDate ||
-        snapshot.range.requestedEndDate !== staged.requestedEndDate ||
-        snapshot.range.providerRevision !== staged.providerRevision
+        snapshot.range.requestedEndDate !== staged.requestedEndDate
       ) {
         return {
-          kind: "review_required",
-          reviews: [reviewFor(instrument, snapshot)],
+          kind: "provider_unavailable",
+          code: "provider_snapshot_mismatch",
         };
       }
       refreshed.push({ instrument, snapshot });
@@ -626,19 +609,6 @@ export class EventImportsService {
     );
     for (const { instrument, snapshot } of refreshed) {
       const group = byInstrument.get(instrument.id) ?? [];
-      const coverage =
-        coverageByKey.get(
-          this.coverageKey(instrument.id, snapshot.range.provider),
-        ) ?? null;
-      if (
-        !coverageMatches(coverage, snapshot) &&
-        !confirmationMatches(confirmations.get(instrument.id), snapshot)
-      ) {
-        return {
-          kind: "review_required",
-          reviews: [reviewFor(instrument, snapshot)],
-        };
-      }
       const rowsByAccount = new Map<string, NormalizedImportTransaction[]>();
       for (const row of group) {
         const rows = rowsByAccount.get(row.accountId) ?? [];

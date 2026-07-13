@@ -82,12 +82,6 @@ const rangeSnapshot = (
   events,
 });
 
-const confirming = (snapshotResult: SplitEventRange) => ({
-  requestedStartDate: snapshotResult.range.requestedStartDate,
-  requestedEndDate: snapshotResult.range.requestedEndDate,
-  providerRevision: snapshotResult.range.providerRevision,
-});
-
 const dynamicProvider = (
   revision = "snapshot-r1",
   events: SplitEventRange["events"] = [],
@@ -118,7 +112,7 @@ async function seedConfirmedCoverage(input: {
 }
 
 describe("LedgerService", () => {
-  it("requires review of a server-fetched split snapshot before a historical create", async () => {
+  it("automatically applies a server-fetched split snapshot before a historical create", async () => {
     await insertInstrument();
     const getSplits = vi.fn(async () => snapshot());
 
@@ -134,25 +128,25 @@ describe("LedgerService", () => {
       },
     });
 
-    expect(result).toEqual({ kind: "review_required", snapshot: snapshot() });
+    expect(result.kind).toBe("committed");
     expect(getSplits).toHaveBeenCalledWith("CASE", "2024-01-01", "2026-07-10");
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM transactions",
       ).first(),
-    ).toEqual({ count: 0 });
+    ).toEqual({ count: 1 });
     expect(
       await env.DB.prepare(
         `SELECT status, snapshot_provider_revision
          FROM corporate_action_coverage WHERE instrument_id = 'instrument-1'`,
       ).first(),
     ).toEqual({
-      status: "review_required",
+      status: "confirmed",
       snapshot_provider_revision: "snapshot-r1",
     });
   });
 
-  it("returns a retryable provider result without writing when the snapshot cannot be fetched", async () => {
+  it("commits with retry state when the split snapshot cannot be fetched", async () => {
     await insertInstrument();
     const result = await service({
       getSplits: async () => {
@@ -170,31 +164,27 @@ describe("LedgerService", () => {
       },
     });
 
-    expect(result).toEqual({
-      kind: "provider_unavailable",
-      code: "provider_http_429",
+    expect(result).toMatchObject({
+      kind: "committed",
+      warningCode: "split_history_unavailable",
     });
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM ledger_mutations",
       ).first(),
-    ).toEqual({ count: 0 });
+    ).toEqual({ count: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT status, error_code FROM corporate_action_coverage",
+      ).first(),
+    ).toEqual({ status: "unavailable", error_code: "provider_http_429" });
   });
 
-  it("commits an explicitly confirmed server snapshot with its transaction, action, job, and planning work", async () => {
+  it("commits a server snapshot with its transaction, action, job, and planning work", async () => {
     await insertInstrument();
     const provider = dynamicProvider("snapshot-r1", snapshot().events);
-    const expectedSnapshot = rangeSnapshot(
-      "CASE",
-      "2024-01-01",
-      "2026-07-10",
-      "snapshot-r1",
-      snapshot().events,
-    );
-
     const result = await service(provider).apply({
       expectedPositionBasisRevision: 0,
-      confirmation: confirming(expectedSnapshot),
       proposal: {
         kind: "create",
         instrumentId: "instrument-1",
@@ -278,13 +268,11 @@ describe("LedgerService", () => {
     });
   });
 
-  it("requires a new review when a proposal reaches earlier history than its confirmed range", async () => {
+  it("automatically refreshes when a proposal reaches earlier history", async () => {
     await insertInstrument();
     const provider = dynamicProvider();
-    const firstSnapshot = rangeSnapshot("CASE", "2025-01-01", "2026-07-10");
     const first = await service(provider).apply({
       expectedPositionBasisRevision: 0,
-      confirmation: confirming(firstSnapshot),
       proposal: {
         kind: "create",
         instrumentId: "instrument-1",
@@ -310,10 +298,12 @@ describe("LedgerService", () => {
         priceDecimal: "10",
       },
     });
-    expect(result).toMatchObject({
-      kind: "review_required",
-      snapshot: { range: { requestedStartDate: "2024-01-01" } },
-    });
+    expect(result.kind).toBe("committed");
+    expect(
+      await env.DB.prepare(
+        "SELECT requested_start_date, status FROM corporate_action_coverage",
+      ).first(),
+    ).toEqual({ requested_start_date: "2024-01-01", status: "confirmed" });
     const oldRangeAfter = await env.DB.prepare(
       "SELECT revision FROM fact_revision_buckets WHERE bucket_key = '2025-06'",
     ).first<{ revision: number }>();
@@ -322,13 +312,11 @@ describe("LedgerService", () => {
     );
   });
 
-  it("invalidates a prior confirmation when the provider snapshot revision changes", async () => {
+  it("automatically applies a new provider snapshot revision", async () => {
     await insertInstrument();
     const initialProvider = dynamicProvider();
-    const initialSnapshot = rangeSnapshot("CASE", "2025-01-01", "2026-07-10");
     await service(initialProvider).apply({
       expectedPositionBasisRevision: 0,
-      confirmation: confirming(initialSnapshot),
       proposal: {
         kind: "create",
         instrumentId: "instrument-1",
@@ -350,24 +338,22 @@ describe("LedgerService", () => {
         priceDecimal: "10",
       },
     });
-    expect(result).toMatchObject({
-      kind: "review_required",
-      snapshot: { range: { providerRevision: "snapshot-r2" } },
-    });
+    expect(result.kind).toBe("committed");
     expect(
       await env.DB.prepare(
-        "SELECT status FROM corporate_action_coverage",
+        "SELECT status, snapshot_provider_revision FROM corporate_action_coverage",
       ).first(),
-    ).toEqual({ status: "review_required" });
+    ).toEqual({
+      status: "confirmed",
+      snapshot_provider_revision: "snapshot-r2",
+    });
   });
 
   it("rejects negative histories and stale event or basis revisions before committing", async () => {
     await insertInstrument();
     const provider = dynamicProvider();
-    const confirmed = rangeSnapshot("CASE", "2025-01-01", "2026-07-10");
     const created = await service(provider).apply({
       expectedPositionBasisRevision: 0,
-      confirmation: confirming(confirmed),
       proposal: {
         kind: "create",
         instrumentId: "instrument-1",
@@ -428,10 +414,8 @@ describe("LedgerService", () => {
   it("quarantines a provider correction that makes historical holdings negative", async () => {
     await insertInstrument();
     const normal = dynamicProvider();
-    const firstSnapshot = rangeSnapshot("CASE", "2025-01-01", "2026-07-10");
     await service(normal).apply({
       expectedPositionBasisRevision: 0,
-      confirmation: confirming(firstSnapshot),
       proposal: {
         kind: "create",
         instrumentId: "instrument-1",
@@ -482,7 +466,10 @@ describe("LedgerService", () => {
         priceDecimal: "11",
       },
     });
-    expect(result.kind).toBe("candidate_conflict");
+    expect(result).toMatchObject({
+      kind: "committed",
+      warningCode: "split_history_conflict",
+    });
     expect(
       await env.DB.prepare(
         "SELECT status, conflict_code FROM corporate_actions",
@@ -490,11 +477,11 @@ describe("LedgerService", () => {
     ).toEqual({ status: "quarantined", conflict_code: "negative_history" });
   });
 
-  it("allows an unrelated instrument to commit while another one awaits review", async () => {
+  it("automatically enriches independent instruments", async () => {
     await insertInstrument("instrument-a", "A");
     await insertInstrument("instrument-b", "B");
     const provider = dynamicProvider();
-    const review = await service(provider).apply({
+    const first = await service(provider).apply({
       expectedPositionBasisRevision: 0,
       proposal: {
         kind: "create",
@@ -505,12 +492,10 @@ describe("LedgerService", () => {
         priceDecimal: "10",
       },
     });
-    expect(review.kind).toBe("review_required");
+    expect(first.kind).toBe("committed");
 
-    const bSnapshot = rangeSnapshot("B", "2025-01-01", "2026-07-10");
     const committed = await service(provider).apply({
       expectedPositionBasisRevision: 1,
-      confirmation: confirming(bSnapshot),
       proposal: {
         kind: "create",
         instrumentId: "instrument-b",
@@ -523,13 +508,11 @@ describe("LedgerService", () => {
     expect(committed.kind).toBe("committed");
   });
 
-  it("can resolve an edit by confirming and promoting the candidate snapshot in the same batch", async () => {
+  it("can resolve an edit while automatically promoting the provider snapshot", async () => {
     await insertInstrument();
     const normal = dynamicProvider();
-    const normalSnapshot = rangeSnapshot("CASE", "2025-01-01", "2026-07-10");
     const buy = await service(normal).apply({
       expectedPositionBasisRevision: 0,
-      confirmation: confirming(normalSnapshot),
       proposal: {
         kind: "create",
         instrumentId: "instrument-1",
@@ -564,18 +547,10 @@ describe("LedgerService", () => {
       providerEventId: "yahoo-chart-v8:CASE:split:2025-01-15",
       providerRevision: "2025-01-15|1:3",
     };
-    const correctedSnapshot = rangeSnapshot(
-      "CASE",
-      "2025-01-01",
-      "2026-07-10",
-      "snapshot-r2",
-      [correction],
-    );
     const resolved = await service(
       dynamicProvider("snapshot-r2", [correction]),
     ).apply({
       expectedPositionBasisRevision: 2,
-      confirmation: confirming(correctedSnapshot),
       proposal: {
         kind: "update",
         eventId: sell.transactionId,

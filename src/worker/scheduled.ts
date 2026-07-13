@@ -3,6 +3,7 @@ import { RunRepository } from "../db/runs";
 import { TickerRepository } from "../db/tickers";
 import { AlphaVantageDividendEventProvider } from "../providers/alpha-vantage-dividends";
 import { AlphaVantageEarningsProvider } from "../providers/alpha-vantage-earnings";
+import { YahooCorporateActionProvider } from "../providers/yahoo-corporate-actions";
 import { YahooDividendEventProvider } from "../providers/yahoo-dividends";
 import { AlphaVantageRequestBudget } from "../services/alpha-vantage-budget";
 import {
@@ -20,6 +21,7 @@ import {
   NORMALIZED_PLANNER_CRONS,
   ScheduledReconciliationService,
 } from "../services/scheduled-reconciliation";
+import { ScheduledSplitRefreshService } from "../services/split-refresh";
 import { WorkDispatcherService } from "../services/work-dispatcher";
 import { easternMarketDate } from "../shared/dates";
 import { runEarningsHistoryBackfill } from "./earnings-history";
@@ -118,6 +120,29 @@ export const handleScheduled = async (
   // is disabled (and available as the rollback path after enabling it).
   if (controller.cron !== LEGACY_SCREENING_CRON) return;
   const now = new Date(controller.scheduledTime).toISOString();
+  let splitRefresh: string | null = null;
+  try {
+    splitRefresh = JSON.stringify(
+      await new ScheduledSplitRefreshService({
+        db: env.DB,
+        provider: new YahooCorporateActionProvider(),
+        now: () => new Date(now),
+      }).refreshPending(),
+    );
+    logEvent("split_refresh_scheduled", {
+      scheduledTime: now,
+      result: splitRefresh,
+    });
+  } catch (error) {
+    splitRefresh = JSON.stringify({
+      status: "failed",
+      message: safeErrorMessage(error),
+    });
+    logEvent("split_refresh_failed", {
+      scheduledTime: now,
+      message: safeErrorMessage(error),
+    });
+  }
   const alphaBudget = new AlphaVantageRequestBudget(
     env.DB,
     easternMarketDate(now),
@@ -249,6 +274,7 @@ export const handleScheduled = async (
     compatibilitySeeded,
     compatibilityRetried,
     migration: migrationResult,
+    splits: splitRefresh,
     dividends: dividendRefresh,
     earnings: earningsRefresh,
     earningsHistory: earningsHistoryRefresh,

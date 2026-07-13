@@ -37,7 +37,6 @@ import {
   eventImportsApi,
   eventsApi,
   type ImportCommitResponse,
-  type SplitSnapshotLike,
   type TransactionMutationInput,
 } from "../api";
 import {
@@ -67,24 +66,7 @@ type PendingMutation =
       kind: "delete";
       id: string;
       eventRevision: number;
-      confirmation?: TransactionMutationInput["confirmation"];
     };
-
-type SplitReviewState = {
-  symbol: string;
-  snapshot: SplitSnapshotLike;
-  pending: PendingMutation;
-};
-
-/**
- * A split confirmation can advance the position-basis revision before the
- * original mutation is retried. Keep that response revision explicit instead
- * of relying on a state update racing the follow-up request.
- */
-export const resolveMutationBasisRevision = (
-  currentRevision: number,
-  confirmedRevision?: number,
-): number => confirmedRevision ?? currentRevision;
 
 export interface EventsPageProps {
   apiClient?: EventsApiClient;
@@ -109,20 +91,6 @@ const DialogCloseButton = ({
       isIconOnly
       onClick={() => onOpenChange(false)}
     />
-  );
-};
-
-const isSplitSnapshot = (value: unknown): value is SplitSnapshotLike => {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<SplitSnapshotLike>;
-  return (
-    typeof candidate.symbol === "string" &&
-    typeof candidate.range === "object" &&
-    candidate.range !== null &&
-    typeof candidate.range.requestedStartDate === "string" &&
-    typeof candidate.range.requestedEndDate === "string" &&
-    typeof candidate.range.providerRevision === "string" &&
-    Array.isArray(candidate.events)
   );
 };
 
@@ -332,97 +300,6 @@ const TransactionDialog = ({
   );
 };
 
-const SplitReviewDialog = ({
-  state,
-  isOpen,
-  onOpenChange,
-  onConfirm,
-  isConfirming,
-}: {
-  state: SplitReviewState | null;
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => unknown;
-  onConfirm: () => void;
-  isConfirming: boolean;
-}) => {
-  const { t } = useI18n();
-  if (!state) return null;
-  const { snapshot } = state;
-  return (
-    <Dialog
-      isOpen={isOpen}
-      onOpenChange={onOpenChange}
-      purpose="form"
-      width="min(680px, calc(100vw - 2rem))"
-      maxHeight="90vh"
-      padding={4}
-    >
-      <DialogHeader
-        title={t("splitReviewTitle")}
-        subtitle={t("splitReviewDescription")}
-        endContent={<DialogCloseButton onOpenChange={onOpenChange} />}
-      />
-      <VStack gap={3}>
-        <Banner
-          status={snapshot.range.isComplete ? "info" : "warning"}
-          title={`${snapshot.symbol} · ${t("requestedRange")}: ${snapshot.range.requestedStartDate} → ${snapshot.range.requestedEndDate}`}
-          description={`${t("source")}: ${snapshot.range.provider} · ${t("providerRevision")}: ${snapshot.range.providerRevision}`}
-        />
-        {!snapshot.range.isComplete && (
-          <Banner status="warning" title={t("splitReviewIncomplete")} />
-        )}
-        {snapshot.events.length === 0 ? (
-          <div>{t("splitReviewNoEvents")}</div>
-        ) : (
-          <Table
-            tableProps={{ className: "product-split-table" }}
-            density="compact"
-            dividers="rows"
-            textOverflow="truncate"
-            aria-label={t("splitReviewTitle")}
-          >
-            <TableHeader>
-              <TableRow isHeaderRow>
-                <TableHeaderCell>{t("date")}</TableHeaderCell>
-                <TableHeaderCell>{t("splitRatio")}</TableHeaderCell>
-                <TableHeaderCell>{t("source")}</TableHeaderCell>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {snapshot.events.map((event) => (
-                <TableRow
-                  key={`${event.providerEventId}-${event.providerRevision}`}
-                >
-                  <TableCell>{event.effectiveDate}</TableCell>
-                  <TableCell>
-                    {event.numerator}:{event.denominator}
-                  </TableCell>
-                  <TableCell>{event.provider}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-        <HStack gap={2} justify="end" wrap="wrap">
-          <Button
-            variant="ghost"
-            label={t("cancel")}
-            isDisabled={isConfirming}
-            onClick={() => onOpenChange(false)}
-          />
-          <Button
-            variant="primary"
-            label={isConfirming ? t("save") : t("confirmSplit")}
-            isLoading={isConfirming}
-            isDisabled={isConfirming}
-            onClick={onConfirm}
-          />
-        </HStack>
-      </VStack>
-    </Dialog>
-  );
-};
-
 export const EventsPage = ({
   apiClient = eventsApi,
   importApiClient = eventImportsApi,
@@ -449,8 +326,6 @@ export const EventsPage = ({
   const [isMutating, setIsMutating] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [pendingJobId, setPendingJobId] = useState<string | null>(null);
-  const [review, setReview] = useState<SplitReviewState | null>(null);
-  const [isConfirmingReview, setIsConfirmingReview] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
 
   const load = useCallback(
@@ -515,50 +390,25 @@ export const EventsPage = ({
     setIsAddOpen(false);
     setEditing(null);
     setDeleting(null);
-    setReview(null);
+    const warning =
+      result.warningCode === "split_history_unavailable"
+        ? t("splitHistoryUnavailableWarning")
+        : result.warningCode === "split_history_conflict"
+          ? t("splitHistoryConflictWarning")
+          : null;
     toast({
-      body: `${t("pendingPipeline")}: ${result.pipelineJobId}`,
+      body: warning ?? `${t("pendingPipeline")}: ${result.pipelineJobId}`,
       type: "info",
     });
     await load(true);
   };
 
-  const mutationFailure = (caught: unknown, pending: PendingMutation) => {
+  const mutationFailure = (caught: unknown) => {
     if (caught instanceof ApiClientError) {
       const details = caught.details;
       const basis = details.positionBasisRevision;
       if (typeof basis === "number" && Number.isSafeInteger(basis)) {
         setPositionBasisRevision(basis);
-      }
-      if (
-        (caught.code === "split_review_required" ||
-          caught.code === "split_correction_conflict") &&
-        isSplitSnapshot(
-          caught.code === "split_review_required"
-            ? details.review
-            : details.correction,
-        )
-      ) {
-        const snapshot = (
-          caught.code === "split_review_required"
-            ? details.review
-            : details.correction
-        ) as SplitSnapshotLike;
-        const symbol =
-          pending.kind === "create"
-            ? pending.input.symbol
-            : pending.kind === "update"
-              ? events.find((event) => event.id === pending.id)?.symbol
-              : events.find((event) => event.id === pending.id)?.symbol;
-        if (symbol) {
-          setReview({ symbol, snapshot, pending });
-          setMutationError(
-            caught.code === "split_correction_conflict"
-              ? t("splitCorrection")
-              : t("splitReviewDescription"),
-          );
-          return;
-        }
       }
     }
     setMutationError(t(errorCopyKey(caught)));
@@ -591,11 +441,10 @@ export const EventsPage = ({
                 pending.id,
                 basisRevision,
                 pending.eventRevision,
-                pending.confirmation,
               );
       await mutationSucceeded(result);
     } catch (caught) {
-      mutationFailure(caught, pending);
+      mutationFailure(caught);
     } finally {
       setIsMutating(false);
     }
@@ -623,43 +472,6 @@ export const EventsPage = ({
       id: deleting.id,
       eventRevision: deleting.revision,
     });
-  };
-
-  const handleConfirmReview = async () => {
-    if (!review) return;
-    setIsConfirmingReview(true);
-    try {
-      const confirmation = {
-        requestedStartDate: review.snapshot.range.requestedStartDate,
-        requestedEndDate: review.snapshot.range.requestedEndDate,
-        providerRevision: review.snapshot.range.providerRevision,
-      };
-      const result = await apiClient.confirmSplit(
-        review.symbol,
-        confirmation,
-        positionBasisRevision,
-      );
-      setPositionBasisRevision(result.positionBasisRevision);
-      const pending = review.pending;
-      setReview(null);
-      const withConfirmation =
-        pending.kind === "create"
-          ? { ...pending, input: { ...pending.input, confirmation } }
-          : pending.kind === "update"
-            ? { ...pending, input: { ...pending.input, confirmation } }
-            : { ...pending, confirmation };
-      await execute(
-        withConfirmation,
-        resolveMutationBasisRevision(
-          positionBasisRevision,
-          result.positionBasisRevision,
-        ),
-      );
-    } catch (caught) {
-      mutationFailure(caught, review.pending);
-    } finally {
-      setIsConfirmingReview(false);
-    }
   };
 
   const onImportCommitted = (result: ImportCommitResponse) => {
@@ -927,16 +739,6 @@ export const EventsPage = ({
           </HStack>
         </VStack>
       </Dialog>
-
-      <SplitReviewDialog
-        state={review}
-        isOpen={review !== null}
-        onOpenChange={(open) => {
-          if (!open) setReview(null);
-        }}
-        onConfirm={() => void handleConfirmReview()}
-        isConfirming={isConfirmingReview}
-      />
 
       <EventImportDialog
         isOpen={isImportOpen}

@@ -7,7 +7,6 @@ import type {
   PortfolioReadModelDto,
   ReportDto,
   ReportSummaryDto,
-  SplitConfirmationDto,
   StatusReadModelDto,
   TransactionEventDto,
 } from "../shared/contracts";
@@ -169,7 +168,6 @@ export type TransactionMutationInput = {
   side: "buy" | "sell";
   quantityDecimal: string;
   priceDecimal: string;
-  confirmation?: SplitConfirmationDto;
 };
 
 export type EventMutationResponse = {
@@ -177,6 +175,7 @@ export type EventMutationResponse = {
   deleted?: true;
   positionBasisRevision: number;
   pipelineJobId: string;
+  warningCode?: "split_history_unavailable" | "split_history_conflict";
 };
 
 export type SplitSnapshotLike = {
@@ -244,10 +243,6 @@ export type ImportPreviewResponse = {
   expiresAt: string;
 };
 
-export type ImportConfirmation = SplitConfirmationDto & {
-  instrumentId: string;
-};
-
 export type ImportCommitResponse = {
   kind: "committed";
   pipelineJobId: string;
@@ -271,12 +266,6 @@ export interface EventsApiClient {
     id: string,
     positionBasisRevision: number,
     eventRevision: number,
-    confirmation?: SplitConfirmationDto,
-  ) => Promise<EventMutationResponse>;
-  confirmSplit: (
-    symbol: string,
-    confirmation: SplitConfirmationDto,
-    positionBasisRevision: number,
   ) => Promise<EventMutationResponse>;
 }
 
@@ -285,7 +274,6 @@ export interface EventImportsApiClient {
   commit: (
     batchId: string,
     positionBasisRevision: number,
-    confirmations: ImportConfirmation[],
   ) => Promise<ImportCommitResponse>;
 }
 
@@ -335,17 +323,10 @@ export const eventsApi: EventsApiClient = {
       headers: mutationHeaders(positionBasisRevision, eventRevision),
       body: JSON.stringify(input),
     }),
-  remove: (id, positionBasisRevision, eventRevision, confirmation) =>
+  remove: (id, positionBasisRevision, eventRevision) =>
     request<EventMutationResponse>(`/api/events/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: mutationHeaders(positionBasisRevision, eventRevision),
-      body: JSON.stringify(confirmation ? { confirmation } : {}),
-    }),
-  confirmSplit: (symbol, confirmation, positionBasisRevision) =>
-    request<EventMutationResponse>("/api/corporate-actions/confirm", {
-      method: "POST",
-      headers: mutationHeaders(positionBasisRevision),
-      body: JSON.stringify({ symbol, confirmation }),
     }),
 };
 
@@ -359,13 +340,13 @@ export const eventImportsApi: EventImportsApiClient = {
       body: form,
     });
   },
-  commit: (batchId, positionBasisRevision, confirmations) =>
+  commit: (batchId, positionBasisRevision) =>
     request<ImportCommitResponse>(
       `/api/event-imports/${encodeURIComponent(batchId)}/commit`,
       {
         method: "POST",
         headers: mutationHeaders(positionBasisRevision),
-        body: JSON.stringify({ confirmations }),
+        body: JSON.stringify({}),
       },
     ),
 };

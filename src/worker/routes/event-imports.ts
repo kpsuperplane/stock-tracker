@@ -13,20 +13,7 @@ type ImportContext = Context<{ Bindings: Env }>;
 const APP_REQUEST_HEADER = "X-Stock-Tracker-Request";
 const APP_REQUEST_VALUE = "1";
 
-const confirmationSchema = z
-  .object({
-    instrumentId: z.string().min(1).max(128),
-    requestedStartDate: z.iso.date(),
-    requestedEndDate: z.iso.date(),
-    providerRevision: z.string().min(1).max(512),
-  })
-  .strict();
-
-const commitSchema = z
-  .object({
-    confirmations: z.array(confirmationSchema).max(100),
-  })
-  .strict();
+const commitSchema = z.object({}).strict();
 
 const error = (
   context: ImportContext,
@@ -132,14 +119,6 @@ const commitResponse = (
     );
     return context.json(result, 201);
   }
-  if (result.kind === "review_required")
-    return error(
-      context,
-      409,
-      "split_review_required",
-      "Confirm the displayed split history before importing.",
-      { reviews: result.reviews },
-    );
   if (result.kind === "provider_unavailable")
     return error(
       context,
@@ -207,7 +186,7 @@ const commit = async (context: ImportContext) => {
       "precondition_required",
       "Provide a valid portfolio revision.",
     );
-  const body = commitSchema.parse(await context.req.json());
+  commitSchema.parse(await context.req.json());
   const batchId = context.req.param("id");
   if (!batchId)
     return error(context, 422, "invalid_request", "The request is invalid.");
@@ -217,7 +196,6 @@ const commit = async (context: ImportContext) => {
   }).commit({
     batchId,
     expectedPositionBasisRevision: revision,
-    confirmations: body.confirmations,
   });
   return commitResponse(context, result);
 };

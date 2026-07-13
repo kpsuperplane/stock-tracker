@@ -582,11 +582,6 @@ describe("portfolio performance budgets", () => {
         quantityDecimal: "1",
         priceDecimal: "100",
       },
-      confirmation: {
-        requestedStartDate: "2021-01-01",
-        requestedEndDate: "2026-07-11",
-        providerRevision: "fixture-r1",
-      },
     });
     expect(mutation.kind).toBe("committed");
     expect(splitCalls).toHaveBeenCalledTimes(1);

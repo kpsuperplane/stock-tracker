@@ -7,11 +7,7 @@ import { accountRoutes } from "./routes/accounts";
 import { backfillRoutes } from "./routes/backfills";
 import { earningsRoutes } from "./routes/earnings";
 import { eventImportRoutes } from "./routes/event-imports";
-import {
-  corporateActionRoutes,
-  eventsRoutes,
-  ledgerReadRoutes,
-} from "./routes/events";
+import { eventsRoutes, ledgerReadRoutes } from "./routes/events";
 import {
   calendarRoutes,
   jobRoutes,
@@ -120,7 +116,6 @@ export const createApp = () => {
   app.route("/api/accounts", accountRoutes);
   app.route("/api/backfills", backfillRoutes);
   app.route("/api/earnings", earningsRoutes);
-  app.route("/api/corporate-actions", corporateActionRoutes);
   app.route("/api/events", eventsRoutes);
   app.route("/data/ledger", ledgerReadRoutes);
   app.route("/api/event-imports", eventImportRoutes);

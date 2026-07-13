@@ -6,16 +6,13 @@ import type { InstrumentRecord } from "../db/instruments";
 import type { ActiveSplit } from "../domain/holdings";
 import type { SplitEventRange } from "../providers/corporate-actions";
 
-export interface SnapshotConfirmation {
-  requestedStartDate: string;
-  requestedEndDate: string;
-  providerRevision: string;
-}
-
-export interface SnapshotReview extends SnapshotConfirmation {
+export interface SnapshotReview {
   instrumentId: string;
   symbol: string;
+  requestedStartDate: string;
+  requestedEndDate: string;
   provider: string;
+  providerRevision: string;
   snapshot: SplitEventRange;
 }
 
@@ -37,14 +34,6 @@ export const coverageMatches = (
   coverage.confirmedEndDate === snapshot.range.requestedEndDate &&
   coverage.confirmedProviderRevision === snapshot.range.providerRevision &&
   coverage.confirmedAt !== null;
-
-export const confirmationMatches = (
-  confirmation: SnapshotConfirmation | undefined,
-  snapshot: SplitEventRange,
-): boolean =>
-  confirmation?.requestedStartDate === snapshot.range.requestedStartDate &&
-  confirmation.requestedEndDate === snapshot.range.requestedEndDate &&
-  confirmation.providerRevision === snapshot.range.providerRevision;
 
 export const reviewFor = (
   instrument: InstrumentRecord,

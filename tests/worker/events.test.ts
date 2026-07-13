@@ -560,10 +560,11 @@ describe("portfolio event routes", () => {
       }),
     );
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(201);
     expect(
-      (await response.json<{ error: { code: string } }>()).error.code,
-    ).toBe("split_review_required");
+      (await response.json<{ transaction: { symbol: string } }>()).transaction
+        .symbol,
+    ).toBe("SHOP.TO");
     expect(
       await env.DB.prepare(
         "SELECT id, symbol, provider_symbol FROM instruments WHERE symbol = 'SHOP.TO'",
@@ -737,106 +738,18 @@ describe("portfolio event routes", () => {
     expect(mismatchedHost.status).toBe(403);
   });
 
-  it("returns server-fetched split review data, then commits canonical transaction DTOs after explicit confirmation", async () => {
+  it("automatically applies split history and returns canonical transaction DTOs", async () => {
     await insertInstrument();
-    const provider = mockSplitProvider();
-    const initial = await exports.default.fetch(
+    mockSplitProvider();
+    const created = await exports.default.fetch(
       new Request("http://local/api/events", {
         method: "POST",
         headers: mutationHeaders('"position-basis-0"'),
         body: JSON.stringify(createBody()),
       }),
     );
-    expect(initial.status).toBe(409);
-    expect(initial.headers.get("ETag")).toBe('"position-basis-1"');
-    const reviewBasis = initial.headers.get("X-Position-Basis-Revision");
-    expect(reviewBasis).toBe("1");
-    const review = await initial.json<{
-      error: { code: string; message: string };
-      review: {
-        range: {
-          requestedStartDate: string;
-          requestedEndDate: string;
-          providerRevision: string;
-        };
-      };
-    }>();
-    expect(review.error).toEqual({
-      code: "split_review_required",
-      message:
-        "Confirm the displayed split history before changing this transaction.",
-    });
-
-    provider.mockImplementation(async (symbol, startDate, endDate) =>
-      splitSnapshot(symbol, startDate, endDate, "snapshot-r2"),
-    );
-    const refreshedReview = await exports.default.fetch(
-      new Request("http://local/api/corporate-actions/confirm", {
-        method: "POST",
-        headers: mutationHeaders(`"position-basis-${reviewBasis}"`),
-        body: JSON.stringify({
-          symbol: "SHOP.TO",
-          confirmation: {
-            requestedStartDate: review.review.range.requestedStartDate,
-            requestedEndDate: review.review.range.requestedEndDate,
-            providerRevision: review.review.range.providerRevision,
-          },
-        }),
-      }),
-    );
-    expect(refreshedReview.status).toBe(409);
-    const refreshedBasis = refreshedReview.headers.get(
-      "X-Position-Basis-Revision",
-    );
-    expect(refreshedBasis).toBe("2");
-    const refreshedPayload = await refreshedReview.json<{
-      review: {
-        range: {
-          requestedStartDate: string;
-          requestedEndDate: string;
-          providerRevision: string;
-        };
-      };
-    }>();
-    expect(refreshedPayload.review.range.providerRevision).toBe("snapshot-r2");
-
-    const confirmation = await exports.default.fetch(
-      new Request("http://local/api/corporate-actions/confirm", {
-        method: "POST",
-        headers: mutationHeaders(`"position-basis-${refreshedBasis}"`),
-        body: JSON.stringify({
-          symbol: "SHOP.TO",
-          confirmation: {
-            requestedStartDate:
-              refreshedPayload.review.range.requestedStartDate,
-            requestedEndDate: refreshedPayload.review.range.requestedEndDate,
-            providerRevision: refreshedPayload.review.range.providerRevision,
-          },
-        }),
-      }),
-    );
-    expect(confirmation.status).toBe(200);
-    expect(confirmation.headers.get("ETag")).toBe('"position-basis-3"');
-    expect(confirmation.headers.get("X-Position-Basis-Revision")).toBe("3");
-    const confirmationPayload = await confirmation.json<{
-      pipelineJobId: string;
-    }>();
-    const job = await env.DB.prepare(
-      "SELECT eligibility_intervals_json FROM pipeline_jobs WHERE id = ?1",
-    )
-      .bind(confirmationPayload.pipelineJobId)
-      .first<{ eligibility_intervals_json: string }>();
-    expect(JSON.parse(job?.eligibility_intervals_json ?? "[]")).toEqual([]);
-
-    const confirmed = await exports.default.fetch(
-      new Request("http://local/api/events", {
-        method: "POST",
-        headers: mutationHeaders('"position-basis-3"'),
-        body: JSON.stringify(createBody()),
-      }),
-    );
-    expect(confirmed.status).toBe(201);
-    const payload = await confirmed.json<{
+    expect(created.status).toBe(201);
+    const payload = await created.json<{
       transaction: {
         id: string;
         quantityDecimal: string;
@@ -852,13 +765,13 @@ describe("portfolio event routes", () => {
         revision: 1,
       }),
     );
-    expect(payload.positionBasisRevision).toBe(4);
-    expect(confirmed.headers.get("ETag")).toBe('"event-1"');
-    expect(confirmed.headers.get("X-Position-Basis-Revision")).toBe("4");
-    expect(confirmed.headers.get("X-Event-Revision")).toBe("1");
+    expect(payload.positionBasisRevision).toBe(1);
+    expect(created.headers.get("ETag")).toBe('"event-1"');
+    expect(created.headers.get("X-Position-Basis-Revision")).toBe("1");
+    expect(created.headers.get("X-Event-Revision")).toBe("1");
   });
 
-  it("schedules only the held interval affected by a confirmed split", async () => {
+  it("automatically activates fetched split history", async () => {
     const marketDate = easternMarketDate(new Date());
     await insertInstrument();
     await env.DB.batch([
@@ -873,7 +786,7 @@ describe("portfolio event routes", () => {
          (instrument_id, provider, requested_start_date, requested_end_date,
           snapshot_provider_revision, retrieved_at, status, updated_at)
          VALUES ('instrument-1', 'yahoo-chart-v8', '2024-01-01', ?2,
-                 'split-r1', ?1, 'review_required', ?1)`,
+                 'split-r1', ?1, 'unavailable', ?1)`,
       ).bind(now, marketDate),
     ]);
     const split = {
@@ -893,73 +806,41 @@ describe("portfolio event routes", () => {
       splitSnapshot(symbol, startDate, endDate, "split-r1", [split]),
     );
 
-    const confirmation = await exports.default.fetch(
-      new Request("http://local/api/corporate-actions/confirm", {
-        method: "POST",
-        headers: mutationHeaders('"position-basis-0"'),
-        body: JSON.stringify({
-          symbol: "SHOP.TO",
-          confirmation: {
-            requestedStartDate: "2024-01-01",
-            requestedEndDate: marketDate,
-            providerRevision: "split-r1",
-          },
-        }),
-      }),
-    );
-    expect(confirmation.status).toBe(200);
-    const payload = await confirmation.json<{ pipelineJobId: string }>();
-    const job = await env.DB.prepare(
-      "SELECT eligibility_intervals_json FROM pipeline_jobs WHERE id = ?1",
-    )
-      .bind(payload.pipelineJobId)
-      .first<{ eligibility_intervals_json: string }>();
-    expect(JSON.parse(job?.eligibility_intervals_json ?? "[]")).toEqual([
-      { startDate: "2025-01-02", endDate: marketDate },
-    ]);
-  });
-
-  it("enforces event and basis revisions, reports provider revision invalidation, and rejects negative holdings", async () => {
-    await insertInstrument();
-    const provider = mockSplitProvider();
-    const reviewResponse = await exports.default.fetch(
-      new Request("http://local/api/events", {
-        method: "POST",
-        headers: mutationHeaders('"position-basis-0"'),
-        body: JSON.stringify(createBody()),
-      }),
-    );
-    const review = await reviewResponse.json<{
-      review: {
-        range: {
-          requestedStartDate: string;
-          requestedEndDate: string;
-          providerRevision: string;
-        };
-      };
-    }>();
-    const confirmation = await exports.default.fetch(
-      new Request("http://local/api/corporate-actions/confirm", {
-        method: "POST",
-        headers: mutationHeaders('"position-basis-1"'),
-        body: JSON.stringify({
-          symbol: "SHOP.TO",
-          confirmation: {
-            requestedStartDate: review.review.range.requestedStartDate,
-            requestedEndDate: review.review.range.requestedEndDate,
-            providerRevision: review.review.range.providerRevision,
-          },
-        }),
-      }),
-    );
-    expect(confirmation.status).toBe(200);
     const created = await exports.default.fetch(
       new Request("http://local/api/events", {
         method: "POST",
-        headers: mutationHeaders('"position-basis-2"'),
+        headers: mutationHeaders('"position-basis-0"'),
+        body: JSON.stringify(
+          createBody({ tradeDate: "2025-02-01", quantityDecimal: "1" }),
+        ),
+      }),
+    );
+    expect(created.status).toBe(201);
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM corporate_actions WHERE provider_event_id = ?1",
+      )
+        .bind(split.providerEventId)
+        .first(),
+    ).toEqual({ status: "active" });
+    expect(
+      await env.DB.prepare(
+        "SELECT status FROM corporate_action_coverage WHERE instrument_id = 'instrument-1'",
+      ).first(),
+    ).toEqual({ status: "confirmed" });
+  });
+
+  it("enforces event and basis revisions while applying provider revisions automatically", async () => {
+    await insertInstrument();
+    const provider = mockSplitProvider();
+    const created = await exports.default.fetch(
+      new Request("http://local/api/events", {
+        method: "POST",
+        headers: mutationHeaders('"position-basis-0"'),
         body: JSON.stringify(createBody()),
       }),
     );
+    expect(created.status).toBe(201);
     const createdPayload = await created.json<{
       transaction: { id: string };
     }>();
@@ -967,7 +848,7 @@ describe("portfolio event routes", () => {
     const negative = await exports.default.fetch(
       new Request("http://local/api/events", {
         method: "POST",
-        headers: mutationHeaders('"position-basis-3"'),
+        headers: mutationHeaders('"position-basis-1"'),
         body: JSON.stringify(
           createBody({ side: "sell", quantityDecimal: "2" }),
         ),
@@ -981,7 +862,7 @@ describe("portfolio event routes", () => {
     const staleEvent = await exports.default.fetch(
       new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
         method: "PATCH",
-        headers: mutationHeaders('"position-basis-3", "event-9"'),
+        headers: mutationHeaders('"position-basis-1", "event-9"'),
         body: JSON.stringify({
           tradeDate: "2024-01-02",
           side: "buy",
@@ -998,10 +879,10 @@ describe("portfolio event routes", () => {
     provider.mockImplementation(async (symbol, startDate, endDate) =>
       splitSnapshot(symbol, startDate, endDate, "snapshot-r2"),
     );
-    const invalidated = await exports.default.fetch(
+    const updated = await exports.default.fetch(
       new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
         method: "PATCH",
-        headers: mutationHeaders('"position-basis-3", "event-1"'),
+        headers: mutationHeaders('"position-basis-1", "event-1"'),
         body: JSON.stringify({
           tradeDate: "2024-01-02",
           side: "buy",
@@ -1010,26 +891,13 @@ describe("portfolio event routes", () => {
         }),
       }),
     );
-    expect(invalidated.status).toBe(409);
-    const invalidatedPayload = await invalidated.json<{
-      error: { code: string };
-      review: {
-        range: {
-          requestedStartDate: string;
-          requestedEndDate: string;
-          providerRevision: string;
-        };
-      };
-    }>();
-    expect(invalidatedPayload.error.code).toBe("split_review_required");
-    expect(invalidatedPayload.review.range.providerRevision).toBe(
-      "snapshot-r2",
-    );
+    expect(updated.status).toBe(200);
+    expect(updated.headers.get("X-Position-Basis-Revision")).toBe("2");
 
     const stale = await exports.default.fetch(
       new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
         method: "DELETE",
-        headers: mutationHeaders('"position-basis-3", "event-1"'),
+        headers: mutationHeaders('"position-basis-1", "event-2"'),
       }),
     );
     expect(stale.status).toBe(409);
@@ -1037,35 +905,19 @@ describe("portfolio event routes", () => {
       "ledger_conflict",
     );
 
-    const reviewedDeleteBasis = invalidated.headers.get(
-      "X-Position-Basis-Revision",
-    );
-    expect(reviewedDeleteBasis).toBe("4");
-    const reviewedDelete = await exports.default.fetch(
+    const deleted = await exports.default.fetch(
       new Request(`http://local/api/events/${createdPayload.transaction.id}`, {
         method: "DELETE",
-        headers: mutationHeaders(
-          `"position-basis-${reviewedDeleteBasis}", "event-1"`,
-        ),
-        body: JSON.stringify({
-          confirmation: {
-            requestedStartDate:
-              invalidatedPayload.review.range.requestedStartDate,
-            requestedEndDate: invalidatedPayload.review.range.requestedEndDate,
-            providerRevision: invalidatedPayload.review.range.providerRevision,
-          },
-        }),
+        headers: mutationHeaders('"position-basis-2", "event-2"'),
       }),
     );
-    expect(reviewedDelete.status).toBe(200);
-    expect((await reviewedDelete.json<{ deleted: boolean }>()).deleted).toBe(
-      true,
-    );
+    expect(deleted.status).toBe(200);
+    expect((await deleted.json<{ deleted: boolean }>()).deleted).toBe(true);
 
     const future = await exports.default.fetch(
       new Request("http://local/api/events", {
         method: "POST",
-        headers: mutationHeaders('"position-basis-5"'),
+        headers: mutationHeaders('"position-basis-3"'),
         body: JSON.stringify(createBody({ tradeDate: "2099-01-01" })),
       }),
     );
