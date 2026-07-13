@@ -131,7 +131,9 @@ const eventLoadErrorMessage = (copy: string, caught: unknown): string => {
 const mutationErrorMessage = (copy: string, caught: unknown): string =>
   caught instanceof ApiClientError
     ? `${copy} (${caught.status}${caught.code ? `: ${caught.code}` : ""})`
-    : copy;
+    : caught instanceof Error
+      ? `${copy} (${caught.name}: ${caught.message})`
+      : copy;
 
 const TransactionDialog = ({
   isOpen,
