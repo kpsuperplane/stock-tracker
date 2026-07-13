@@ -1,7 +1,7 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
-import { YahooCorporateActionProvider } from "../../providers/yahoo-corporate-actions";
 import { YahooMarketDataProvider } from "../../providers/yahoo";
+import { YahooCorporateActionProvider } from "../../providers/yahoo-corporate-actions";
 import {
   EventImportsService,
   type ImportCommitResult,

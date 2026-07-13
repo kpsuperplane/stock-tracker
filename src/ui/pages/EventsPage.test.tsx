@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { EventsTimelineDto } from "../../shared/contracts";
+import type { ImportPreviewResponse } from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import {
   EventImportDialog,
@@ -112,5 +113,44 @@ describe("EventImportDialog", () => {
     expect(markup).toContain(
       "trade_date,symbol,side,quantity,price,category,account",
     );
+  });
+
+  it("keeps the preview error table wide enough to read its columns", () => {
+    const preview: ImportPreviewResponse = {
+      kind: "preview",
+      batchId: "batch-1",
+      basePositionBasisRevision: 0,
+      rows: [
+        {
+          rowNumber: 2,
+          symbol: "MISSING",
+          tradeDate: "2026-07-10",
+          side: "buy",
+          quantityDecimal: "1",
+          priceDecimal: "10",
+          accountId: "account-default",
+          categoryName: "Uncategorized",
+          accountName: "Default Account",
+          status: "invalid",
+          errors: ["unknown_symbol"],
+        },
+      ],
+      reviews: [],
+      projectedHoldings: [],
+      expiresAt: "2026-07-11T12:00:00.000Z",
+    };
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <EventImportDialog
+          isOpen
+          onOpenChange={() => undefined}
+          positionBasisRevision={0}
+          initialPreview={preview}
+        />
+      </I18nProvider>,
+    );
+
+    expect(markup).toContain("product-event-import-table");
+    expect(markup).toContain("MISSING");
   });
 });

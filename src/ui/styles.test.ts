@@ -30,6 +30,8 @@ describe("product stylesheet", () => {
     expect(styles).toContain("white-space: normal");
     expect(styles).not.toContain(".horizontal-scroll-hint");
     expect(styles).toContain(".calendar-mover-dialog__body");
+    expect(styles).toContain(".product-event-import-table");
+    expect(styles).toContain("min-width: 72rem");
     expect(styles).not.toContain(".product-page {");
     expect(styles).not.toContain(".product-shell {");
   });

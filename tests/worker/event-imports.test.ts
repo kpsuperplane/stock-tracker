@@ -6,6 +6,9 @@ import type {
   CorporateActionProvider,
   SplitEventRange,
 } from "../../src/providers/corporate-actions";
+import type { MarketDataProvider } from "../../src/providers/market-data";
+import { YahooMarketDataProvider } from "../../src/providers/yahoo";
+import { YahooCorporateActionProvider } from "../../src/providers/yahoo-corporate-actions";
 import { EventImportsService } from "../../src/services/event-imports";
 
 const now = "2026-07-10T12:00:00.000Z";
@@ -50,10 +53,14 @@ const providerWithEvents = (
   }),
 });
 
-const service = (actions = provider()) =>
+const service = (
+  actions = provider(),
+  marketDataProvider?: MarketDataProvider,
+) =>
   new EventImportsService({
     db: env.DB,
     corporateActionProvider: actions,
+    ...(marketDataProvider ? { marketDataProvider } : {}),
     now: () => new Date(now),
   });
 
@@ -95,6 +102,50 @@ const multiAccountCsv = (rows: string[]) => `${header}\n${rows.join("\n")}\n`;
 describe("EventImportsService", () => {
   beforeEach(async () => {
     await insertInstrument();
+  });
+
+  it("registers a missing symbol through the same resolver used by event creation", async () => {
+    const marketDataProvider: MarketDataProvider = {
+      getInstrument: vi.fn(async (symbol) => ({
+        metadata: {
+          symbol: symbol.toUpperCase(),
+          companyName: "New Company",
+          exchange: "NMS",
+          currency: "USD",
+          instrumentType: "EQUITY" as const,
+        },
+        bars: [
+          {
+            date: now.slice(0, 10),
+            close: 10,
+            adjustedClose: 10,
+          },
+        ],
+        corporateActionDates: new Set<string>(),
+      })),
+    };
+    const result = await service(provider(), marketDataProvider).preview({
+      originalFilename: "new-symbol.csv",
+      file: new TextEncoder().encode(csv(["2024-01-02,NEWCO,buy,1,10"])),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        kind: "preview",
+        rows: [expect.objectContaining({ symbol: "NEWCO", status: "valid" })],
+      }),
+    );
+    expect(marketDataProvider.getInstrument).toHaveBeenCalledTimes(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT symbol, active FROM tickers WHERE symbol = 'NEWCO'",
+      ).first(),
+    ).toEqual({ symbol: "NEWCO", active: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT symbol, provider_symbol FROM instruments WHERE symbol = 'NEWCO'",
+      ).first(),
+    ).toEqual({ symbol: "NEWCO", provider_symbol: "NEWCO" });
   });
 
   it("accepts the documented UTF-8 template, strips a BOM, normalizes rows, and stages a review", async () => {
@@ -1266,6 +1317,68 @@ describe("EventImportsService", () => {
 });
 
 describe("event import route", () => {
+  it("auto-registers a new symbol during a routed preview", async () => {
+    vi.spyOn(
+      YahooMarketDataProvider.prototype,
+      "getInstrument",
+    ).mockResolvedValue({
+      metadata: {
+        symbol: "NEWCO",
+        companyName: "New Company",
+        exchange: "NMS",
+        currency: "USD",
+        instrumentType: "EQUITY",
+      },
+      bars: [
+        {
+          date: now.slice(0, 10),
+          close: 10,
+          adjustedClose: 10,
+        },
+      ],
+      corporateActionDates: new Set<string>(),
+    });
+    vi.spyOn(
+      YahooCorporateActionProvider.prototype,
+      "getSplits",
+    ).mockImplementation((symbol, startDate, endDate) =>
+      provider().getSplits(symbol, startDate, endDate),
+    );
+
+    const form = new FormData();
+    form.set(
+      "file",
+      new File([csv(["2024-01-02,NEWCO,buy,1,10"])], "new-symbol.csv", {
+        type: "text/csv",
+      }),
+    );
+    const response = await exports.default.fetch(
+      new Request("http://local/api/event-imports/preview", {
+        method: "POST",
+        body: form,
+        headers: {
+          Origin: "http://local",
+          Host: "local",
+          "X-Stock-Tracker-Request": "1",
+        },
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(
+      (
+        await response.json<{
+          rows: Array<{ symbol: string; status: string }>;
+        }>()
+      ).rows,
+    ).toEqual([expect.objectContaining({ symbol: "NEWCO", status: "valid" })]);
+    expect(
+      await env.DB.prepare(
+        "SELECT symbol FROM tickers WHERE symbol = 'NEWCO'",
+      ).first(),
+    ).toEqual({ symbol: "NEWCO" });
+  });
+
   it("accepts a 5 MiB file part plus bounded multipart framing rather than rejecting the envelope", async () => {
     const form = new FormData();
     form.set(
