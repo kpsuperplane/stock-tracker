@@ -378,7 +378,6 @@ export const TodayPage = ({
           <Heading level={1} className="product-page-title-hidden">
             {t("todayHeading")}
           </Heading>
-          <p className="portfolio-intro">{t("todayDescription")}</p>
           {portfolio && (
             <div className="product-page-meta">
               {formatDate(portfolio.asOfDate, locale)} · {t("latestClose")}{" "}

@@ -1,8 +1,11 @@
 import { AppShell as AstryxAppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
-import { ButtonGroup } from "@astryxdesign/core/ButtonGroup";
 import { Icon } from "@astryxdesign/core/Icon";
 import { MobileNav, MobileNavToggle } from "@astryxdesign/core/MobileNav";
+import {
+  SegmentedControl,
+  SegmentedControlItem,
+} from "@astryxdesign/core/SegmentedControl";
 import {
   SideNav,
   SideNavItem,
@@ -99,20 +102,17 @@ const LocaleSwitcher = () => {
   return (
     <>
       <span className="product-locale-switcher-full">
-        <ButtonGroup label={t("language")} size="sm" orientation="horizontal">
-          <Button
-            label={t("english")}
-            variant={locale === "en" ? "secondary" : "ghost"}
-            aria-pressed={locale === "en"}
-            onClick={() => setLocale("en")}
-          />
-          <Button
-            label={t("chinese")}
-            variant={locale === "cn" ? "secondary" : "ghost"}
-            aria-pressed={locale === "cn"}
-            onClick={() => setLocale("cn")}
-          />
-        </ButtonGroup>
+        <SegmentedControl
+          value={locale}
+          onChange={(value) => {
+            if (value === "en" || value === "cn") setLocale(value);
+          }}
+          label={t("language")}
+          size="sm"
+        >
+          <SegmentedControlItem value="en" label={t("english")} />
+          <SegmentedControlItem value="cn" label={t("chinese")} />
+        </SegmentedControl>
       </span>
       <span className="product-locale-switcher-compact">
         <Button

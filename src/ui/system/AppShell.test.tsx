@@ -31,6 +31,9 @@ describe("product AppShell", () => {
     expect(markup).toContain('aria-current="page"');
     expect(markup).toContain("Calendar");
     expect(markup).toContain('aria-label="Language"');
+    expect(markup).toContain('role="radiogroup"');
+    expect(markup).toContain('role="radio" aria-checked="true"');
+    expect(markup).toContain('role="radio" aria-checked="false"');
     expect(markup).toContain("中文");
     expect(markup).not.toContain("legacy-app");
   });

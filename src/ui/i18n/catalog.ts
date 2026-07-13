@@ -123,7 +123,6 @@ export const messageCatalog = {
     calendarReadModelDisabled: "Calendar data is not enabled yet.",
     calendarReadModelDisabledDescription:
       "Enable READ_MODELS_ENABLED=true in the Worker environment while previewing the new shell.",
-    noCalendarEvents: "No movers, dividends, or earnings in this range.",
     futureDividendsUnknown: "Future dividend coverage is not currently known.",
     futureDividendsUnknownDescription:
       "No future dividend facts are available for this range; this does not confirm that none exist.",
@@ -146,6 +145,7 @@ export const messageCatalog = {
     paymentDate: "Payment date",
     amountPerShare: "Amount per share",
     expectedTotal: "Expected total",
+    dividends: "Dividends",
     monthlyDividendTotal: "Monthly dividends",
     weeklyDividendTotal: "Weekly dividends",
     dividendBreakdown: "Dividend breakdown",
@@ -458,7 +458,6 @@ export const messageCatalog = {
     calendarReadModelDisabled: "日历数据尚未启用。",
     calendarReadModelDisabledDescription:
       "预览新界面时，请在 Worker 环境中启用 READ_MODELS_ENABLED=true。",
-    noCalendarEvents: "此范围没有异动、股息或财报。",
     futureDividendsUnknown: "未来股息覆盖目前未知。",
     futureDividendsUnknownDescription:
       "此范围暂无未来股息事实；这不代表确定不存在未来股息。",
@@ -481,6 +480,7 @@ export const messageCatalog = {
     paymentDate: "支付日",
     amountPerShare: "每股金额",
     expectedTotal: "预计合计",
+    dividends: "股息",
     monthlyDividendTotal: "本月股息",
     weeklyDividendTotal: "本周股息",
     dividendBreakdown: "股息明细",

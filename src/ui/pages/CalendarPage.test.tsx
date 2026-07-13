@@ -144,7 +144,8 @@ describe("CalendarPage", () => {
     expect(markup).toContain("+5.32%");
     expect(markup).toContain("AAPL $0.50");
     expect(markup).toContain("AAPL · Earnings");
-    expect(markup).toContain("Monthly dividends: USD $0.50");
+    expect(markup).toContain("Dividends: USD $0.50");
+    expect(markup).not.toContain("Monthly dividends: USD $0.50");
     expect(markup).toContain("Dividend breakdown");
     expect(markup).toContain('role="radiogroup" aria-label="Calendar view"');
     expect(markup).toContain('aria-checked="true" data-value="month"');
@@ -257,12 +258,9 @@ describe("CalendarPage", () => {
     );
 
     expect(markup).toContain("Week");
-    expect(markup).toContain("Weekly dividends: $0.00");
+    expect(markup).toContain("Dividends: $0.00");
     expect(markup).toContain('aria-checked="true" data-value="week"');
     expect(markup).toContain("Market data pending: Waiting for close.");
-    expect(markup).not.toContain(
-      "No movers, dividends, or earnings in this range.",
-    );
   });
 
   it("totals period dividends exactly by native currency", () => {
@@ -304,7 +302,7 @@ describe("CalendarPage", () => {
     expect(summary.unavailableCount).toBe(1);
   });
 
-  it("discloses busy dates and keeps a truly empty range explicit", () => {
+  it("discloses busy dates and keeps an empty range on the calendar", () => {
     const busy = renderToStaticMarkup(
       <I18nProvider initialLocale="en">
         <CalendarPage
@@ -338,7 +336,7 @@ describe("CalendarPage", () => {
         />
       </I18nProvider>,
     );
-    expect(empty).toContain("No movers, dividends, or earnings in this range.");
+    expect(empty).toContain("calendar-grid calendar-grid--month");
   });
 
   it("surfaces paginated calendar ranges and merges subsequent pages", () => {

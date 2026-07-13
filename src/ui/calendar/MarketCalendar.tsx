@@ -4,10 +4,8 @@ import {
   type CalendarSelection,
   eventDate,
 } from "./CalendarEvent";
-import { CalendarToolbar } from "./CalendarToolbar";
-import { type CalendarView, rangeForView } from "./dateMath";
+import type { CalendarView } from "./dateMath";
 import { MonthGrid } from "./MonthGrid";
-import { PeriodDividendSummary } from "./PeriodDividendSummary";
 import { WeekGrid } from "./WeekGrid";
 
 export interface MarketCalendarProps {
@@ -15,7 +13,6 @@ export interface MarketCalendarProps {
   view: CalendarView;
   anchorDate: string;
   today: string;
-  onNavigate: (date: string) => void;
   onSelect: (selection: CalendarSelection) => void;
 }
 
@@ -46,28 +43,12 @@ export const MarketCalendar = ({
   view,
   anchorDate,
   today,
-  onNavigate,
   onSelect,
 }: MarketCalendarProps) => {
   const eventsByDate = groupEvents(calendar.events);
   const pendingByDate = groupPending(calendar);
-  const visibleRange = rangeForView(anchorDate, view);
   return (
     <>
-      <CalendarToolbar
-        view={view}
-        anchorDate={anchorDate}
-        today={today}
-        onNavigate={onNavigate}
-        endContent={
-          <PeriodDividendSummary
-            dividends={calendar.dividends}
-            view={view}
-            startDate={visibleRange.startDate}
-            endDate={visibleRange.endDate}
-          />
-        }
-      />
       {view === "month" ? (
         <MonthGrid
           anchorDate={anchorDate}

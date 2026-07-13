@@ -66,6 +66,7 @@ export interface PeriodDividendSummaryProps {
   view: CalendarView;
   startDate: string;
   endDate: string;
+  compact?: boolean;
 }
 
 export const PeriodDividendSummary = ({
@@ -73,11 +74,15 @@ export const PeriodDividendSummary = ({
   view,
   startDate,
   endDate,
+  compact = false,
 }: PeriodDividendSummaryProps) => {
   const { locale, t } = useI18n();
   const summary = summarizePeriodDividends(dividends, startDate, endDate);
-  const periodLabel =
-    view === "month" ? t("monthlyDividendTotal") : t("weeklyDividendTotal");
+  const periodLabel = compact
+    ? t("dividends")
+    : view === "month"
+      ? t("monthlyDividendTotal")
+      : t("weeklyDividendTotal");
   const label = `${periodLabel}: ${totalLabel(summary, locale)}`;
 
   return (

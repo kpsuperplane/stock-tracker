@@ -297,7 +297,7 @@ const MoreDetails = ({
   events: CalendarEvent[];
   onSelect: (selection: CalendarSelection) => void;
 }) => {
-  const { locale, t } = useI18n();
+  const { locale } = useI18n();
   return (
     <VStack gap={2}>
       <div>{formatDate(date, locale)}</div>
@@ -309,7 +309,6 @@ const MoreDetails = ({
           onSelect={onSelect}
         />
       ))}
-      {events.length === 0 && <div>{t("noCalendarEvents")}</div>}
     </VStack>
   );
 };

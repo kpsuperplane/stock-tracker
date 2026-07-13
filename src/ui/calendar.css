@@ -1,11 +1,46 @@
 /* The calendar is the one intentionally bespoke spatial layout in the product shell. */
+.calendar-page {
+  min-width: 0;
+  width: 100%;
+}
+
+.calendar-page__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.calendar-page__controls > * {
+  flex: 0 0 auto;
+}
+
+.calendar-page__controls .calendar-toolbar {
+  min-width: 0;
+}
+
+.calendar-toolbar__title {
+  max-width: clamp(7rem, 16vw, 13rem);
+  overflow: hidden;
+  font-size: 1rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .calendar-page__grid {
   min-width: 0;
+  width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
 }
 
 .calendar-page__content {
+  width: 100%;
   transition:
     filter 120ms ease,
     opacity 120ms ease;
@@ -34,13 +69,8 @@
   font-size: 0.8rem;
 }
 
-.calendar-page__empty {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: 0.8rem;
-}
-
 .calendar-grid {
+  width: 100%;
   display: grid;
   min-width: 826px;
   grid-template-columns: repeat(7, minmax(118px, 1fr));
@@ -206,6 +236,10 @@
 }
 
 @media (max-width: 700px) {
+  .calendar-page__controls {
+    align-items: flex-start;
+  }
+
   .calendar-grid {
     min-width: 700px;
   }

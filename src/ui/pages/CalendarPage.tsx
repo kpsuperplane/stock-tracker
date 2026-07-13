@@ -16,6 +16,7 @@ import {
   calendarApi,
 } from "../api";
 import type { CalendarSelection } from "../calendar/CalendarEvent";
+import { CalendarToolbar } from "../calendar/CalendarToolbar";
 import {
   type CalendarView,
   rangeForView,
@@ -23,6 +24,7 @@ import {
 } from "../calendar/dateMath";
 import { MarketCalendar } from "../calendar/MarketCalendar";
 import { MoverDialog } from "../calendar/MoverDialog";
+import { PeriodDividendSummary } from "../calendar/PeriodDividendSummary";
 import { useI18n } from "../i18n/I18nProvider";
 import { usePageActions } from "../system/PageActionsContext";
 
@@ -228,9 +230,24 @@ export const CalendarPage = ({
   const displayedCalendar = calendar ?? (loading ? loadingCalendar : null);
   const calendarBusy = loading || refreshing;
 
-  const pageActions = useMemo(
-    () =>
-      calendar ? (
+  const pageActions = useMemo(() => {
+    if (!calendar) return null;
+    const visibleRange = rangeForView(anchorDate, view);
+    return (
+      <div className="calendar-page__controls">
+        <CalendarToolbar
+          view={view}
+          anchorDate={anchorDate}
+          today={todayDate}
+          onNavigate={setAnchorDate}
+        />
+        <PeriodDividendSummary
+          dividends={calendar.dividends}
+          view={view}
+          startDate={visibleRange.startDate}
+          endDate={visibleRange.endDate}
+          compact
+        />
         <SegmentedControl
           value={view}
           onChange={(value) => {
@@ -242,19 +259,17 @@ export const CalendarPage = ({
           <SegmentedControlItem value="month" label={t("month")} />
           <SegmentedControlItem value="week" label={t("week")} />
         </SegmentedControl>
-      ) : null,
-    [calendar, t, view],
-  );
+      </div>
+    );
+  }, [anchorDate, calendar, t, todayDate, view]);
   const hasTopNavActions = usePageActions(pageActions);
 
   return (
-    <VStack gap={3} data-testid="calendar-page">
-      <HStack gap={2} justify="between" align="center">
-        <Heading level={1} className="product-page-title-hidden">
-          {t("calendarHeading")}
-        </Heading>
-        {!hasTopNavActions && pageActions}
-      </HStack>
+    <VStack gap={3} className="calendar-page" data-testid="calendar-page">
+      <Heading level={1} className="product-page-title-hidden">
+        {t("calendarHeading")}
+      </Heading>
+      {!hasTopNavActions && pageActions}
 
       {error && (
         <div className="calendar-page__load-error" role="alert">
@@ -285,17 +300,11 @@ export const CalendarPage = ({
           inert={calendarBusy ? true : undefined}
         >
           <VStack gap={3}>
-            {calendar &&
-              calendar.events.length === 0 &&
-              calendar.pending.length === 0 && (
-                <p className="calendar-page__empty">{t("noCalendarEvents")}</p>
-              )}
             <MarketCalendar
               calendar={displayedCalendar}
               view={view}
               anchorDate={anchorDate}
               today={todayDate}
-              onNavigate={setAnchorDate}
               onSelect={setSelection}
             />
             {calendar?.nextCursor && (

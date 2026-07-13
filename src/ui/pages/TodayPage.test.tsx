@@ -109,6 +109,9 @@ describe("TodayPage", () => {
     expect(markup).toContain('data-testid="today-page"');
     expect(markup).not.toContain("USD total");
     expect(markup).not.toContain("CAD total");
+    expect(markup).not.toContain(
+      "Completed close-to-close holdings and market movers",
+    );
     expect(markup).toContain("close Jul 10, 2026");
     expect(markup).toContain("AAPL");
     expect(markup).not.toContain("Apple Inc.");
