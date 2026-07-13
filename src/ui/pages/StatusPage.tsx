@@ -4,7 +4,6 @@ import {
   EmptyState,
   Heading,
   HStack,
-  ProgressBar,
   Skeleton,
   StatusDot,
 } from "@astryxdesign/core";
@@ -91,23 +90,6 @@ const jobBadgeVariant = (status: string) => {
   }
 };
 
-const jobProgressVariant = (status: string) => {
-  switch (status) {
-    case "complete":
-      return "success" as const;
-    case "complete_with_errors":
-      return "warning" as const;
-    case "terminal":
-      return "error" as const;
-    case "pending":
-    case "planning":
-    case "running":
-      return "accent" as const;
-    default:
-      return "neutral" as const;
-  }
-};
-
 const jobStatusKey = (status: string): MessageKey => {
   switch (status) {
     case "pending":
@@ -147,11 +129,11 @@ const jobRange = (job: JobReadModelDto, locale: "en" | "cn") => {
   if (!job.requestedStartDate && !job.requestedEndDate) return null;
   const start = job.requestedStartDate
     ? formatDate(job.requestedStartDate, locale)
-    : "—";
+    : "-";
   const end = job.requestedEndDate
     ? formatDate(job.requestedEndDate, locale)
     : start;
-  return start === end ? start : `${start} – ${end}`;
+  return start === end ? start : `${start} - ${end}`;
 };
 
 interface StatusApiClient {
@@ -329,7 +311,6 @@ export const StatusPage = ({
             <Heading level={2} id="data-sync-title">
               {t("dataSync")}
             </Heading>
-            <p>{t("dataSyncDescription")}</p>
           </div>
         </div>
         <div className="status-source-row">
@@ -361,7 +342,7 @@ export const StatusPage = ({
             <span>
               {status?.earningsCoverage?.coverageStartDate &&
               status.earningsCoverage.coverageEndDate
-                ? `${formatDate(status.earningsCoverage.coverageStartDate, locale)} – ${formatDate(status.earningsCoverage.coverageEndDate, locale)}`
+                ? `${formatDate(status.earningsCoverage.coverageStartDate, locale)} - ${formatDate(status.earningsCoverage.coverageEndDate, locale)}`
                 : t("coverageUnknown")}
             </span>
             <time dateTime={status?.earningsCoverage?.updatedAt ?? undefined}>
@@ -390,7 +371,6 @@ export const StatusPage = ({
             <Heading level={2} id="recent-jobs-title">
               {t("recentJobs")}
             </Heading>
-            <p>{t("recentJobsDescription")}</p>
           </div>
           <span className="status-jobs__count">
             {status?.jobs.length ?? 0} {t("jobs")}
@@ -399,42 +379,47 @@ export const StatusPage = ({
 
         {status && status.jobs.length > 0 ? (
           <div className="status-job-list">
+            <div className="status-job-list__header" aria-hidden="true">
+              <span>{t("syncJob")}</span>
+              <span>{t("status")}</span>
+              <span>{t("workProgress")}</span>
+              <span>{t("fetched")}</span>
+              <span>{t("analyzed")}</span>
+              <span>{t("reused")}</span>
+              <span>{t("skipped")}</span>
+              <span>{t("failures")}</span>
+              <span>{t("lastActivity")}</span>
+            </div>
             {status.jobs.map((job) => {
               const range = jobRange(job, locale);
               const progress = job.progress;
               return (
                 <article className="status-job" key={job.id}>
-                  <header className="status-job__header">
-                    <div>
+                  <div className="status-job__main">
+                    <div className="status-job__identity">
                       <strong>{t(jobTriggerKey(job.triggerType))}</strong>
-                      <span className="status-job__id">{job.id}</span>
+                      <span className="status-job__identity-meta">
+                        <span className="status-job__id" title={job.id}>
+                          {job.id}
+                        </span>
+                        {range && (
+                          <span className="status-job__range">{range}</span>
+                        )}
+                      </span>
                     </div>
-                    <div className="status-job__header-end">
+                    <div className="status-job__state">
                       <Badge
                         variant={jobBadgeVariant(job.status)}
                         label={t(jobStatusKey(job.status))}
                       />
-                      <time dateTime={job.updatedAt}>
-                        {formatDateTime(job.updatedAt, locale)}
-                      </time>
                     </div>
-                  </header>
-                  <div className="status-job__body">
-                    <ProgressBar
-                      value={progress.workProcessed}
-                      max={Math.max(progress.workTotal, 1)}
-                      label={t("workProgress")}
-                      hasValueLabel
-                      formatValueLabel={() =>
-                        `${progress.workProcessed} / ${progress.workTotal}`
-                      }
-                      variant={jobProgressVariant(job.status)}
-                      isIndeterminate={
-                        activeJobStatuses.has(job.status) &&
-                        progress.workTotal === 0
-                      }
-                    />
                     <dl className="status-job__metrics">
+                      <div>
+                        <dt>{t("workProgress")}</dt>
+                        <dd className="status-job__progress">
+                          {progress.workProcessed} / {progress.workTotal}
+                        </dd>
+                      </div>
                       <div>
                         <dt>{t("fetched")}</dt>
                         <dd>{progress.workFetched}</dd>
@@ -456,25 +441,30 @@ export const StatusPage = ({
                         <dd>{progress.workFailed}</dd>
                       </div>
                     </dl>
-                    {range && <div className="status-job__range">{range}</div>}
-                    {job.errors.length > 0 && (
-                      <div className="status-job__errors">
-                        <strong>{t("jobErrors")}</strong>
-                        <ul>
-                          {job.errors.map((jobError) => (
-                            <li key={jobError.workItemId}>
-                              {jobError.effectiveDate
-                                ? `${formatDate(jobError.effectiveDate, locale)} · `
-                                : ""}
-                              {jobError.message ??
-                                jobError.code ??
-                                t("unknownStatus")}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
+                    <time
+                      className="status-job__updated"
+                      dateTime={job.updatedAt}
+                    >
+                      {formatDateTime(job.updatedAt, locale)}
+                    </time>
                   </div>
+                  {job.errors.length > 0 && (
+                    <div className="status-job__errors">
+                      <strong>{t("jobErrors")}</strong>
+                      <ul>
+                        {job.errors.map((jobError) => (
+                          <li key={jobError.workItemId}>
+                            {jobError.effectiveDate
+                              ? `${formatDate(jobError.effectiveDate, locale)} - `
+                              : ""}
+                            {jobError.message ??
+                              jobError.code ??
+                              t("unknownStatus")}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </article>
               );
             })}

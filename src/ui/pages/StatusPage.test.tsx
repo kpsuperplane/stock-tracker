@@ -55,6 +55,8 @@ describe("StatusPage", () => {
     expect(markup).toContain("Earnings calendar");
     expect(markup).toContain("Scheduled sync");
     expect(markup).toContain("8 / 8");
+    expect(markup).toContain('class="status-job-list__header"');
+    expect(markup).toContain('class="status-job__progress"');
     expect(markup).toContain("Fetched");
     expect(markup).toContain("Failures");
   });
