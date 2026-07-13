@@ -2,7 +2,6 @@ import {
   Banner,
   Button,
   Heading,
-  HStack,
   Icon,
   Link,
   VStack,
@@ -16,11 +15,11 @@ import { useAccountScope } from "../accounts/AccountScopeContext";
 import { ApiClientError } from "../api";
 import { RefreshIcon } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
+import { downloadPortfolioPoints } from "../portfolio/download";
 import {
   type PortfolioHistoryApiClient,
   portfolioHistoryApi,
 } from "../portfolio/history-api";
-import { PortfolioDataTable } from "../portfolio/PortfolioDataTable";
 import { PortfolioHoldingsTable } from "../portfolio/PortfolioHoldingsTable";
 import { PortfolioPerformanceChart } from "../portfolio/PortfolioPerformanceChart";
 import { PortfolioRangeControls } from "../portfolio/PortfolioRangeControls";
@@ -31,7 +30,6 @@ import {
   parsePortfolioUrlState,
   writePortfolioUrlState,
 } from "../portfolio/state";
-import { formatDate } from "../system/formatters";
 import { usePageActions } from "../system/PageActionsContext";
 
 export interface PortfolioPageProps {
@@ -167,6 +165,16 @@ export const PortfolioPage = ({
       (result) => result.currency === selectedCurrency,
     ) ?? null;
 
+  const downloadCurrentData = useCallback(() => {
+    if (!currencyResult) return;
+    downloadPortfolioPoints({
+      points: currencyResult.points,
+      metric: state.metric,
+      startDate: history?.startDate ?? "start",
+      endDate: history?.endDate ?? "end",
+    });
+  }, [currencyResult, history?.endDate, history?.startDate, state.metric]);
+
   const retry = useCallback(() => void load(), [load]);
   const pageActions = useMemo(
     () => (
@@ -211,28 +219,19 @@ export const PortfolioPage = ({
 
   return (
     <VStack gap={3} data-testid="portfolio-page">
-      <HStack gap={3} justify="between" align="start" wrap="wrap">
-        <VStack gap={0.5}>
-          <Heading level={1} className="product-page-title-hidden">
-            {t("portfolioHeading")}
-          </Heading>
-          <p className="portfolio-intro">{t("portfolioPerformanceIntro")}</p>
-          {history && (
-            <div className="product-page-meta">
-              {t("dataThrough")}{" "}
-              {history.dataThrough
-                ? formatDate(history.dataThrough, locale)
-                : "—"}
-              {currencyResult ? ` · ${t(currencyResult.granularity)}` : ""}
-            </div>
-          )}
-        </VStack>
-        {!hasTopNavActions && pageActions}
-      </HStack>
+      <Heading level={1} className="product-page-title-hidden">
+        {t("portfolioHeading")}
+      </Heading>
+      {!hasTopNavActions && (
+        <div className="portfolio-page-actions">{pageActions}</div>
+      )}
 
       <PortfolioRangeControls
         state={state}
         currencies={currencies}
+        coverage={currencyResult?.coverage ?? null}
+        canDownload={Boolean(currencyResult?.points.length)}
+        onDownload={downloadCurrentData}
         onRangeChange={changeRange}
         onCustomRangeChange={(startDate, endDate) =>
           updateState({ ...state, range: "custom", startDate, endDate })
@@ -293,34 +292,12 @@ export const PortfolioPage = ({
             refreshing ? "portfolio-content is-refreshing" : "portfolio-content"
           }
         >
-          {currencyResult.coverage.status !== "complete" && (
-            <Banner
-              status={
-                currencyResult.coverage.status === "pending"
-                  ? "info"
-                  : "warning"
-              }
-              title={t(
-                currencyResult.coverage.status === "partial"
-                  ? "portfolioPartialData"
-                  : currencyResult.coverage.status === "pending"
-                    ? "portfolioPendingData"
-                    : "portfolioEstimatedData",
-              )}
-              description={t("portfolioCoverageDescription")}
-            />
-          )}
           <PortfolioSummaryStrip
             currency={currencyResult}
             selectedMetric={state.metric}
             onSelectMetric={(metric) => updateState({ ...state, metric })}
           />
           <PortfolioPerformanceChart
-            points={currencyResult.points}
-            metric={state.metric}
-            currency={currencyResult.currency}
-          />
-          <PortfolioDataTable
             points={currencyResult.points}
             metric={state.metric}
             currency={currencyResult.currency}

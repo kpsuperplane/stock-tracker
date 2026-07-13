@@ -76,8 +76,9 @@ body {
 
 .product-top-nav-scope-end {
   display: block;
-  width: min(20rem, 24vw);
-  min-width: 14rem;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .product-side-nav-rail {
@@ -100,6 +101,10 @@ body {
 .account-scope-bar {
   width: 100%;
   min-width: 0;
+}
+
+.product-top-nav-scope-end .account-scope-bar {
+  width: fit-content;
 }
 
 .account-scope-option--account {

@@ -1,11 +1,17 @@
 import {
-  Button,
   type DateRange,
   DateRangeInput,
+  Icon,
+  IconButton,
+  Popover,
   SegmentedControl,
   SegmentedControlItem,
 } from "@astryxdesign/core";
-import type { PortfolioRangePreset } from "../../shared/contracts";
+import type {
+  PortfolioHistoryCoverageDto,
+  PortfolioRangePreset,
+} from "../../shared/contracts";
+import { DownloadIcon, WarningIcon } from "../components/ProductIcons";
 import { useI18n } from "../i18n/I18nProvider";
 import type { PortfolioUrlState } from "./state";
 
@@ -37,12 +43,18 @@ export const PortfolioRangeControls = ({
   onRangeChange,
   onCustomRangeChange,
   onCurrencyChange,
+  coverage,
+  canDownload,
+  onDownload,
 }: {
   state: PortfolioUrlState;
   currencies: readonly ("CAD" | "USD")[];
   onRangeChange: (range: PortfolioRangePreset) => void;
   onCustomRangeChange: (startDate: string, endDate: string) => void;
   onCurrencyChange: (currency: "CAD" | "USD") => void;
+  coverage: PortfolioHistoryCoverageDto | null;
+  canDownload: boolean;
+  onDownload: () => void;
 }) => {
   const { t } = useI18n();
   const customValue: DateRange | null =
@@ -52,23 +64,60 @@ export const PortfolioRangeControls = ({
           end: state.endDate as DateRange["end"],
         }
       : null;
+  const coverageTitleKey =
+    coverage?.status === "partial"
+      ? "portfolioPartialData"
+      : coverage?.status === "pending"
+        ? "portfolioPendingData"
+        : "portfolioEstimatedData";
+
   return (
     <div className="portfolio-controls">
-      <fieldset className="portfolio-range-shortcuts">
-        <legend className="product-page-title-hidden">
-          {t("selectRange")}
-        </legend>
-        {presets.map((preset) => (
-          <Button
-            key={preset.value}
-            label={t(preset.labelKey)}
-            variant={state.range === preset.value ? "secondary" : "ghost"}
+      <div className="portfolio-range-cluster">
+        <div className="portfolio-range-shortcuts">
+          <SegmentedControl
+            value={state.range}
+            onChange={(value) => {
+              const nextPreset = presets.find(
+                (preset) => preset.value === value,
+              );
+              if (nextPreset) onRangeChange(nextPreset.value);
+            }}
+            label={t("selectRange")}
             size="sm"
-            aria-pressed={state.range === preset.value}
-            onClick={() => onRangeChange(preset.value)}
-          />
-        ))}
-      </fieldset>
+          >
+            {presets.map((preset) => (
+              <SegmentedControlItem
+                key={preset.value}
+                value={preset.value}
+                label={t(preset.labelKey)}
+              />
+            ))}
+          </SegmentedControl>
+        </div>
+        {coverage && coverage.status !== "complete" && (
+          <Popover
+            label={t("portfolioCoverageDetails")}
+            placement="below"
+            alignment="start"
+            width="min(24rem, calc(100vw - 2rem))"
+            content={
+              <div className="portfolio-coverage-popover">
+                <strong>{t(coverageTitleKey)}</strong>
+                <p>{t("portfolioCoverageDescription")}</p>
+              </div>
+            }
+          >
+            <IconButton
+              variant="ghost"
+              size="sm"
+              label={t("portfolioCoverageWarning")}
+              tooltip={t("portfolioCoverageWarning")}
+              icon={<Icon icon={WarningIcon} size="sm" />}
+            />
+          </Popover>
+        )}
+      </div>
       <div className="portfolio-control-end">
         {state.range === "custom" && (
           <DateRangeInput
@@ -102,6 +151,16 @@ export const PortfolioRangeControls = ({
               />
             ))}
           </SegmentedControl>
+        )}
+        {canDownload && (
+          <IconButton
+            variant="ghost"
+            size="sm"
+            label={t("downloadPortfolioData")}
+            tooltip={t("downloadPortfolioData")}
+            icon={<Icon icon={DownloadIcon} size="sm" />}
+            onClick={onDownload}
+          />
         )}
       </div>
     </div>

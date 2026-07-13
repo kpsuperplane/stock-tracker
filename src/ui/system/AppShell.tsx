@@ -10,7 +10,11 @@ import {
   SideNavSection,
   useSideNavRenderMode,
 } from "@astryxdesign/core/SideNav";
-import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
+import {
+  TopNav,
+  TopNavHeading,
+  useTopNavRenderMode,
+} from "@astryxdesign/core/TopNav";
 import { type ReactNode, useEffect } from "react";
 import {
   AccountScopeBar,
@@ -141,12 +145,16 @@ const ProductSideNavMobileControls = ({
 
 const ProductNavigation = ({ activeRoute }: NavigationProps) => {
   const { t } = useI18n();
+  const renderMode = useTopNavRenderMode();
   const pageActions = useRegisteredPageActions();
   const hasAccountScope =
     activeRoute === "today" ||
     activeRoute === "portfolio" ||
     activeRoute === "events" ||
     activeRoute === "calendar";
+  const topNavActions = pageActions ? (
+    <span className="product-top-nav-actions">{pageActions}</span>
+  ) : null;
   return (
     <TopNav
       className="product-top-nav"
@@ -160,11 +168,10 @@ const ProductNavigation = ({ activeRoute }: NavigationProps) => {
           />
         </div>
       }
+      startContent={renderMode === "default" ? topNavActions : undefined}
       endContent={
         <div className="product-top-nav-end">
-          {pageActions && (
-            <span className="product-top-nav-actions">{pageActions}</span>
-          )}
+          {renderMode === "mobile-bar" && topNavActions}
           <span className="product-top-nav-desktop-utilities">
             {hasAccountScope && (
               <span className="product-top-nav-scope-end">

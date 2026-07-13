@@ -1,8 +1,9 @@
 import {
   Button,
-  ButtonGroup,
   Heading,
   HStack,
+  SegmentedControl,
+  SegmentedControlItem,
   VStack,
 } from "@astryxdesign/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -230,20 +231,17 @@ export const CalendarPage = ({
   const pageActions = useMemo(
     () =>
       calendar ? (
-        <ButtonGroup label={t("calendarView")} size="sm">
-          <Button
-            label={t("month")}
-            variant={view === "month" ? "secondary" : "ghost"}
-            aria-pressed={view === "month"}
-            onClick={() => setView("month")}
-          />
-          <Button
-            label={t("week")}
-            variant={view === "week" ? "secondary" : "ghost"}
-            aria-pressed={view === "week"}
-            onClick={() => setView("week")}
-          />
-        </ButtonGroup>
+        <SegmentedControl
+          value={view}
+          onChange={(value) => {
+            if (value === "month" || value === "week") setView(value);
+          }}
+          label={t("calendarView")}
+          size="sm"
+        >
+          <SegmentedControlItem value="month" label={t("month")} />
+          <SegmentedControlItem value="week" label={t("week")} />
+        </SegmentedControl>
       ) : null,
     [calendar, t, view],
   );

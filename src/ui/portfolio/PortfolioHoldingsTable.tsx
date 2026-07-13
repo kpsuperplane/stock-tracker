@@ -26,104 +26,102 @@ export const PortfolioHoldingsTable = ({
 }) => {
   const { locale, t } = useI18n();
   return (
-    <VStack gap={2}>
+    <VStack gap={2} className="portfolio-holdings-section">
       <Heading level={2}>{t("holdingsAtRangeEnd")}</Heading>
-      <div className="portfolio-table-scroll">
-        <Table
-          density="compact"
-          dividers="rows"
-          hasHover
-          textOverflow="truncate"
-          aria-label={t("holdingsAtRangeEnd")}
-          tableProps={{ className: "portfolio-holdings-table" }}
-        >
-          <TableHeader>
-            <TableRow isHeaderRow>
-              <TableHeaderCell>{t("instrument")}</TableHeaderCell>
-              <TableHeaderCell style={numericStyle}>
-                {t("quantity")}
-              </TableHeaderCell>
-              <TableHeaderCell style={numericStyle}>
-                {t("averageCost")}
-              </TableHeaderCell>
-              <TableHeaderCell style={numericStyle}>
-                {t("bookCost")}
-              </TableHeaderCell>
-              <TableHeaderCell style={numericStyle}>
-                {t("marketValue")}
-              </TableHeaderCell>
-              <TableHeaderCell style={numericStyle}>
-                {t("portfolioUnrealizedGains")}
-              </TableHeaderCell>
-              <TableHeaderCell style={numericStyle}>
-                {t("portfolioRealizedGains")}
-              </TableHeaderCell>
-              <TableHeaderCell style={numericStyle}>
-                {t("portfolioDividends")}
-              </TableHeaderCell>
-              <TableHeaderCell>{t("currency")}</TableHeaderCell>
+      <Table
+        density="balanced"
+        dividers="rows"
+        hasHover
+        textOverflow="wrap"
+        aria-label={t("holdingsAtRangeEnd")}
+        tableProps={{ className: "portfolio-holdings-table" }}
+      >
+        <TableHeader>
+          <TableRow isHeaderRow>
+            <TableHeaderCell>{t("instrument")}</TableHeaderCell>
+            <TableHeaderCell style={numericStyle}>
+              {t("quantity")}
+            </TableHeaderCell>
+            <TableHeaderCell style={numericStyle}>
+              {t("averageCost")}
+            </TableHeaderCell>
+            <TableHeaderCell style={numericStyle}>
+              {t("bookCost")}
+            </TableHeaderCell>
+            <TableHeaderCell style={numericStyle}>
+              {t("marketValue")}
+            </TableHeaderCell>
+            <TableHeaderCell style={numericStyle}>
+              {t("portfolioUnrealizedGains")}
+            </TableHeaderCell>
+            <TableHeaderCell style={numericStyle}>
+              {t("portfolioRealizedGains")}
+            </TableHeaderCell>
+            <TableHeaderCell style={numericStyle}>
+              {t("portfolioDividends")}
+            </TableHeaderCell>
+            <TableHeaderCell>{t("currency")}</TableHeaderCell>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {positions.map((position) => (
+            <TableRow key={position.instrumentId}>
+              <TableCell>
+                <strong>{position.symbol}</strong>
+                <span className="portfolio-company-name">
+                  {position.companyName}
+                </span>
+              </TableCell>
+              <TableCell style={numericStyle}>
+                {formatDecimalString(position.quantityDecimal, locale, 6)}
+              </TableCell>
+              <TableCell style={numericStyle}>
+                {formatPortfolioCurrency(
+                  position.averageCostDecimal,
+                  position.currency,
+                  locale,
+                )}
+              </TableCell>
+              <TableCell style={numericStyle}>
+                {formatPortfolioCurrency(
+                  position.bookCostDecimal,
+                  position.currency,
+                  locale,
+                )}
+              </TableCell>
+              <TableCell style={numericStyle}>
+                {formatPortfolioCurrency(
+                  position.marketValueDecimal,
+                  position.currency,
+                  locale,
+                )}
+              </TableCell>
+              <TableCell style={numericStyle}>
+                {formatPortfolioCurrency(
+                  position.unrealizedGainDecimal,
+                  position.currency,
+                  locale,
+                )}
+              </TableCell>
+              <TableCell style={numericStyle}>
+                {formatPortfolioCurrency(
+                  position.realizedGainDecimal,
+                  position.currency,
+                  locale,
+                )}
+              </TableCell>
+              <TableCell style={numericStyle}>
+                {formatPortfolioCurrency(
+                  position.dividendsDecimal,
+                  position.currency,
+                  locale,
+                )}
+              </TableCell>
+              <TableCell>{position.currency}</TableCell>
             </TableRow>
-          </TableHeader>
-          <TableBody>
-            {positions.map((position) => (
-              <TableRow key={position.instrumentId}>
-                <TableCell>
-                  <strong>{position.symbol}</strong>
-                  <span className="portfolio-company-name">
-                    {position.companyName}
-                  </span>
-                </TableCell>
-                <TableCell style={numericStyle}>
-                  {formatDecimalString(position.quantityDecimal, locale, 6)}
-                </TableCell>
-                <TableCell style={numericStyle}>
-                  {formatPortfolioCurrency(
-                    position.averageCostDecimal,
-                    position.currency,
-                    locale,
-                  )}
-                </TableCell>
-                <TableCell style={numericStyle}>
-                  {formatPortfolioCurrency(
-                    position.bookCostDecimal,
-                    position.currency,
-                    locale,
-                  )}
-                </TableCell>
-                <TableCell style={numericStyle}>
-                  {formatPortfolioCurrency(
-                    position.marketValueDecimal,
-                    position.currency,
-                    locale,
-                  )}
-                </TableCell>
-                <TableCell style={numericStyle}>
-                  {formatPortfolioCurrency(
-                    position.unrealizedGainDecimal,
-                    position.currency,
-                    locale,
-                  )}
-                </TableCell>
-                <TableCell style={numericStyle}>
-                  {formatPortfolioCurrency(
-                    position.realizedGainDecimal,
-                    position.currency,
-                    locale,
-                  )}
-                </TableCell>
-                <TableCell style={numericStyle}>
-                  {formatPortfolioCurrency(
-                    position.dividendsDecimal,
-                    position.currency,
-                    locale,
-                  )}
-                </TableCell>
-                <TableCell>{position.currency}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+          ))}
+        </TableBody>
+      </Table>
     </VStack>
   );
 };

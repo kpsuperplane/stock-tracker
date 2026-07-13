@@ -146,6 +146,9 @@ describe("CalendarPage", () => {
     expect(markup).toContain("AAPL · Earnings");
     expect(markup).toContain("Monthly dividends: USD $0.50");
     expect(markup).toContain("Dividend breakdown");
+    expect(markup).toContain('role="radiogroup" aria-label="Calendar view"');
+    expect(markup).toContain('aria-checked="true" data-value="month"');
+    expect(markup).toContain('aria-checked="false" data-value="week"');
     expect(markup).toContain('aria-label="AAPL, Dividend, AAPL $0.50"');
     expect(markup).toContain('aria-label="AAPL, Earnings, AAPL · Earnings"');
     expect(markup).not.toContain(
@@ -255,6 +258,7 @@ describe("CalendarPage", () => {
 
     expect(markup).toContain("Week");
     expect(markup).toContain("Weekly dividends: $0.00");
+    expect(markup).toContain('aria-checked="true" data-value="week"');
     expect(markup).toContain("Market data pending: Waiting for close.");
     expect(markup).not.toContain(
       "No movers, dividends, or earnings in this range.",

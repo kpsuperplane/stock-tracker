@@ -103,7 +103,13 @@ describe("PortfolioPage", () => {
     expect(markup).toContain("1Y");
     expect(markup).toContain("CAD");
     expect(markup).toContain("USD");
-    expect(markup).toContain("Show chart data");
+    expect(markup).toContain("Download portfolio data");
+    expect(markup).toContain(
+      'role="radiogroup" aria-label="Select date range"',
+    );
+    expect(markup).not.toContain("Track securities value");
+    expect(markup).not.toContain("Data through");
+    expect(markup).not.toContain("Show chart data");
     expect(markup).toContain("Holdings at range end");
     expect(markup).toContain("AAPL");
     expect(markup).toContain("Apple Inc.");
@@ -122,7 +128,7 @@ describe("PortfolioPage", () => {
     );
     expect(chinese).toContain("总市值");
     expect(chinese).toContain("已实现收益");
-    expect(chinese).toContain("显示图表数据");
+    expect(chinese).toContain("下载投资组合数据");
 
     const empty = renderToStaticMarkup(
       <I18nProvider initialLocale="en">

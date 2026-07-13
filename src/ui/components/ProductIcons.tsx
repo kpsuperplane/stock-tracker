@@ -21,6 +21,23 @@ export const RefreshIcon: IconType = (props) => (
   </svg>
 );
 
+export const DownloadIcon: IconType = (props) => (
+  <svg {...svgProps} {...props}>
+    <title>Download</title>
+    <path d="M12 3v12" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M4 14v6h16v-6" />
+  </svg>
+);
+
+export const WarningIcon: IconType = (props) => (
+  <svg {...svgProps} {...props}>
+    <title>Warning</title>
+    <path d="m12 4 9 16H3L12 4Z" />
+    <path d="M12 9v5M12 17h.01" />
+  </svg>
+);
+
 export const UploadIcon: IconType = (props) => (
   <svg {...svgProps} {...props}>
     <title>Upload</title>

@@ -17,7 +17,8 @@ describe("product AppShell", () => {
       todayMarkup.indexOf('href="/portfolio"'),
     );
     expect(portfolioMarkup).toContain('data-testid="portfolio-page"');
-    expect(portfolioMarkup).toContain("Track securities value");
+    expect(portfolioMarkup).toContain('aria-label="Select date range"');
+    expect(portfolioMarkup).not.toContain("Track securities value");
   });
 
   it("renders the calendar route with an active, keyboard-reachable nav item", () => {
