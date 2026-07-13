@@ -285,7 +285,7 @@ describe("portfolio ledger migration", () => {
     ).rejects.toThrow();
   });
 
-  it("enforces unique import digests and staging cascade retention", async () => {
+  it("allows repeated import digests and keeps staging cascade retention", async () => {
     await env.DB.prepare(
       `INSERT INTO import_batches
        (id, file_digest, original_filename, base_position_basis_revision,
@@ -304,17 +304,15 @@ describe("portfolio ledger migration", () => {
                '1', '10', 'account-default', 'Uncategorized',
                'Default Account', 'valid')`,
     ).run();
-    await expect(
-      env.DB.prepare(
-        `INSERT INTO import_batches
-         (id, file_digest, original_filename, base_position_basis_revision,
-          status, expires_at, created_at, updated_at)
-         VALUES ('batch-2', 'digest-1', 'copy.csv', 0, 'preview',
-                 '2026-07-11T12:00:00.000Z', ?1, ?1)`,
-      )
-        .bind(now)
-        .run(),
-    ).rejects.toThrow();
+    await env.DB.prepare(
+      `INSERT INTO import_batches
+       (id, file_digest, original_filename, base_position_basis_revision,
+        status, expires_at, created_at, updated_at)
+       VALUES ('batch-2', 'digest-1', 'copy.csv', 0, 'preview',
+               '2026-07-11T12:00:00.000Z', ?1, ?1)`,
+    )
+      .bind(now)
+      .run();
     await env.DB.prepare(
       "DELETE FROM import_batches WHERE id = 'batch-1'",
     ).run();
