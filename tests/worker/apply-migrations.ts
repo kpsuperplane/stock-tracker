@@ -63,7 +63,8 @@ beforeEach(async () => {
     env.DB.prepare(
       `UPDATE accounts
           SET category_id = 'account-category-uncategorized',
-              name = 'Default Account', owner = '', sort_order = 0, revision = 1,
+              name = 'Default Account', nickname = NULL, owner = '',
+              sort_order = 0, revision = 1,
               archived_at = NULL, updated_at = datetime('now')
         WHERE id = 'account-default'`,
     ),

@@ -1,4 +1,5 @@
 import type { SelectorOptionType } from "@astryxdesign/core";
+import { accountDisplayName } from "../../shared/account-display";
 import type {
   AccountCategoryDto,
   AccountDto,
@@ -112,7 +113,7 @@ export const buildAccountScopeOptions = (
         },
         ...category.accounts.map((account) => ({
           value: `account:${account.id}`,
-          label: `${account.name}${account.archivedAt ? ` (${labels.archived})` : ""}`,
+          label: `${accountDisplayName(account)}${account.archivedAt ? ` (${labels.archived})` : ""}`,
         })),
       ]),
     },

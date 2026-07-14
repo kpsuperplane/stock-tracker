@@ -19,6 +19,7 @@ describe("accounts and categories", () => {
         expect.objectContaining({
           id: "account-default",
           name: "Default Account",
+          nickname: null,
           owner: "",
           categoryId: "account-category-uncategorized",
         }),
@@ -45,6 +46,7 @@ describe("accounts and categories", () => {
     const accountTwo = await service.createAccount({
       categoryId: category.id,
       name: "Account 2",
+      nickname: " Retirement ",
       owner: "kevin",
       now,
       id: "tfsa-2",
@@ -86,18 +88,25 @@ describe("accounts and categories", () => {
     expect(accountTwo.owner).toBe("kevin");
     expect(ownerScope.ownerName).toBe("Kevin");
     expect(categoryScope.categoryName).toBe("TFSA");
-    expect(accountScope.accountName).toBe("Account 2");
+    expect(accountTwo.nickname).toBe("Retirement");
+    expect(accountScope.accountName).toBe("Retirement");
     expect(categoryScope.fingerprint).toContain(`category:${category.id}:`);
     expect(await service.structureRevision()).toBeGreaterThan(0);
   });
 
-  it("stores a non-null owner and tracks direct owner changes in structure state", async () => {
-    const ownerColumn = await env.DB.prepare(
-      "PRAGMA table_info(accounts)",
-    ).all<{ name: string; notnull: number; dflt_value: string | null }>();
+  it("stores optional nicknames and tracks direct account label changes", async () => {
+    const columns = await env.DB.prepare("PRAGMA table_info(accounts)").all<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>();
+    expect(columns.results.find(({ name }) => name === "owner")).toMatchObject({
+      notnull: 1,
+      dflt_value: "''",
+    });
     expect(
-      ownerColumn.results.find(({ name }) => name === "owner"),
-    ).toMatchObject({ notnull: 1, dflt_value: "''" });
+      columns.results.find(({ name }) => name === "nickname"),
+    ).toMatchObject({ notnull: 0, dflt_value: null });
     const indexes = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'index'",
     ).all<{ name: string }>();
@@ -118,13 +127,29 @@ describe("accounts and categories", () => {
         .run(),
     ).rejects.toThrow(/CHECK|constraint/i);
 
+    await expect(
+      env.DB.prepare(
+        "UPDATE accounts SET nickname = ?1 WHERE id = 'account-default'",
+      )
+        .bind("x".repeat(121))
+        .run(),
+    ).rejects.toThrow(/CHECK|constraint/i);
+
+    await env.DB.prepare(
+      "UPDATE accounts SET nickname = 'Everyday' WHERE id = 'account-default'",
+    ).run();
+    expect((await repository().findAccount("account-default"))?.nickname).toBe(
+      "Everyday",
+    );
+    expect((await repository().structure()).revision).toBe(1);
+
     await env.DB.prepare(
       "UPDATE accounts SET owner = 'Kevin' WHERE id = 'account-default'",
     ).run();
     expect((await repository().findAccount("account-default"))?.owner).toBe(
       "Kevin",
     );
-    expect((await repository().structure()).revision).toBe(1);
+    expect((await repository().structure()).revision).toBe(2);
   });
 
   it("keeps archived accounts in owner scopes unless active-only resolution is requested", async () => {

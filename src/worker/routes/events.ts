@@ -237,7 +237,8 @@ const timelineSql = `
       NULL AS retrieved_at, transactions.revision, NULL AS status,
       NULL AS conflict_code, NULL AS conflict_message,
       transactions.created_at, transactions.updated_at,
-      transactions.account_id, accounts.name AS account_name,
+      transactions.account_id,
+      COALESCE(accounts.nickname, accounts.name) AS account_name,
       accounts.category_id, account_categories.name AS category_name
     FROM transactions
     JOIN instruments ON instruments.id = transactions.instrument_id
@@ -298,7 +299,8 @@ const transactionById = async (
         instruments.currency, transactions.trade_date AS event_date,
         transactions.side, transactions.quantity_decimal, transactions.price_decimal,
         transactions.revision, transactions.created_at, transactions.updated_at,
-        transactions.account_id, accounts.name AS account_name,
+        transactions.account_id,
+        COALESCE(accounts.nickname, accounts.name) AS account_name,
         accounts.category_id, account_categories.name AS category_name
        FROM transactions JOIN instruments ON instruments.id = transactions.instrument_id
        LEFT JOIN accounts ON accounts.id = transactions.account_id

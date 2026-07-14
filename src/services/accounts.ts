@@ -4,6 +4,7 @@ import type {
   AccountRecord,
   AccountRepository,
 } from "../db/accounts";
+import { accountDisplayName } from "../shared/account-display";
 import { ApiError } from "../worker/errors";
 
 export type AccountScopeType = "all" | "owner" | "category" | "account";
@@ -47,6 +48,7 @@ export interface UpdateCategoryInput {
 export interface CreateAccountInput {
   categoryId: string;
   name: string;
+  nickname?: string | null;
   owner?: string;
   sortOrder?: number;
   id?: string;
@@ -57,6 +59,7 @@ export interface UpdateAccountInput {
   id: string;
   categoryId?: string;
   name?: string;
+  nickname?: string | null;
   owner?: string;
   sortOrder?: number;
   archived?: boolean;
@@ -84,6 +87,7 @@ interface AccountRepositoryPort {
     id: string;
     categoryId: string;
     name: string;
+    nickname: string | null;
     owner: string;
     sortOrder: number;
     now: string;
@@ -100,6 +104,7 @@ interface AccountRepositoryPort {
     id: string;
     categoryId: string;
     name: string;
+    nickname: string | null;
     owner: string;
     sortOrder: number;
     archivedAt: string | null;
@@ -150,6 +155,18 @@ const normalizeOwner = (value: string): string => {
     );
   }
   return owner;
+};
+
+const normalizeNickname = (value: string | null | undefined): string | null => {
+  const nickname = value?.trim() ?? "";
+  if (nickname.length > MAX_NAME_LENGTH) {
+    throw new ApiError(
+      422,
+      "invalid_account_nickname",
+      `Account nicknames must be at most ${MAX_NAME_LENGTH} characters.`,
+    );
+  }
+  return nickname || null;
 };
 
 const normalizeSortOrder = (value: number | undefined): number => {
@@ -321,12 +338,14 @@ export class AccountService {
       );
     }
     const name = normalizeName(input.name, "Account");
+    const nickname = normalizeNickname(input.nickname);
     const owner = normalizeOwner(input.owner ?? "");
     const sortOrder = normalizeSortOrder(input.sortOrder);
     const row = {
       id: input.id ?? this.createId(),
       categoryId: input.categoryId,
       name,
+      nickname,
       owner,
       sortOrder,
       now: timestamp(input.now),
@@ -408,6 +427,10 @@ export class AccountService {
       }
     }
     const name = normalizeName(input.name ?? existing.name, "Account");
+    const nickname =
+      input.nickname === undefined
+        ? existing.nickname
+        : normalizeNickname(input.nickname);
     const owner = normalizeOwner(input.owner ?? existing.owner);
     const sortOrder = normalizeSortOrder(input.sortOrder ?? existing.sortOrder);
     let updated: boolean;
@@ -416,6 +439,7 @@ export class AccountService {
         id: existing.id,
         categoryId,
         name,
+        nickname,
         owner,
         sortOrder,
         archivedAt,
@@ -554,7 +578,7 @@ export class AccountService {
       accountIds: [account.id],
       categoryId: account.categoryId,
       categoryName: category?.name ?? null,
-      accountName: account.name,
+      accountName: accountDisplayName(account),
       ownerName: account.owner || null,
       structureRevision,
       fingerprint: `account:${account.id}:${structureRevision}`,

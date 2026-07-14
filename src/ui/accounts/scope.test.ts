@@ -13,10 +13,12 @@ const account = (
   categoryId: string,
   owner: string,
   archivedAt: string | null = null,
+  nickname: string | null = null,
 ): AccountDto => ({
   id,
   categoryId,
   name: id,
+  nickname,
   owner,
   sortOrder: 0,
   revision: 1,
@@ -35,7 +37,7 @@ const categories: AccountCategoryDto[] = [
     createdAt: "2026-07-13T00:00:00.000Z",
     updatedAt: "2026-07-13T00:00:00.000Z",
     accounts: [
-      account("tfsa", "registered", "Kevin"),
+      account("tfsa", "registered", "Kevin", null, "Tax-free"),
       account("rrsp", "registered", "kevin"),
     ],
   },
@@ -124,7 +126,7 @@ describe("account scope helpers", () => {
             { value: "category:registered", label: "Registered" },
             {
               value: "account:tfsa",
-              label: "tfsa",
+              label: "Tax-free",
             },
             { value: "account:rrsp", label: "rrsp" },
             { value: "category:taxable", label: "Taxable" },

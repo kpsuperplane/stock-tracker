@@ -520,6 +520,7 @@ export const AccountsPage = () => {
                           ...previous,
                           [account.id]: {
                             name: account.name,
+                            nickname: account.nickname ?? "",
                             owner: account.owner,
                           },
                         }));

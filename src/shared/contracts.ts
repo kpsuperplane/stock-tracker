@@ -112,6 +112,7 @@ export interface AccountDto {
   id: string;
   categoryId: string;
   name: string;
+  nickname: string | null;
   owner: string;
   sortOrder: number;
   revision: number;

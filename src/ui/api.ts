@@ -437,6 +437,7 @@ export const api = {
     createAccount: (input: {
       categoryId: string;
       name: string;
+      nickname?: string;
       owner?: string;
       sortOrder?: number;
     }) =>
@@ -449,6 +450,7 @@ export const api = {
       input: {
         categoryId?: string;
         name?: string;
+        nickname?: string;
         owner?: string;
         sortOrder?: number;
         archived?: boolean;

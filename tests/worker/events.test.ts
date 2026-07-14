@@ -643,6 +643,9 @@ describe("portfolio event routes", () => {
 
   it("returns a paginated combined timeline with canonical decimal strings and filters", async () => {
     await insertInstrument();
+    await env.DB.prepare(
+      "UPDATE accounts SET nickname = 'Everyday' WHERE id = 'account-default'",
+    ).run();
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO transactions
@@ -710,6 +713,7 @@ describe("portfolio event routes", () => {
         quantityDecimal: "1.23",
         priceDecimal: "10.5",
         symbol: "SHOP.TO",
+        accountName: "Everyday",
       }),
     ]);
 

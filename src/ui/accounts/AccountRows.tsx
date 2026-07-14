@@ -6,16 +6,22 @@ import {
   TextInput,
   VStack,
 } from "@astryxdesign/core";
+import { accountDisplayName } from "../../shared/account-display";
 import type { AccountCategoryDto, AccountDto } from "../../shared/contracts";
 import { api } from "../api";
 import { useI18n } from "../i18n/I18nProvider";
 
 export interface AccountDraft {
   name: string;
+  nickname: string;
   owner: string;
 }
 
-export const emptyAccountDraft = (): AccountDraft => ({ name: "", owner: "" });
+export const emptyAccountDraft = (): AccountDraft => ({
+  name: "",
+  nickname: "",
+  owner: "",
+});
 
 export const mergeAccountDrafts = (
   categories: AccountCategoryDto[],
@@ -26,7 +32,11 @@ export const mergeAccountDrafts = (
     categories.flatMap((category) =>
       category.accounts.map((account) => [
         account.id,
-        { name: account.name, owner: account.owner },
+        {
+          name: account.name,
+          nickname: account.nickname ?? "",
+          owner: account.owner,
+        },
       ]),
     ),
   );
@@ -94,6 +104,7 @@ export const AccountRows = ({
       await api.accounts.createAccount({
         categoryId: category.id,
         name: newDraft.name,
+        nickname: newDraft.nickname,
         owner: newDraft.owner,
       });
       onNewDraftChange(emptyAccountDraft());
@@ -115,12 +126,15 @@ export const AccountRows = ({
           {accounts.map((account) => {
             const draft = drafts[account.id] ?? {
               name: account.name,
+              nickname: account.nickname ?? "",
               owner: account.owner,
             };
+            const displayName = accountDisplayName(account);
             const accountEditKey = `account-edit-${account.id}`;
             const isEditing = editingKey === accountEditKey;
             const hasChanges =
               draft.name.trim() !== account.name ||
+              draft.nickname.trim() !== (account.nickname ?? "") ||
               draft.owner.trim() !== account.owner;
 
             return (
@@ -141,6 +155,17 @@ export const AccountRows = ({
                       isDisabled={busy !== null}
                     />
                     <TextInput
+                      label={t("nickname")}
+                      isOptional
+                      value={draft.nickname}
+                      onChange={(nickname) =>
+                        onDraftChange(account.id, { ...draft, nickname })
+                      }
+                      width="100%"
+                      size="sm"
+                      isDisabled={busy !== null}
+                    />
+                    <TextInput
                       label={t("owner")}
                       isOptional
                       value={draft.owner}
@@ -154,7 +179,7 @@ export const AccountRows = ({
                   </div>
                 ) : (
                   <VStack gap={0.5} className="accounts-account-identity">
-                    <Text weight="medium">{account.name}</Text>
+                    <Text weight="medium">{displayName}</Text>
                     <Text type="supporting" color="secondary">
                       {t("owner")}: {account.owner || t("noOwner")}
                     </Text>
@@ -180,7 +205,7 @@ export const AccountRows = ({
                         <Button
                           variant="secondary"
                           size="sm"
-                          label={`${t("save")} ${account.name}`}
+                          label={`${t("save")} ${displayName}`}
                           isDisabled={
                             busy !== null || !draft.name.trim() || !hasChanges
                           }
@@ -193,6 +218,7 @@ export const AccountRows = ({
                                   account.id,
                                   {
                                     name: draft.name,
+                                    nickname: draft.nickname,
                                     owner: draft.owner,
                                   },
                                   account.revision,
@@ -208,11 +234,12 @@ export const AccountRows = ({
                         <Button
                           variant="ghost"
                           size="sm"
-                          label={`${t("cancel")} ${account.name}`}
+                          label={`${t("cancel")} ${displayName}`}
                           isDisabled={busy !== null}
                           onClick={() => {
                             onDraftChange(account.id, {
                               name: account.name,
+                              nickname: account.nickname ?? "",
                               owner: account.owner,
                             });
                             onStopEditing();
@@ -226,7 +253,7 @@ export const AccountRows = ({
                         <Button
                           variant="ghost"
                           size="sm"
-                          label={`${t("edit")} ${account.name}`}
+                          label={`${t("edit")} ${displayName}`}
                           isDisabled={editingKey !== null || busy !== null}
                           onClick={() =>
                             onBeginEditing(accountEditKey, account)
@@ -237,7 +264,7 @@ export const AccountRows = ({
                         <Button
                           variant="ghost"
                           size="sm"
-                          label={`${account.archivedAt ? t("restore") : t("archive")} ${account.name}`}
+                          label={`${account.archivedAt ? t("restore") : t("archive")} ${displayName}`}
                           isDisabled={busy !== null}
                           onClick={() =>
                             void runMutation(
@@ -278,6 +305,18 @@ export const AccountRows = ({
               label={t("newAccount")}
               value={newDraft.name}
               onChange={(name) => onNewDraftChange({ ...newDraft, name })}
+              onEnter={createAccount}
+              width="100%"
+              size="sm"
+              isDisabled={busy !== null}
+            />
+            <TextInput
+              label={t("nickname")}
+              isOptional
+              value={newDraft.nickname}
+              onChange={(nickname) =>
+                onNewDraftChange({ ...newDraft, nickname })
+              }
               onEnter={createAccount}
               width="100%"
               size="sm"

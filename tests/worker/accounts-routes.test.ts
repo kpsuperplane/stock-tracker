@@ -49,6 +49,7 @@ describe("account routes", () => {
         body: JSON.stringify({
           categoryId: category.category.id,
           name: " Account 1 ",
+          nickname: " Long-term ",
           owner: " Kevin ",
         }),
       }),
@@ -58,6 +59,7 @@ describe("account routes", () => {
       account: {
         id: string;
         name: string;
+        nickname: string | null;
         owner: string;
         categoryId: string;
         revision: number;
@@ -65,6 +67,7 @@ describe("account routes", () => {
     }>();
     expect(account.account).toMatchObject({
       name: "Account 1",
+      nickname: "Long-term",
       owner: "Kevin",
       categoryId: category.category.id,
       revision: 1,
@@ -81,12 +84,18 @@ describe("account routes", () => {
     expect(
       (
         await renamed.json<{
-          account: { name: string; owner: string; revision: number };
+          account: {
+            name: string;
+            nickname: string | null;
+            owner: string;
+            revision: number;
+          };
         }>()
       ).account,
     ).toEqual(
       expect.objectContaining({
         name: "Account One",
+        nickname: "Long-term",
         owner: "Pat",
         revision: 2,
       }),
@@ -96,14 +105,23 @@ describe("account routes", () => {
       new Request(`http://local/api/accounts/accounts/${account.account.id}`, {
         method: "PATCH",
         headers: { ...headers, "If-Match": "2" },
-        body: JSON.stringify({ owner: "   " }),
+        body: JSON.stringify({ nickname: "   ", owner: "   " }),
       }),
     );
     expect(cleared.status).toBe(200);
     expect(
-      (await cleared.json<{ account: { owner: string; revision: number } }>())
-        .account,
-    ).toEqual(expect.objectContaining({ owner: "", revision: 3 }));
+      (
+        await cleared.json<{
+          account: {
+            nickname: string | null;
+            owner: string;
+            revision: number;
+          };
+        }>()
+      ).account,
+    ).toEqual(
+      expect.objectContaining({ nickname: null, owner: "", revision: 3 }),
+    );
 
     const nullable = await exports.default.fetch(
       new Request(`http://local/api/accounts/accounts/${account.account.id}`, {

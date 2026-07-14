@@ -22,6 +22,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { accountDisplayName } from "../../shared/account-display";
 import type {
   EventsTimelineDto,
   TransactionEventDto,
@@ -174,7 +175,7 @@ const TransactionDialog = ({
         : scopedAccounts;
     return availableAccounts.map((account) => ({
       value: account.id,
-      label: `${categories.find((category) => category.id === account.categoryId)?.name ?? t("category")} / ${account.name}${account.archivedAt ? ` (${t("archived")})` : ""}`,
+      label: `${categories.find((category) => category.id === account.categoryId)?.name ?? t("category")} / ${accountDisplayName(account)}${account.archivedAt ? ` (${t("archived")})` : ""}`,
     }));
   }, [categories, selection, t, transaction]);
   const [accountId, setAccountId] = useState(

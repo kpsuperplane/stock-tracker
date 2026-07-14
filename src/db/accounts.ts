@@ -14,6 +14,7 @@ export interface AccountRecord {
   id: string;
   categoryId: string;
   name: string;
+  nickname: string | null;
   owner: string;
   sortOrder: number;
   revision: number;
@@ -46,6 +47,7 @@ interface AccountRow {
   id: string;
   category_id: string;
   name: string;
+  nickname: string | null;
   owner: string;
   sort_order: number;
   revision: number;
@@ -80,6 +82,7 @@ const mapAccount = (row: AccountRow): AccountRecord => ({
   id: row.id,
   categoryId: row.category_id,
   name: row.name,
+  nickname: row.nickname,
   owner: row.owner,
   sortOrder: row.sort_order,
   revision: row.revision,
@@ -93,7 +96,7 @@ const categorySelect = `
     FROM account_categories`;
 
 const accountSelect = `
-  SELECT id, category_id, name, owner, sort_order, revision, archived_at,
+  SELECT id, category_id, name, nickname, owner, sort_order, revision, archived_at,
          created_at, updated_at
     FROM accounts`;
 
@@ -117,6 +120,7 @@ export interface InsertAccount {
   id: string;
   categoryId: string;
   name: string;
+  nickname?: string | null;
   owner?: string;
   sortOrder: number;
   now: string;
@@ -126,6 +130,7 @@ export interface UpdateAccount {
   id: string;
   categoryId: string;
   name: string;
+  nickname: string | null;
   owner: string;
   sortOrder: number;
   archivedAt: string | null;
@@ -218,13 +223,14 @@ export class AccountRepository {
     await this.db
       .prepare(
         `INSERT INTO accounts
-         (id, category_id, name, owner, sort_order, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)`,
+         (id, category_id, name, nickname, owner, sort_order, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)`,
       )
       .bind(
         input.id,
         input.categoryId,
         input.name,
+        input.nickname ?? null,
         input.owner ?? "",
         input.sortOrder,
         input.now,
@@ -259,13 +265,15 @@ export class AccountRepository {
     const result = await this.db
       .prepare(
         `UPDATE accounts
-            SET category_id = ?1, name = ?2, owner = ?3, sort_order = ?4,
-                archived_at = ?5, revision = revision + 1, updated_at = ?6
-          WHERE id = ?7 AND revision = ?8`,
+            SET category_id = ?1, name = ?2, nickname = ?3, owner = ?4,
+                sort_order = ?5, archived_at = ?6,
+                revision = revision + 1, updated_at = ?7
+          WHERE id = ?8 AND revision = ?9`,
       )
       .bind(
         input.categoryId,
         input.name,
+        input.nickname,
         input.owner,
         input.sortOrder,
         input.archivedAt,

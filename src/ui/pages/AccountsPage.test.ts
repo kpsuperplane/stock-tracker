@@ -15,6 +15,7 @@ const account = (
   id,
   categoryId: "category-1",
   name,
+  nickname: null,
   owner: "",
   sortOrder: 0,
   revision: 1,
@@ -45,14 +46,26 @@ describe("AccountsPage state helpers", () => {
       mergeAccountDrafts(
         [refreshed],
         {
-          "account-1": { name: "TFSA draft", owner: "Kevin" },
-          "account-2": { name: "Old RRSP", owner: "Old owner" },
+          "account-1": {
+            name: "TFSA draft",
+            nickname: "Retirement",
+            owner: "Kevin",
+          },
+          "account-2": {
+            name: "Old RRSP",
+            nickname: "",
+            owner: "Old owner",
+          },
         },
         "account-1",
       ),
     ).toMatchObject({
-      "account-1": { name: "TFSA draft", owner: "Kevin" },
-      "account-2": { name: "RRSP updated", owner: "" },
+      "account-1": {
+        name: "TFSA draft",
+        nickname: "Retirement",
+        owner: "Kevin",
+      },
+      "account-2": { name: "RRSP updated", nickname: "", owner: "" },
     });
   });
 
