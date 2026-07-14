@@ -180,14 +180,14 @@ describe("TodayPage", () => {
 });
 
 describe("portfolio movement formatters", () => {
-  it("sorts positions by descending movement and puts missing values last", () => {
+  it("sorts positions by descending absolute movement and puts missing values last", () => {
     const positivePosition = portfolio.positions.find(
       (position) => position.symbol === "AAPL",
     );
     const negativePosition = portfolio.positions.find(
       (position) => position.symbol === "SHOP.TO",
     );
-    if (!positivePosition || !negativePosition) {
+    if (!positivePosition || !negativePosition?.movement) {
       throw new Error("test portfolio fixtures are incomplete");
     }
     const missingMovement = {
@@ -196,14 +196,21 @@ describe("portfolio movement formatters", () => {
       symbol: "NVDA",
       movement: null,
     };
+    const largerNegativeMovement = {
+      ...negativePosition,
+      movement: {
+        ...negativePosition.movement,
+        movementPercentDecimal: "-8",
+      },
+    };
 
     expect(
       sortPortfolioPositions([
-        negativePosition,
+        largerNegativeMovement,
         missingMovement,
         positivePosition,
       ]).map((position) => position.symbol),
-    ).toEqual(["AAPL", "SHOP.TO", "NVDA"]);
+    ).toEqual(["SHOP.TO", "AAPL", "NVDA"]);
   });
 
   it("preserves signed decimal strings and identifies direction", () => {

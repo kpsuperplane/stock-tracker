@@ -165,7 +165,7 @@ export const sortPortfolioPositions = (
     const rightValue = movementPercentValue(right);
     if (leftValue === null) return rightValue === null ? 0 : 1;
     if (rightValue === null) return -1;
-    return rightValue - leftValue;
+    return Math.abs(rightValue) - Math.abs(leftValue);
   });
 
 type PositionSource = PortfolioPositionDto["sources"][number] & {
