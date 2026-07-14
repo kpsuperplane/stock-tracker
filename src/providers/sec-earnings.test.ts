@@ -3,7 +3,10 @@ import { SecEarningsHistoryProvider } from "./sec-earnings";
 
 const directory = {
   fields: ["cik", "name", "ticker", "exchange"],
-  data: [[51143, "International Business Machines", "IBM", "NYSE"]],
+  data: [
+    [51143, "International Business Machines", "IBM", "NYSE"],
+    [1109262, "Issuer without a listed exchange", "AGGI", null],
+  ],
 };
 
 const submissions = (overrides?: {

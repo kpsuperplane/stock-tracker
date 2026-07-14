@@ -21,7 +21,7 @@ const directorySchema = z.object({
       z.number().int().positive(),
       z.string().min(1),
       z.string().min(1),
-      z.string().min(1),
+      z.string().min(1).nullable(),
     ]),
   ),
 });
