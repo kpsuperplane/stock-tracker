@@ -8,7 +8,7 @@ const resultSchema = z.object({
     shortName: z.string().optional(),
     exchangeName: z.string(),
     currency: z.string(),
-    instrumentType: z.enum(["EQUITY", "ETF"]),
+    instrumentType: z.enum(["EQUITY", "ETF", "WARRANT"]),
   }),
   timestamp: z.array(z.number()),
   indicators: z.object({

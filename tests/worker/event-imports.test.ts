@@ -187,6 +187,30 @@ describe("EventImportsService", () => {
     });
   });
 
+  it("accepts a zero price basis but continues to reject negative prices", async () => {
+    const result = await service().preview({
+      originalFilename: "free-acquisition.csv",
+      file: new TextEncoder().encode(
+        csv(["2024-01-02,SHOP.TO,buy,3,0", "2024-01-03,SHOP.TO,buy,1,-0.01"]),
+      ),
+    });
+
+    expect(result.kind).toBe("preview");
+    if (result.kind !== "preview") return;
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        priceDecimal: "0",
+        status: "valid",
+        errors: [],
+      }),
+      expect.objectContaining({
+        priceDecimal: "-0.01",
+        status: "invalid",
+        errors: expect.arrayContaining(["invalid_price"]),
+      }),
+    ]);
+  });
+
   it("previews and commits one file across multiple active accounts", async () => {
     await insertAccount({
       categoryId: "category-registered",

@@ -223,8 +223,7 @@ export const normalizeImportRow = (
   }
   try {
     priceDecimal = canonicalizeDecimal(priceInput, INPUT_DECIMAL_BOUNDS);
-    if (priceDecimal === "0" || priceDecimal.startsWith("-"))
-      errors.push("invalid_price");
+    if (priceDecimal.startsWith("-")) errors.push("invalid_price");
   } catch {
     errors.push("invalid_price");
   }

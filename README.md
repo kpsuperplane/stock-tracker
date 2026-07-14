@@ -111,13 +111,14 @@ available to integration tests and external clients.
 `public/templates/portfolio-events.csv` is the only supported UTF-8 import
 shape. Its exact header is
 `trade_date,symbol,side,quantity,price,category,account`; dates are
-`YYYY-MM-DD`, sides are case-insensitive `BUY`/`SELL`, and quantity/price are
-positive canonical decimals with at most six fractional digits. Category and
-account names resolve to an existing active account after trimming whitespace
-and ignoring case, and one file may target several accounts. Preview accepts
-at most 5 MiB, 10,000 data rows, and 40 distinct symbols. The symbol cap keeps
-synchronous split-history checks within a Worker request budget; split larger
-imports into separate files.
+`YYYY-MM-DD`, sides are case-insensitive `BUY`/`SELL`, quantity is a positive
+canonical decimal, and price is a non-negative canonical decimal so free
+acquisitions can use a zero cost basis. Both decimal fields allow at most six
+fractional digits. Category and account names resolve to an existing active
+account after trimming whitespace and ignoring case, and one file may target
+several accounts. Preview accepts at most 5 MiB, 10,000 data rows, and 40
+distinct symbols. The symbol cap keeps synchronous split-history checks within
+a Worker request budget; split larger imports into separate files.
 
 Use `POST /api/event-imports/preview` as `multipart/form-data` with one `file`
 part. Preview stages normalized rows and returns account-specific projected

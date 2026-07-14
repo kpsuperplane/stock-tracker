@@ -73,6 +73,20 @@ describe("PortfolioAccountingEngine", () => {
     expect(disposal.snapshot()[0]?.realizedGain.toString()).toBe("-4.5");
   });
 
+  it("tracks a free acquisition with a zero cost basis", () => {
+    const engine = build([
+      buy("free", "2025-01-01", "3", "0"),
+      sell("sale", "2025-01-02", "1", "4.5"),
+    ]);
+
+    engine.advanceTo("2025-01-02");
+
+    expect(engine.snapshot()[0]?.quantity.toString()).toBe("2");
+    expect(engine.snapshot()[0]?.bookCost.toString()).toBe("0");
+    expect(engine.snapshot()[0]?.averageCost.toString()).toBe("0");
+    expect(engine.snapshot()[0]?.realizedGain.toString()).toBe("4.5");
+  });
+
   it("cleans residual cost before a disposal and re-entry", () => {
     const engine = build([
       buy("b1", "2025-01-01", "3", "10"),

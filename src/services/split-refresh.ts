@@ -40,7 +40,7 @@ export class ScheduledSplitRefreshService {
            LEFT JOIN corporate_action_coverage AS coverage
              ON coverage.instrument_id = instruments.id
             AND coverage.provider = 'yahoo-chart-v8'
-          WHERE instruments.instrument_type = 'stock'
+          WHERE instruments.security_type = 'stock'
             AND (coverage.instrument_id IS NULL OR coverage.status = 'unavailable')
           GROUP BY instruments.id
           ORDER BY COALESCE(coverage.updated_at, ''), instruments.id

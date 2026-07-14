@@ -1,4 +1,5 @@
 import type { TickerRepository } from "../db/tickers";
+import { instrumentTypeFromYahoo } from "../domain/instruments";
 import type { DailySeries, MarketDataProvider } from "../providers/market-data";
 import { ApiError } from "../worker/errors";
 
@@ -67,13 +68,13 @@ export class WatchlistService {
       );
     }
     if (
-      !["EQUITY", "ETF"].includes(series.metadata.instrumentType) ||
+      !["EQUITY", "ETF", "WARRANT"].includes(series.metadata.instrumentType) ||
       !["USD", "CAD"].includes(series.metadata.currency)
     ) {
       throw new ApiError(
         422,
         "unsupported_instrument",
-        "Only US and Canadian stocks and ETFs are supported.",
+        "Only US and Canadian stocks, ETFs, and warrants are supported.",
       );
     }
 
@@ -94,6 +95,10 @@ export class WatchlistService {
       companyName: series.metadata.companyName,
       exchange: series.metadata.exchange,
       currency: series.metadata.currency,
+      instrumentType: instrumentTypeFromYahoo(
+        series.metadata.symbol,
+        series.metadata.instrumentType,
+      ),
       now,
     };
     if (canonicalExisting) await this.repository.restore(ticker);

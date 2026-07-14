@@ -78,7 +78,7 @@ export class ScheduledEarningsRefreshService {
                          i.exchange
            FROM instruments i
            JOIN transactions t ON t.instrument_id = i.id
-          WHERE i.instrument_type = 'stock'
+          WHERE i.security_type = 'stock'
           ORDER BY i.symbol`,
       )
       .all<HeldInstrumentRow>();

@@ -30,7 +30,7 @@ export const instrumentsBySymbol = async (
     .prepare(
       `SELECT instruments.id, instruments.symbol,
               instruments.company_name AS companyName, instruments.exchange,
-              instruments.currency, instruments.instrument_type AS instrumentType,
+              instruments.currency, instruments.security_type AS instrumentType,
               instruments.provider, instruments.provider_symbol AS providerSymbol,
               instruments.provider_metadata_json AS providerMetadataJson,
               instruments.created_at AS createdAt, instruments.updated_at AS updatedAt
@@ -54,7 +54,7 @@ export const instrumentsById = async (
     .prepare(
       `SELECT instruments.id, instruments.symbol,
               instruments.company_name AS companyName, instruments.exchange,
-              instruments.currency, instruments.instrument_type AS instrumentType,
+              instruments.currency, instruments.security_type AS instrumentType,
               instruments.provider, instruments.provider_symbol AS providerSymbol,
               instruments.provider_metadata_json AS providerMetadataJson,
               instruments.created_at AS createdAt, instruments.updated_at AS updatedAt

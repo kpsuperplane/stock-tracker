@@ -1,10 +1,12 @@
+import type { InstrumentType } from "../domain/instruments";
+
 export interface InstrumentRecord {
   id: string;
   symbol: string;
   companyName: string;
   exchange: string;
   currency: "USD" | "CAD";
-  instrumentType: "stock" | "etf";
+  instrumentType: InstrumentType;
   provider: string;
   providerSymbol: string;
   providerMetadataJson: string | null;
@@ -19,6 +21,7 @@ interface InstrumentRow {
   exchange: string;
   currency: "USD" | "CAD";
   instrument_type: "stock" | "etf";
+  security_type: InstrumentType;
   provider: string;
   provider_symbol: string;
   provider_metadata_json: string | null;
@@ -32,6 +35,7 @@ interface TickerIdentityRow {
   company_name: string;
   exchange: string;
   currency: "USD" | "CAD";
+  security_type: InstrumentType;
   created_at: string;
   updated_at: string;
 }
@@ -42,7 +46,7 @@ const mapInstrument = (row: InstrumentRow): InstrumentRecord => ({
   companyName: row.company_name,
   exchange: row.exchange,
   currency: row.currency,
-  instrumentType: row.instrument_type,
+  instrumentType: row.security_type,
   provider: row.provider,
   providerSymbol: row.provider_symbol,
   providerMetadataJson: row.provider_metadata_json,
@@ -58,8 +62,9 @@ export class InstrumentRepository {
       .prepare(
         `INSERT INTO instruments
          (id, symbol, company_name, exchange, currency, instrument_type,
-          provider, provider_symbol, provider_metadata_json, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+          security_type, provider, provider_symbol, provider_metadata_json,
+          created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
       )
       .bind(
         record.id,
@@ -67,6 +72,7 @@ export class InstrumentRepository {
         record.companyName,
         record.exchange,
         record.currency,
+        record.instrumentType === "etf" ? "etf" : "stock",
         record.instrumentType,
         record.provider,
         record.providerSymbol,
@@ -111,7 +117,7 @@ export class InstrumentRepository {
 
     const ticker = await this.db
       .prepare(
-        `SELECT id, symbol, company_name, exchange, currency,
+        `SELECT id, symbol, company_name, exchange, currency, security_type,
                 created_at, updated_at
            FROM tickers
           WHERE symbol = ?1`,
@@ -124,9 +130,11 @@ export class InstrumentRepository {
       .prepare(
         `INSERT OR IGNORE INTO instruments
            (id, symbol, company_name, exchange, currency, instrument_type,
-            provider, provider_symbol, provider_metadata_json, created_at,
-            updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'stock', 'yahoo', ?2, NULL, ?6, ?6)`,
+            security_type, provider, provider_symbol, provider_metadata_json,
+            created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5,
+                 CASE WHEN ?6 = 'etf' THEN 'etf' ELSE 'stock' END,
+                 ?6, 'yahoo', ?2, NULL, ?7, ?7)`,
       )
       .bind(
         ticker.symbol,
@@ -134,6 +142,7 @@ export class InstrumentRepository {
         ticker.company_name,
         ticker.exchange,
         ticker.currency,
+        ticker.security_type,
         now,
       )
       .run();

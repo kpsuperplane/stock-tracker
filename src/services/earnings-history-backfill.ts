@@ -82,7 +82,7 @@ export class EarningsHistoryBackfillService {
          SELECT i.id, MIN(t.trade_date), 'pending', 0, ?1, ?1, ?1
            FROM instruments i
            JOIN transactions t ON t.instrument_id = i.id
-          WHERE i.instrument_type = 'stock'
+          WHERE i.security_type = 'stock'
           GROUP BY i.id
          ON CONFLICT(instrument_id) DO UPDATE SET
            requested_start_date = MIN(
@@ -109,7 +109,7 @@ export class EarningsHistoryBackfillService {
       .prepare(
         `SELECT COUNT(DISTINCT i.id) AS count
            FROM instruments i JOIN transactions t ON t.instrument_id = i.id
-          WHERE i.instrument_type = 'stock'`,
+          WHERE i.security_type = 'stock'`,
       )
       .first<{ count: number }>();
     return row?.count ?? 0;

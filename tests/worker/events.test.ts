@@ -579,6 +579,68 @@ describe("portfolio event routes", () => {
     ).toEqual({ symbol: "SHOP.TO", active: 1 });
   });
 
+  it.each([
+    "OPENW",
+    "OPENL",
+    "OPENZ",
+  ])("creates a zero-basis %s warrant transaction without stock-only split enrichment", async (symbol) => {
+    vi.spyOn(
+      YahooMarketDataProvider.prototype,
+      "getInstrument",
+    ).mockImplementation(async (requestedSymbol) => ({
+      metadata: {
+        symbol: requestedSymbol.toUpperCase(),
+        companyName: "Opendoor Technologies Inc.",
+        exchange: "NMS",
+        currency: "USD",
+        instrumentType: "EQUITY",
+      },
+      bars: [
+        {
+          date: "2026-07-10",
+          close: 0.25,
+          adjustedClose: 0.25,
+          closeDecimal: "0.25",
+          adjustedCloseDecimal: "0.25",
+        },
+      ],
+      corporateActionDates: new Set<string>(),
+    }));
+    const getSplits = vi.spyOn(
+      YahooCorporateActionProvider.prototype,
+      "getSplits",
+    );
+
+    const response = await exports.default.fetch(
+      new Request("http://local/api/transactions", {
+        method: "POST",
+        headers: mutationHeaders('"position-basis-0"'),
+        body: JSON.stringify(
+          createBody({ symbol: symbol.toLowerCase(), priceDecimal: "0" }),
+        ),
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(
+      (
+        await response.json<{
+          transaction: { symbol: string; priceDecimal: string };
+        }>()
+      ).transaction,
+    ).toMatchObject({ symbol, priceDecimal: "0" });
+    expect(getSplits).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare(
+        `SELECT instruments.security_type, tickers.security_type AS ticker_type
+             FROM instruments JOIN tickers ON tickers.symbol = instruments.symbol
+            WHERE instruments.symbol = ?1`,
+      )
+        .bind(symbol)
+        .first(),
+    ).toEqual({ security_type: "warrant", ticker_type: "warrant" });
+  });
+
   it("returns a paginated combined timeline with canonical decimal strings and filters", async () => {
     await insertInstrument();
     await env.DB.batch([

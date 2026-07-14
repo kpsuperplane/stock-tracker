@@ -1,9 +1,12 @@
+import type { InstrumentType } from "../domain/instruments";
+
 export interface TickerRecord {
   id: string;
   symbol: string;
   companyName: string;
   exchange: string;
   currency: string;
+  instrumentType: InstrumentType;
   active: boolean;
   deletedAt: string | null;
 }
@@ -14,6 +17,7 @@ export interface InsertTicker {
   companyName: string;
   exchange: string;
   currency: string;
+  instrumentType?: InstrumentType;
   now: string;
 }
 
@@ -23,6 +27,7 @@ interface TickerRow {
   company_name: string;
   exchange: string;
   currency: string;
+  security_type: InstrumentType;
   active: number;
   deleted_at: string | null;
 }
@@ -33,6 +38,7 @@ const mapTicker = (row: TickerRow): TickerRecord => ({
   companyName: row.company_name,
   exchange: row.exchange,
   currency: row.currency,
+  instrumentType: row.security_type,
   active: row.active === 1,
   deletedAt: row.deleted_at,
 });
@@ -77,8 +83,9 @@ export class TickerRepository {
     await this.db
       .prepare(
         `INSERT INTO tickers
-         (id, symbol, company_name, exchange, currency, active, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)`,
+         (id, symbol, company_name, exchange, currency, security_type, active,
+          created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)`,
       )
       .bind(
         input.id,
@@ -86,6 +93,7 @@ export class TickerRepository {
         input.companyName,
         input.exchange,
         input.currency,
+        input.instrumentType ?? "stock",
         input.now,
       )
       .run();
@@ -95,14 +103,16 @@ export class TickerRepository {
     await this.db
       .prepare(
         `UPDATE tickers
-         SET company_name = ?1, exchange = ?2, currency = ?3, active = 1,
-             deleted_at = NULL, updated_at = ?4
-         WHERE id = ?5`,
+         SET company_name = ?1, exchange = ?2, currency = ?3,
+             security_type = ?4, active = 1, deleted_at = NULL,
+             updated_at = ?5
+         WHERE id = ?6`,
       )
       .bind(
         input.companyName,
         input.exchange,
         input.currency,
+        input.instrumentType ?? "stock",
         input.now,
         input.id,
       )

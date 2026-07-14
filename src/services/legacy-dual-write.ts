@@ -366,8 +366,11 @@ export class LegacyDualWriteService implements LegacyPublishedRunHook {
       .prepare(
         `INSERT OR IGNORE INTO instruments
            (id, symbol, company_name, exchange, currency, instrument_type,
-            provider, provider_symbol, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'stock', ?6, ?2, ?7, ?7)`,
+            security_type, provider, provider_symbol, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'stock',
+                 CASE WHEN ?2 IN ('OPENW', 'OPENL', 'OPENZ')
+                      THEN 'warrant' ELSE 'stock' END,
+                 ?6, ?2, ?7, ?7)`,
       )
       .bind(
         candidateId,

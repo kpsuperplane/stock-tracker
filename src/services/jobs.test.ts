@@ -119,6 +119,7 @@ describe("backfill jobs", () => {
         companyName: "Apple Inc.",
         exchange: "NMS",
         currency: "USD",
+        instrumentType: "stock" as const,
         active: true,
         deletedAt: null,
       },
@@ -158,6 +159,7 @@ describe("backfill jobs", () => {
       companyName: "Apple Inc.",
       exchange: "NMS",
       currency: "USD",
+      instrumentType: "stock" as const,
       active: true,
       deletedAt: null,
     };

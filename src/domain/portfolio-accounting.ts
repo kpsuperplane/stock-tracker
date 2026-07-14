@@ -224,9 +224,9 @@ export class PortfolioAccountingEngine {
     const position = this.position(event.accountId, event.instrumentId);
     const quantity = RationalValue.fromDecimal(event.quantityDecimal);
     const price = RationalValue.fromDecimal(event.priceDecimal);
-    if (!quantity.isPositive() || !price.isPositive()) {
+    if (!quantity.isPositive() || price.isNegative()) {
       throw new PortfolioAccountingError(
-        "portfolio transactions require positive quantity and price",
+        "portfolio transactions require positive quantity and non-negative price",
       );
     }
     if (event.side === "buy") {

@@ -333,6 +333,19 @@ export class LedgerService {
       return { kind: "validation_error", code: "negative_holdings" };
     }
 
+    if (instrument.instrumentType === "warrant") {
+      return this.commitResolvedMutation({
+        input,
+        resolved,
+        timestamp,
+        today,
+        beforeHoldings,
+        proposedHoldings: activeProposedHoldings,
+        targetSplits: activeSplits,
+        splitStatements: [],
+      });
+    }
+
     let snapshot: SplitEventRange;
     try {
       snapshot = await this.dependencies.corporateActionProvider.getSplits(
@@ -837,7 +850,6 @@ export class LedgerService {
       );
       if (
         quantityDecimal === "0" ||
-        priceDecimal === "0" ||
         quantityDecimal.startsWith("-") ||
         priceDecimal.startsWith("-")
       ) {

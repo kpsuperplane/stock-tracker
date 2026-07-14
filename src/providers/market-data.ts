@@ -1,9 +1,11 @@
+import type { YahooInstrumentType } from "../domain/instruments";
+
 export interface InstrumentMetadata {
   symbol: string;
   companyName: string;
   exchange: string;
   currency: string;
-  instrumentType: "EQUITY" | "ETF";
+  instrumentType: YahooInstrumentType;
 }
 
 export interface DailyBar {

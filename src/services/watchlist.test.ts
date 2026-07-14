@@ -30,8 +30,43 @@ describe("WatchlistService", () => {
       companyName: "Shopify Inc.",
       exchange: "TOR",
       currency: "CAD",
+      instrumentType: "stock",
       now: "2026-07-09T22:00:00.000Z",
     });
+  });
+
+  it.each([
+    "OPENW",
+    "OPENL",
+    "OPENZ",
+  ])("classifies %s as a warrant despite Yahoo equity metadata", async (symbol) => {
+    const repository = {
+      countActive: vi.fn(async () => 0),
+      findBySymbol: vi.fn(async () => null),
+      insert: vi.fn(async () => undefined),
+      restore: vi.fn(async () => undefined),
+    };
+    const market = {
+      getInstrument: vi.fn(async () => ({
+        ...shopSeries,
+        metadata: {
+          ...shopSeries.metadata,
+          symbol,
+          companyName: "Opendoor Technologies Inc.",
+          exchange: "NMS",
+          currency: "USD",
+        },
+      })),
+    };
+
+    await new WatchlistService(repository, market, () => symbol).add(
+      symbol.toLowerCase(),
+      "2026-07-09T22:00:00.000Z",
+    );
+
+    expect(repository.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ symbol, instrumentType: "warrant" }),
+    );
   });
 
   it("rejects the 101st active ticker before calling Yahoo", async () => {

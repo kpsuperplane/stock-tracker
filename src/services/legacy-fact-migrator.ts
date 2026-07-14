@@ -477,8 +477,11 @@ export class LegacyFactMigrator {
       .prepare(
         `INSERT OR IGNORE INTO instruments
            (id, symbol, company_name, exchange, currency, instrument_type,
-            provider, provider_symbol, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'stock', ?6, ?2, ?7, ?7)`,
+            security_type, provider, provider_symbol, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'stock',
+                 CASE WHEN ?2 IN ('OPENW', 'OPENL', 'OPENZ')
+                      THEN 'warrant' ELSE 'stock' END,
+                 ?6, ?2, ?7, ?7)`,
       )
       .bind(
         candidateId,
@@ -511,10 +514,12 @@ export class LegacyFactMigrator {
         .prepare(
           `INSERT OR IGNORE INTO instruments
              (id, symbol, company_name, exchange, currency, instrument_type,
-              provider, provider_symbol, provider_metadata_json, created_at,
-              updated_at)
+              security_type, provider, provider_symbol, provider_metadata_json,
+              created_at, updated_at)
            SELECT 'legacy-ticker:' || id, symbol, company_name, exchange,
-                  currency, 'stock', ?1, symbol,
+                  currency,
+                  CASE WHEN security_type = 'etf' THEN 'etf' ELSE 'stock' END,
+                  security_type, ?1, symbol,
                   json_object(
                     'legacyTickerId', id,
                     'legacyActive', CASE WHEN active = 1 THEN json('true') ELSE json('false') END,
@@ -527,7 +532,12 @@ export class LegacyFactMigrator {
       this.db
         .prepare(
           `UPDATE instruments
-              SET provider_metadata_json = (
+              SET security_type = (
+                    SELECT t.security_type
+                      FROM tickers t
+                     WHERE 'legacy-ticker:' || t.id = instruments.id
+                  ),
+                  provider_metadata_json = (
                     SELECT json_object(
                       'legacyTickerId', t.id,
                       'legacyActive', CASE WHEN t.active = 1 THEN json('true') ELSE json('false') END,
