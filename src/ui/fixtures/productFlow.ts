@@ -3,7 +3,7 @@ import type {
   CalendarReadModelDto,
   PortfolioReadModelDto,
 } from "../../shared/contracts";
-import type { ImportPreviewResponse } from "../api";
+import type { ImportStartResponse } from "../api";
 
 /**
  * Small deterministic product-flow fixture shared by the integration test and
@@ -54,37 +54,10 @@ export const productFlowFixture = {
     contents:
       "trade_date,symbol,side,quantity,price,category,account\n2026-07-10,AAPL,BUY,2,180,Registered,TFSA\n",
   },
-  importPreview: {
-    kind: "preview" as const,
-    batchId: "fixture-import-1",
-    basePositionBasisRevision: 7,
-    rows: [
-      {
-        rowNumber: 2,
-        symbol: "AAPL",
-        tradeDate: "2026-07-10",
-        side: "buy" as const,
-        quantityDecimal: "2",
-        priceDecimal: "180",
-        accountId: "account-tfsa",
-        categoryName: "Registered",
-        accountName: "TFSA",
-        status: "valid" as const,
-        errors: [],
-      },
-    ],
-    reviews: [],
-    projectedHoldings: [
-      {
-        accountId: "account-tfsa",
-        categoryName: "Registered",
-        accountName: "TFSA",
-        symbol: "AAPL",
-        quantityDecimal: "2",
-      },
-    ],
-    expiresAt: "2026-07-11T23:59:59.000Z",
-  } satisfies ImportPreviewResponse,
+  importStart: {
+    importId: "fixture-import-1",
+    status: "pending" as const,
+  } satisfies ImportStartResponse,
   portfolio: {
     asOfDate: "2026-07-11",
     latestTradingDate: "2026-07-10",

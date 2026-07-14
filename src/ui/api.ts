@@ -178,75 +178,17 @@ export type EventMutationResponse = {
   warningCode?: "split_history_unavailable" | "split_history_conflict";
 };
 
-export type SplitSnapshotLike = {
+export type ImportStartResponse = {
+  importId: string;
+  status: "pending";
+};
+
+export type ImportError = {
+  rowNumber: number | null;
   symbol: string;
-  range: {
-    requestedStartDate: string;
-    requestedEndDate: string;
-    coverageStartDate: string | null;
-    coverageEndDate: string | null;
-    isComplete: boolean;
-    basis: string;
-    provider: string;
-    observedAt: string;
-    providerRevision: string;
-  };
-  events: Array<{
-    type: "split";
-    symbol: string;
-    effectiveDate: string;
-    numerator: string;
-    denominator: string;
-    provider: string;
-    providerEventId: string;
-    providerRevision: string;
-  }>;
-};
-
-export type ImportPreviewRow = {
-  rowNumber: number;
-  symbol: string;
-  tradeDate: string | null;
-  side: "buy" | "sell" | null;
-  quantityDecimal: string | null;
-  priceDecimal: string | null;
-  accountId: string | null;
-  categoryName: string;
-  accountName: string;
-  status: "valid" | "invalid";
-  errors: string[];
-};
-
-export type ImportSplitReview = {
-  instrumentId: string;
-  symbol: string;
-  requestedStartDate: string;
-  requestedEndDate: string;
-  provider: string;
-  providerRevision: string;
-  snapshot: SplitSnapshotLike;
-};
-
-export type ImportPreviewResponse = {
-  kind: "preview";
-  batchId: string;
-  basePositionBasisRevision: number;
-  rows: ImportPreviewRow[];
-  reviews: ImportSplitReview[];
-  projectedHoldings: Array<{
-    accountId: string;
-    categoryName: string;
-    accountName: string;
-    symbol: string;
-    quantityDecimal: string;
-  }>;
-  expiresAt: string;
-};
-
-export type ImportCommitResponse = {
-  kind: "committed";
-  pipelineJobId: string;
-  positionBasisRevision: number;
+  code: string;
+  message: string | null;
+  source: "row" | "provider";
 };
 
 export interface EventsApiClient {
@@ -270,11 +212,12 @@ export interface EventsApiClient {
 }
 
 export interface EventImportsApiClient {
-  preview: (file: File) => Promise<ImportPreviewResponse>;
-  commit: (
-    batchId: string,
-    positionBasisRevision: number,
-  ) => Promise<ImportCommitResponse>;
+  start: (file: File) => Promise<ImportStartResponse>;
+  errors: (
+    importId: string,
+    cursor?: string,
+    limit?: number,
+  ) => Promise<{ errors: ImportError[]; nextCursor: string | null }>;
 }
 
 const mutationHeaders = (
@@ -337,24 +280,24 @@ export const eventsApi: EventsApiClient = {
 };
 
 export const eventImportsApi: EventImportsApiClient = {
-  preview: (file) => {
+  start: (file) => {
     const form = new FormData();
     form.append("file", file);
-    return request<ImportPreviewResponse>("/api/event-imports/preview", {
+    return request<ImportStartResponse>("/api/event-imports", {
       method: "POST",
       headers: { "X-Stock-Tracker-Request": "1" },
       body: form,
     });
   },
-  commit: (batchId, positionBasisRevision) =>
-    request<ImportCommitResponse>(
-      `/api/event-imports/${encodeURIComponent(batchId)}/commit`,
-      {
-        method: "POST",
-        headers: mutationHeaders(positionBasisRevision),
-        body: JSON.stringify({}),
-      },
-    ),
+  errors: (importId, cursor, limit) => {
+    const query = new URLSearchParams();
+    if (cursor) query.set("cursor", cursor);
+    if (limit !== undefined) query.set("limit", String(limit));
+    const suffix = query.toString();
+    return request(
+      `/api/event-imports/${encodeURIComponent(importId)}/errors${suffix ? `?${suffix}` : ""}`,
+    );
+  },
 };
 
 type PortfolioCacheEntry = {

@@ -36,7 +36,7 @@ import {
   type EventsApiClient,
   eventImportsApi,
   eventsApi,
-  type ImportCommitResponse,
+  type ImportStartResponse,
   type TransactionMutationInput,
 } from "../api";
 import {
@@ -71,6 +71,7 @@ export interface EventsPageProps {
   apiClient?: EventsApiClient;
   importApiClient?: EventImportsApiClient;
   initialTimeline?: EventsTimelineDto;
+  onImportAccepted?: (result: ImportStartResponse) => void;
 }
 
 const asIsoDate = (value: string): ISODateString => value as ISODateString;
@@ -310,6 +311,7 @@ export const EventsPage = ({
   apiClient = eventsApi,
   importApiClient = eventImportsApi,
   initialTimeline,
+  onImportAccepted,
 }: EventsPageProps) => {
   const { t } = useI18n();
   const { selection } = useAccountScope();
@@ -480,14 +482,12 @@ export const EventsPage = ({
     });
   };
 
-  const onImportCommitted = (result: ImportCommitResponse) => {
-    setPositionBasisRevision(result.positionBasisRevision);
-    setPendingJobId(result.pipelineJobId);
+  const handleImportAccepted = (result: ImportStartResponse) => {
     toast({
-      body: `${t("importCommitted")}: ${result.pipelineJobId}`,
+      body: `${t("importCsv")}: ${result.importId}`,
       type: "info",
     });
-    void load(true);
+    onImportAccepted?.(result);
   };
 
   const openImport = useCallback(() => setIsImportOpen(true), []);
@@ -738,9 +738,8 @@ export const EventsPage = ({
       <EventImportDialog
         isOpen={isImportOpen}
         onOpenChange={setIsImportOpen}
-        positionBasisRevision={positionBasisRevision}
         apiClient={importApiClient}
-        onCommitted={onImportCommitted}
+        onAccepted={handleImportAccepted}
       />
     </VStack>
   );

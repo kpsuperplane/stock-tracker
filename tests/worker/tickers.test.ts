@@ -52,7 +52,7 @@ describe("TickerRepository", () => {
     });
   });
 
-  it("enforces the 100-active-ticker limit in D1", async () => {
+  it("stores more than 100 active tickers", async () => {
     const repository = new TickerRepository(env.DB);
     for (let index = 0; index < 100; index += 1) {
       await repository.insert({
@@ -64,15 +64,14 @@ describe("TickerRepository", () => {
         now: "2026-07-09T22:00:00.000Z",
       });
     }
-    await expect(
-      repository.insert({
-        id: "ticker-101",
-        symbol: "OVER",
-        companyName: "Over Limit",
-        exchange: "NMS",
-        currency: "USD",
-        now: "2026-07-09T22:00:00.000Z",
-      }),
-    ).rejects.toThrow("watchlist_limit");
+    await repository.insert({
+      id: "ticker-101",
+      symbol: "OVER",
+      companyName: "Over Limit",
+      exchange: "NMS",
+      currency: "USD",
+      now: "2026-07-09T22:00:00.000Z",
+    });
+    expect(await repository.countActive()).toBe(101);
   });
 });

@@ -1,6 +1,7 @@
 import { EarningsRepository } from "../db/earnings";
 import { alphaVantageEarningsProvider } from "../providers/alpha-vantage-earnings";
 import type {
+  PortfolioImportStatusDto,
   ReconciliationStatus,
   ReconciliationStatusDto,
   StatusReadModelDto,
@@ -124,14 +125,36 @@ export class StatusReadModelService {
   }
 
   async read(input: JobReadModelListInput = {}): Promise<StatusReadModelDto> {
-    const [earningsCoverage, jobs, stockValues, dividends, financialReports] =
-      await Promise.all([
-        new EarningsRepository(this.db).coverage(alphaVantageEarningsProvider),
-        new JobReadModelService(this.db).list(input),
-        this.reconciliation("stockValues"),
-        this.reconciliation("dividends"),
-        this.reconciliation("financialReports"),
-      ]);
+    const [
+      earningsCoverage,
+      jobs,
+      imports,
+      stockValues,
+      dividends,
+      financialReports,
+    ] = await Promise.all([
+      new EarningsRepository(this.db).coverage(alphaVantageEarningsProvider),
+      new JobReadModelService(this.db).list(input),
+      this.db
+        .prepare(
+          `SELECT id, original_filename AS filename, status,
+                    processed_symbols AS processedSymbols,
+                    total_symbols AS totalSymbols, failed_rows AS failedRows,
+                    result_pipeline_job_id AS resultPipelineJobId,
+                    terminal_error_code AS terminalErrorCode,
+                    terminal_error_message AS terminalErrorMessage,
+                    created_at AS createdAt, updated_at AS updatedAt,
+                    completed_at AS completedAt
+               FROM import_batches
+              WHERE status IN ('pending', 'running', 'committed',
+                               'complete_with_errors', 'terminal', 'expired')
+              ORDER BY created_at DESC, id DESC LIMIT 25`,
+        )
+        .all<PortfolioImportStatusDto>(),
+      this.reconciliation("stockValues"),
+      this.reconciliation("dividends"),
+      this.reconciliation("financialReports"),
+    ]);
 
     return {
       earningsCoverage: earningsCoverage
@@ -151,6 +174,7 @@ export class StatusReadModelService {
         dividends,
         financialReports,
       },
+      imports: imports.results,
       jobs: jobs.jobs,
       nextCursor: jobs.nextCursor
         ? btoa(JSON.stringify(jobs.nextCursor))

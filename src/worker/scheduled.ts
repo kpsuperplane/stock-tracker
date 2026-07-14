@@ -12,6 +12,7 @@ import {
 } from "../services/backfill-pipeline";
 import { ScheduledDividendRefreshService } from "../services/dividend-refresh";
 import { ScheduledEarningsRefreshService } from "../services/earnings-refresh";
+import { EventImportRecoveryService } from "../services/event-import-recovery";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
 import { LegacyFactMigrator } from "../services/legacy-fact-migrator";
@@ -90,10 +91,16 @@ export const handleScheduled = async (
       db: env.DB,
       now: () => scheduledTime,
     }).run();
+    const importRecovery = await new EventImportRecoveryService({
+      db: env.DB,
+      queue: env.NORMALIZED_WORK_QUEUE,
+      now: () => scheduledTime,
+    }).recover();
     if (!portfolioFlags.newWrites) {
       logEvent("portfolio_cleanup_scheduled", {
         scheduledTime: scheduledTime.toISOString(),
         cleanup: JSON.stringify(cleanup),
+        importRecovery: JSON.stringify(importRecovery),
       });
       return;
     }
@@ -111,6 +118,7 @@ export const handleScheduled = async (
     logEvent("portfolio_dispatch_scheduled", {
       scheduledTime: scheduledTime.toISOString(),
       cleanup: JSON.stringify(cleanup),
+      importRecovery: JSON.stringify(importRecovery),
       plannerContinuation: JSON.stringify(plannerContinuation),
       result: JSON.stringify(result),
     });

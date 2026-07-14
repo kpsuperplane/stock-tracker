@@ -69,19 +69,32 @@ describe("WatchlistService", () => {
     );
   });
 
-  it("rejects the 101st active ticker before calling Yahoo", async () => {
+  it("allows a 101st active ticker after provider validation", async () => {
     const repository = {
       countActive: vi.fn(async () => 100),
       findBySymbol: vi.fn(async () => null),
       insert: vi.fn(),
       restore: vi.fn(),
     };
-    const market = { getInstrument: vi.fn() };
-    const service = new WatchlistService(repository, market, crypto.randomUUID);
+    const market = {
+      getInstrument: vi.fn(async () => ({
+        ...shopSeries,
+        metadata: {
+          ...shopSeries.metadata,
+          symbol: "AAPL",
+          currency: "USD",
+          exchange: "NMS",
+        },
+      })),
+    };
+    const service = new WatchlistService(repository, market, () =>
+      crypto.randomUUID(),
+    );
     await expect(
       service.add("AAPL", "2026-07-09T22:00:00.000Z"),
-    ).rejects.toMatchObject({ code: "watchlist_limit" });
-    expect(market.getInstrument).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ symbol: "AAPL" });
+    expect(market.getInstrument).toHaveBeenCalledOnce();
+    expect(repository.insert).toHaveBeenCalledOnce();
   });
 
   it("requires a recent daily bar during provider validation", async () => {

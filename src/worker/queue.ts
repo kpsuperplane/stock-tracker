@@ -6,10 +6,14 @@ import { FallbackNewsProvider } from "../providers/fallback-news";
 import { GoogleNewsProvider } from "../providers/google-news";
 import { MarketauxNewsProvider } from "../providers/marketaux";
 import { YahooMarketDataProvider } from "../providers/yahoo";
+import { YahooCorporateActionProvider } from "../providers/yahoo-corporate-actions";
+import { EventImportJobProcessor } from "../services/event-import-job";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
 import { PortfolioPipelineProcessor } from "../services/portfolio-pipeline-processor";
 import { ScreeningService } from "../services/screening";
 import {
+  type ImportDispatchMessage,
+  isImportDispatchMessage,
   isPipelineDispatchMessage,
   isScreeningJobMessage,
   type QueueMessage,
@@ -135,10 +139,14 @@ export const handleQueue = async (
   const normalized = batch.messages.filter((message) =>
     isPipelineDispatchMessage(message.body),
   );
+  const imports = batch.messages.filter((message) =>
+    isImportDispatchMessage(message.body),
+  );
   const unknown = batch.messages.filter(
     (message) =>
       !isScreeningJobMessage(message.body) &&
-      !isPipelineDispatchMessage(message.body),
+      !isPipelineDispatchMessage(message.body) &&
+      !isImportDispatchMessage(message.body),
   );
   unknown.forEach((message) => {
     message.ack();
@@ -174,6 +182,28 @@ export const handleQueue = async (
               explanationProvider: new WorkersAiExplanationProvider(env.AI),
             }),
           },
+        )
+      : Promise.resolve(),
+    imports.length > 0
+      ? Promise.all(
+          imports.map(async (message) => {
+            try {
+              await new EventImportJobProcessor({
+                db: env.DB,
+                queue: env.NORMALIZED_WORK_QUEUE,
+                marketDataProvider: new YahooMarketDataProvider(),
+                corporateActionProvider: new YahooCorporateActionProvider(),
+              }).process((message.body as ImportDispatchMessage).importBatchId);
+              message.ack();
+            } catch (error) {
+              logEvent("portfolio_import_delivery_failed", {
+                importBatchId: (message.body as ImportDispatchMessage)
+                  .importBatchId,
+                message: safeErrorMessage(error),
+              });
+              message.retry({ delaySeconds: 30 });
+            }
+          }),
         )
       : Promise.resolve(),
   ]);

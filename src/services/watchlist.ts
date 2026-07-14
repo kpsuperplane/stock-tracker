@@ -3,10 +3,7 @@ import { instrumentTypeFromYahoo } from "../domain/instruments";
 import type { DailySeries, MarketDataProvider } from "../providers/market-data";
 import { ApiError } from "../worker/errors";
 
-type Repository = Pick<
-  TickerRepository,
-  "countActive" | "findBySymbol" | "insert" | "restore"
->;
+type Repository = Pick<TickerRepository, "findBySymbol" | "insert" | "restore">;
 
 const addDays = (date: string, days: number) =>
   new Date(Date.parse(`${date}T12:00:00Z`) + days * 86_400_000)
@@ -24,13 +21,6 @@ export class WatchlistService {
     const symbol = rawSymbol.trim().toUpperCase();
     if (!/^[A-Z0-9.-]{1,20}$/.test(symbol)) {
       throw new ApiError(422, "invalid_symbol", "Enter a valid Yahoo symbol.");
-    }
-    if ((await this.repository.countActive()) >= 100) {
-      throw new ApiError(
-        422,
-        "watchlist_limit",
-        "The watchlist is limited to 100 active symbols.",
-      );
     }
     const existing = await this.repository.findBySymbol(symbol);
     if (existing && existing.deletedAt === null) {

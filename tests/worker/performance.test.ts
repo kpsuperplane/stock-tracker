@@ -585,10 +585,9 @@ describe("portfolio performance budgets", () => {
     });
     expect(mutation.kind).toBe("committed");
     expect(splitCalls).toHaveBeenCalledTimes(1);
-    // The guarded ledger mutation intentionally rechecks every current
-    // position; this fixture records the 100-position read ceiling rather
-    // than hiding that cost behind an uninstrumented provider call.
-    expect(mutationMetrics.queries).toBeLessThanOrEqual(250);
+    // Ledger mutations must stay constant-query as the number of current
+    // positions grows; provider calls are deliberately outside this trace.
+    expect(mutationMetrics.queries).toBeLessThanOrEqual(50);
     expect(mutationMetrics.rowsWritten).toBeGreaterThan(0);
     expect(mutationMetrics.durationMs).toBeLessThanOrEqual(1_000);
     expect(performance.now() - mutationStarted).toBeLessThan(5_000);

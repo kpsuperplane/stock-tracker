@@ -34,14 +34,14 @@ export const createApp = () => {
     maxSize: 64 * 1024,
     onError: bodyTooLarge,
   });
-  const importPreviewBodyLimit = bodyLimit({
+  const importBodyLimit = bodyLimit({
     maxSize: 5 * 1024 * 1024 + 64 * 1024,
     onError: bodyTooLarge,
   });
 
   app.use("/api/*", (context, next) =>
-    context.req.path === "/api/event-imports/preview"
-      ? importPreviewBodyLimit(context, next)
+    context.req.path === "/api/event-imports"
+      ? importBodyLimit(context, next)
       : normalBodyLimit(context, next),
   );
   app.use("/api/*", async (context, next) => {
@@ -52,7 +52,7 @@ export const createApp = () => {
       context.req.raw.body !== null &&
       mimeType !== "application/json" &&
       !(
-        context.req.path === "/api/event-imports/preview" &&
+        context.req.path === "/api/event-imports" &&
         mimeType === "multipart/form-data"
       )
     ) {

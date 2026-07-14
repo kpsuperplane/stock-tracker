@@ -44,9 +44,10 @@ The persistent navigation links to five stable destinations:
   series support Today, 1W, 30D, 3M, YTD, 1Y, All, and custom ranges, with
   end-of-range holdings and an accessible exact-value table beneath the chart.
 - **Events** is the source of truth for holdings. Add, edit, or delete a buy or
-  sell, or use **Import CSV** to preview rows, review projected holdings, confirm
-  provider split history, and commit the staged batch. A successful commit
-  queues reconciliation; it does not write a second holdings table.
+  sell, or use **Import CSV** to stage an asynchronous portfolio import. The
+  queued job validates accounts, instruments, split history, and holdings before
+  committing every row atomically. A successful commit queues reconciliation;
+  it does not write a second holdings table.
 - **Calendar** shows historical movers, ex-dividend events, and Alpha Vantage
   earnings dates in month or week view. Earnings appear only when the selected
   account scope held shares at the start of the report date.
@@ -116,25 +117,19 @@ canonical decimal, and price is a non-negative canonical decimal so free
 acquisitions can use a zero cost basis. Both decimal fields allow at most six
 fractional digits. Category and account names resolve to an existing active
 account after trimming whitespace and ignoring case, and one file may target
-several accounts. Preview accepts at most 5 MiB, 10,000 data rows, and 40
-distinct symbols. The symbol cap keeps synchronous split-history checks within
-a Worker request budget; split larger imports into separate files.
+several accounts. Uploads accept at most 5 MiB and 10,000 data rows; there is no
+symbol, watchlist, or current-position cap.
 
-Use `POST /api/event-imports/preview` as `multipart/form-data` with one `file`
-part. Preview stages normalized rows and returns account-specific projected
-holdings plus any split histories needing
-review without changing transactions. Commit the returned batch with
-`POST /api/event-imports/:id/commit`, JSON confirmations, and the previewed
-`X-Position-Basis-Revision`. Commit reads staged rows rather than reparsing the
-file and is all-or-nothing; a stale revision, expired preview, or changed split
-snapshot requires a new preview/review. Committed-file digests are retained for
-duplicate detection, while staging rows expire.
+Use `POST /api/event-imports` as `multipart/form-data` with one `file` part.
+The request validates the filename, UTF-8 and CSV structure, stages the rows,
+and returns HTTP 202. A resumable queue job validates portfolio and provider
+data, then commits every transaction atomically or reports row/provider errors
+on the Status page. Re-uploading the same file is allowed.
 
 ## Architecture and guardrails
 
 Cloudflare Zero Trust protects the React static assets and Hono API before requests reach the Worker. D1 retains ticker snapshots and published report generations, the legacy weekday Cron Trigger starts work at 22:00 UTC, Cloudflare Queues fan out per-ticker screening, and Workers AI is called at most once for each qualifying mover with news. The disabled-by-default portfolio cutover adds 20:30/21:30 UTC planner candidates (the two Toronto 4:30 p.m. DST offsets) and a separate 15-minute dispatcher trigger; later tasks will route those triggers.
 
-- Maximum 100 active tickers.
 - Maximum 30 inclusive calendar days per backfill.
 - Maximum 10 deduplicated news items per mover.
 - Daily soft dispatch ceiling of 2,500 ticker messages; remaining D1 work resumes on a later dispatcher invocation.

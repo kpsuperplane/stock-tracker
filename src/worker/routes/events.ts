@@ -367,7 +367,6 @@ const mutationResponse = async (
       invalid_position_basis_revision: "The portfolio revision is invalid.",
       negative_holdings:
         "This change would create negative historical holdings.",
-      position_limit: "The portfolio is limited to 100 current positions.",
     };
     return error(
       context,

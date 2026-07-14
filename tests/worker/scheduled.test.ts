@@ -106,7 +106,7 @@ describe("scheduled handler", () => {
          (id, file_digest, original_filename, base_position_basis_revision,
           status, expires_at, created_at, updated_at)
          VALUES ('scheduled-stale-import', 'scheduled-stale-digest',
-                 'events.csv', 0, 'preview', '2026-07-01T12:00:00.000Z',
+                 'events.csv', 0, 'pending', '2026-07-01T12:00:00.000Z',
                  ?1, ?1)`,
       ).bind(now),
       env.DB.prepare(

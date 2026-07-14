@@ -1,11 +1,12 @@
 import type {
+  NormalizedQueueMessage,
   PipelineDispatchMessage,
   ScreeningJobMessage,
 } from "../shared/contracts";
 
 export interface Env extends Cloudflare.Env {
   SCREENING_QUEUE: Queue<ScreeningJobMessage>;
-  NORMALIZED_WORK_QUEUE: Queue<PipelineDispatchMessage>;
+  NORMALIZED_WORK_QUEUE: Queue<NormalizedQueueMessage>;
   NORMALIZED_WORK_DLQ: Queue<PipelineDispatchMessage>;
   EXA_API_KEY?: string;
   MARKETAUX_API_TOKEN?: string;

@@ -13,22 +13,13 @@ const renderProduct = (children: React.ReactNode, locale: "en" | "cn" = "en") =>
   );
 
 describe("Plan 3 product-flow fixture", () => {
-  it("connects CSV preview data to Portfolio and Calendar mover details", () => {
+  it("connects the CSV import entry point to Portfolio and Calendar details", () => {
     const importMarkup = renderProduct(
-      <EventImportDialog
-        isOpen
-        onOpenChange={() => undefined}
-        positionBasisRevision={
-          productFlowFixture.importPreview.basePositionBasisRevision
-        }
-        initialPreview={productFlowFixture.importPreview}
-      />,
+      <EventImportDialog isOpen onOpenChange={() => undefined} />,
     );
-    expect(importMarkup).toContain("Rows: 1");
-    expect(importMarkup).toContain("AAPL");
-    expect(importMarkup).toContain("Valid");
-    expect(importMarkup).toContain("<table");
-    expect(importMarkup).toContain("<thead");
+    expect(importMarkup).toContain("Import portfolio events");
+    expect(importMarkup).toContain("Status page");
+    expect(importMarkup).not.toContain("<table");
 
     const portfolioMarkup = renderProduct(
       <TodayPage initialPortfolio={productFlowFixture.portfolio} />,

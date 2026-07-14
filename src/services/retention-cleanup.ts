@@ -46,7 +46,7 @@ const boundedBatchSize = (value: number | undefined): number =>
   Math.max(1, Math.min(500, Math.floor(value ?? DEFAULT_BATCH_SIZE)));
 
 /**
- * Expires preview batches and removes only their derived CSV rows. The batch
+ * Expires abandoned imports and removes completed jobs' derived staging. The batch
  * is deliberately small and atomic so a later scheduler tick can resume at
  * the next eligible row after a transient D1 failure.
  */
@@ -62,14 +62,36 @@ export const cleanupImportStaging = async (
     dependencies.db
       .prepare(
         `UPDATE import_batches
-            SET status = 'expired', updated_at = ?1
+            SET status = 'expired', processing_lease_until = NULL,
+                processing_lease_token = NULL,
+                terminal_error_code = 'import_expired',
+                terminal_error_message = 'The staged import expired.',
+                completed_at = ?1, updated_at = ?1
           WHERE id IN (
             SELECT id FROM import_batches
-             WHERE status = 'preview' AND expires_at <= ?1
+             WHERE status IN ('pending', 'running') AND expires_at <= ?1
              LIMIT ?2
           )`,
       )
       .bind(now, limit),
+    dependencies.db
+      .prepare(
+        `DELETE FROM import_symbols
+          WHERE rowid IN (
+            SELECT symbols.rowid
+              FROM import_symbols symbols
+              JOIN import_batches batch
+                ON batch.id = symbols.import_batch_id
+             WHERE batch.status IN (
+               'committed', 'complete_with_errors', 'terminal', 'expired'
+             )
+               AND CASE WHEN batch.status = 'expired' THEN batch.expires_at
+                        ELSE COALESCE(batch.completed_at, batch.committed_at)
+                    END <= ?1
+             LIMIT ?2
+          )`,
+      )
+      .bind(stagingCutoff, limit),
     dependencies.db
       .prepare(
         `DELETE FROM import_rows
@@ -79,10 +101,12 @@ export const cleanupImportStaging = async (
               JOIN import_batches batch
                 ON batch.id = rows.import_batch_id
              WHERE (
-               (batch.status = 'expired' AND batch.expires_at <= ?1)
-               OR (batch.status = 'committed'
-                   AND batch.committed_at IS NOT NULL
-                   AND batch.committed_at <= ?1)
+               batch.status IN (
+                 'committed', 'complete_with_errors', 'terminal', 'expired'
+               )
+               AND CASE WHEN batch.status = 'expired' THEN batch.expires_at
+                        ELSE COALESCE(batch.completed_at, batch.committed_at)
+                    END <= ?1
              )
              LIMIT ?2
           )`,
@@ -91,7 +115,7 @@ export const cleanupImportStaging = async (
   ]);
   return {
     expiredImportBatches: changed(results[0]),
-    deletedImportRows: changed(results[1]),
+    deletedImportRows: changed(results[2]),
   };
 };
 

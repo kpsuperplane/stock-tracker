@@ -18,14 +18,19 @@ import type {
   ReconciliationStatusDto,
   StatusReadModelDto,
 } from "../../shared/contracts";
-import { api } from "../api";
+import { api, type ImportError } from "../api";
 import type { MessageKey } from "../i18n/catalog";
 import { useI18n } from "../i18n/I18nProvider";
 import { formatDate, formatDateTime } from "../system/formatters";
+import { PortfolioImportsSection } from "./PortfolioImportsSection";
 
 export type SyncHealth = "healthy" | "syncing" | "attention" | "unknown";
 
 const activeJobStatuses = new Set(["pending", "planning", "running"]);
+
+export const shouldPollStatus = (status: StatusReadModelDto | null): boolean =>
+  status?.jobs.some((job) => activeJobStatuses.has(job.status)) === true ||
+  status?.imports.some((entry) => activeJobStatuses.has(entry.status)) === true;
 
 export const syncHealthFor = (status: StatusReadModelDto): SyncHealth => {
   const reconciliationStatuses = [
@@ -34,6 +39,9 @@ export const syncHealthFor = (status: StatusReadModelDto): SyncHealth => {
     status.reconciliation?.financialReports?.status,
   ];
   if (status.jobs.some((job) => activeJobStatuses.has(job.status))) {
+    return "syncing";
+  }
+  if (status.imports.some((entry) => activeJobStatuses.has(entry.status))) {
     return "syncing";
   }
   if (reconciliationStatuses.some((value) => value === "syncing")) {
@@ -45,7 +53,10 @@ export const syncHealthFor = (status: StatusReadModelDto): SyncHealth => {
     status.earningsCoverage?.status === "unavailable" ||
     reconciliationStatuses.some((value) => value === "attention") ||
     latestJob?.status === "complete_with_errors" ||
-    latestJob?.status === "terminal"
+    latestJob?.status === "terminal" ||
+    status.imports.some((entry) =>
+      ["complete_with_errors", "terminal", "expired"].includes(entry.status),
+    )
   ) {
     return "attention";
   }
@@ -237,15 +248,22 @@ interface StatusApiClient {
     limit?: number,
     cursor?: string,
   ) => Promise<{ status: StatusReadModelDto }>;
+  importErrors: (
+    importId: string,
+    cursor?: string,
+  ) => Promise<{ errors: ImportError[]; nextCursor: string | null }>;
 }
 
 const defaultStatusApi: StatusApiClient = {
   read: (limit, cursor) => api.status(limit, cursor),
+  importErrors: (importId, cursor) =>
+    api.eventImports.errors(importId, cursor, 50),
 };
 
 export interface StatusPageProps {
   apiClient?: StatusApiClient;
   initialStatus?: StatusReadModelDto;
+  highlightedImportId?: string;
 }
 
 const StatusLoadingState = ({ label }: { label: string }) => (
@@ -259,6 +277,7 @@ const StatusLoadingState = ({ label }: { label: string }) => (
 export const StatusPage = ({
   apiClient = defaultStatusApi,
   initialStatus,
+  highlightedImportId,
 }: StatusPageProps) => {
   const { locale, t } = useI18n();
   const [status, setStatus] = useState<StatusReadModelDto | null>(
@@ -313,8 +332,7 @@ export const StatusPage = ({
     if (initialStatus === undefined) void load();
   }, [initialStatus, load]);
 
-  const hasActiveJob =
-    status?.jobs.some((job) => activeJobStatuses.has(job.status)) ?? false;
+  const hasActiveJob = shouldPollStatus(status);
   useEffect(() => {
     if (!hasActiveJob) return;
     const timer = window.setInterval(() => void load(), 10_000);
@@ -330,6 +348,7 @@ export const StatusPage = ({
   const latestActivity =
     [
       ...(status?.jobs.map((job) => job.updatedAt) ?? []),
+      ...(status?.imports.map((entry) => entry.updatedAt) ?? []),
       status?.earningsCoverage?.updatedAt,
       status?.reconciliation?.stockValues?.updatedAt,
       status?.reconciliation?.dividends?.updatedAt,
@@ -476,6 +495,12 @@ export const StatusPage = ({
           )}
         </div>
       </section>
+
+      <PortfolioImportsSection
+        imports={status?.imports ?? []}
+        {...(highlightedImportId ? { highlightedImportId } : {})}
+        loadErrors={apiClient.importErrors}
+      />
 
       <section className="status-jobs" aria-labelledby="recent-jobs-title">
         <div className="status-section-heading">

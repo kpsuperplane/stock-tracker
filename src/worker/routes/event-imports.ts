@@ -1,195 +1,123 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
-import { YahooMarketDataProvider } from "../../providers/yahoo";
-import { YahooCorporateActionProvider } from "../../providers/yahoo-corporate-actions";
-import {
-  EventImportsService,
-  type ImportCommitResult,
-  type ImportPreviewResult,
-} from "../../services/event-imports";
+import { EventImportIntakeService } from "../../services/event-import-intake";
 import type { Env } from "../env";
 
 type ImportContext = Context<{ Bindings: Env }>;
 
-const APP_REQUEST_HEADER = "X-Stock-Tracker-Request";
-const APP_REQUEST_VALUE = "1";
-
-const commitSchema = z.object({}).strict();
-
 const error = (
   context: ImportContext,
-  status: 403 | 404 | 405 | 409 | 413 | 415 | 422 | 503,
+  status: 404 | 405 | 415 | 422,
   code: string,
   message: string,
-  details?: Record<string, unknown>,
-) => context.json({ error: { code, message }, ...details }, status);
+) => context.json({ error: { code, message } }, status);
 
-const sameOriginAndAppRequest = (context: ImportContext): Response | null => {
-  const origin = context.req.header("Origin");
-  const host = context.req.header("Host");
-  let requestUrl: URL;
-  let originUrl: URL;
+const start = async (context: ImportContext) => {
+  let form: FormData;
   try {
-    requestUrl = new URL(context.req.url);
-    originUrl = new URL(origin ?? "");
+    form = await context.req.formData();
   } catch {
-    return error(
-      context,
-      403,
-      "csrf_rejected",
-      "This mutation must come from the same origin.",
-    );
+    return error(context, 422, "invalid_file", "Attach one readable CSV file.");
+  }
+  const file = form.get("file");
+  if (!(file instanceof File) || form.getAll("file").length !== 1) {
+    return error(context, 422, "invalid_file", "Attach one CSV file.");
   }
   if (
-    !host ||
-    /[\s,/@]/.test(host) ||
-    !["http:", "https:"].includes(requestUrl.protocol) ||
-    host.toLowerCase() !== requestUrl.host.toLowerCase() ||
-    origin !== originUrl.origin ||
-    originUrl.protocol !== requestUrl.protocol ||
-    originUrl.host.toLowerCase() !== host.toLowerCase() ||
-    context.req.header(APP_REQUEST_HEADER) !== APP_REQUEST_VALUE
+    file.type &&
+    !["text/csv", "application/csv", "text/plain"].includes(
+      file.type.toLowerCase(),
+    )
   ) {
-    return error(
-      context,
-      403,
-      "csrf_rejected",
-      "This mutation must come from the same origin.",
-    );
+    return error(context, 415, "content_type", "Use a CSV file.");
   }
-  return null;
-};
-
-const expectedRevision = (context: ImportContext): number | null => {
-  const value = context.req.header("X-Position-Basis-Revision");
-  return value &&
-    /^(?:0|[1-9]\d*)$/.test(value) &&
-    Number.isSafeInteger(Number(value))
-    ? Number(value)
-    : null;
-};
-
-const previewResponse = (
-  context: ImportContext,
-  result: ImportPreviewResult,
-): Response => {
-  if (result.kind === "invalid_file")
+  const result = await new EventImportIntakeService({
+    db: context.env.DB,
+    queue: context.env.NORMALIZED_WORK_QUEUE,
+  }).start({
+    originalFilename: file.name,
+    file: new Uint8Array(await file.arrayBuffer()),
+  });
+  if (result.kind === "invalid_file") {
     return error(
       context,
       422,
       result.code,
       "The CSV file does not match the documented template.",
     );
-  if (result.kind === "provider_unavailable")
-    return error(
-      context,
-      503,
-      result.code,
-      "The split-history provider is unavailable. Try again later.",
-    );
-  if (result.kind === "conflict")
-    return error(
-      context,
-      409,
-      result.code,
-      "The portfolio changed. Reload and try again.",
-    );
-  return context.json(result, 201);
+  }
+  return context.json(
+    { importId: result.importId, status: result.status },
+    202,
+  );
 };
 
-const commitResponse = (
-  context: ImportContext,
-  result: ImportCommitResult,
-): Response => {
-  if (result.kind === "committed") {
-    context.header("ETag", `"position-basis-${result.positionBasisRevision}"`);
-    context.header(
-      "X-Position-Basis-Revision",
-      String(result.positionBasisRevision),
-    );
-    return context.json(result, 201);
-  }
-  if (result.kind === "provider_unavailable")
-    return error(
-      context,
-      503,
-      result.code,
-      "The split-history provider is unavailable. Try again later.",
-    );
-  if (result.kind === "conflict")
-    return error(
-      context,
-      409,
-      result.code,
-      "The portfolio changed. Reload and try again.",
-    );
-  if (result.kind === "expired")
-    return error(
-      context,
-      409,
-      "import_expired",
-      "The import preview expired. Upload the file again.",
-    );
-  if (result.kind === "not_found")
+const errorsQuery = z.object({
+  cursor: z.string().max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+interface ErrorRow {
+  sort_key: string;
+  row_number: number | null;
+  symbol: string;
+  code: string;
+  message: string | null;
+  source: "row" | "provider";
+}
+
+const listErrors = async (context: ImportContext) => {
+  const batchId = context.req.param("id");
+  const batch = await context.env.DB.prepare(
+    "SELECT id FROM import_batches WHERE id = ?1",
+  )
+    .bind(batchId)
+    .first<{ id: string }>();
+  if (!batch) {
     return error(
       context,
       404,
       "import_not_found",
-      "The import preview does not exist.",
+      "The import does not exist.",
     );
-  return error(context, 422, result.code, "The import cannot be committed.");
-};
-
-const preview = async (context: ImportContext) => {
-  const rejected = sameOriginAndAppRequest(context);
-  if (rejected) return rejected;
-  const form = await context.req.formData();
-  const file = form.get("file");
-  if (!(file instanceof File) || form.getAll("file").length !== 1)
-    return error(context, 422, "invalid_file", "Attach one CSV file.");
-  if (
-    file.type &&
-    !["text/csv", "application/csv", "text/plain"].includes(
-      file.type.toLowerCase(),
-    )
+  }
+  const query = errorsQuery.parse(context.req.query());
+  const result = await context.env.DB.prepare(
+    `WITH errors AS (
+         SELECT printf('r:%010d:%s', rows.row_number, validation.value) AS sort_key,
+                rows.row_number, rows.symbol,
+                CAST(validation.value AS TEXT) AS code,
+                NULL AS message, 'row' AS source
+           FROM import_rows rows
+           JOIN json_each(rows.validation_errors_json) validation
+          WHERE rows.import_batch_id = ?1 AND rows.status = 'invalid'
+         UNION ALL
+         SELECT 's:' || symbols.source_symbol || ':' || symbols.error_code,
+                NULL, symbols.source_symbol, symbols.error_code,
+                symbols.error_message, 'provider'
+           FROM import_symbols symbols
+          WHERE symbols.import_batch_id = ?1
+            AND symbols.error_code IS NOT NULL
+            AND symbols.state IN ('failed', 'terminal')
+       )
+       SELECT sort_key, row_number, symbol, code, message, source
+         FROM errors WHERE sort_key > ?2
+        ORDER BY sort_key LIMIT ?3`,
   )
-    return error(context, 415, "content_type", "Use a CSV file.");
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const result = await new EventImportsService({
-    db: context.env.DB,
-    corporateActionProvider: new YahooCorporateActionProvider(),
-    marketDataProvider: new YahooMarketDataProvider(),
-  }).preview({
-    originalFilename: file.name,
-    file: bytes,
+    .bind(batchId, query.cursor ?? "", query.limit + 1)
+    .all<ErrorRow>();
+  const hasMore = result.results.length > query.limit;
+  const page = result.results.slice(0, query.limit);
+  return context.json({
+    errors: page.map((row) => ({
+      rowNumber: row.row_number,
+      symbol: row.symbol,
+      code: row.code,
+      message: row.message,
+      source: row.source,
+    })),
+    nextCursor: hasMore ? (page.at(-1)?.sort_key ?? null) : null,
   });
-  return previewResponse(context, result);
-};
-
-const commit = async (context: ImportContext) => {
-  const rejected = sameOriginAndAppRequest(context);
-  if (rejected) return rejected;
-  const revision = expectedRevision(context);
-  if (revision === null)
-    return error(
-      context,
-      422,
-      "precondition_required",
-      "Provide a valid portfolio revision.",
-    );
-  commitSchema.parse(await context.req.json());
-  const batchId = context.req.param("id");
-  if (!batchId)
-    return error(context, 422, "invalid_request", "The request is invalid.");
-  const result = await new EventImportsService({
-    db: context.env.DB,
-    corporateActionProvider: new YahooCorporateActionProvider(),
-    marketDataProvider: new YahooMarketDataProvider(),
-  }).commit({
-    batchId,
-    expectedPositionBasisRevision: revision,
-  });
-  return commitResponse(context, result);
 };
 
 const methodNotAllowed = (allow: string) => (context: ImportContext) => {
@@ -204,8 +132,7 @@ const methodNotAllowed = (allow: string) => (context: ImportContext) => {
 
 export const eventImportRoutes = new Hono<{ Bindings: Env }>();
 
-eventImportRoutes.post("/preview", preview);
-eventImportRoutes.all("/preview", methodNotAllowed("POST"));
-eventImportRoutes.post("/:id/commit", commit);
-eventImportRoutes.all("/:id/commit", methodNotAllowed("POST"));
+eventImportRoutes.post("/", start);
+eventImportRoutes.get("/:id/errors", listErrors);
+eventImportRoutes.all("/:id/errors", methodNotAllowed("GET"));
 eventImportRoutes.all("/*", methodNotAllowed("POST"));

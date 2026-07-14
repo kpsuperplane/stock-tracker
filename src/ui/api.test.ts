@@ -44,19 +44,14 @@ describe("product event API clients", () => {
     expect(init.cache).toBe("no-store");
   });
 
-  it("does not override multipart boundaries for CSV preview", async () => {
+  it("does not override multipart boundaries for asynchronous CSV import", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          kind: "preview",
-          batchId: "batch-1",
-          basePositionBasisRevision: 1,
-          rows: [],
-          reviews: [],
-          projectedHoldings: [],
-          expiresAt: "2026-07-12T00:00:00.000Z",
+          importId: "batch-1",
+          status: "pending",
         }),
-        { status: 201, headers: { "Content-Type": "application/json" } },
+        { status: 202, headers: { "Content-Type": "application/json" } },
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -68,13 +63,14 @@ describe("product event API clients", () => {
       },
     );
 
-    await eventImportsApi.preview(file);
+    await eventImportsApi.start(file);
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(new Headers(init.headers).get("X-Stock-Tracker-Request")).toBe("1");
     expect(new Headers(init.headers).has("Content-Type")).toBe(false);
     expect(init.body).toBeInstanceOf(FormData);
     expect((init.body as FormData).get("accountId")).toBeNull();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/event-imports");
   });
 
   it("retains API conflict codes and response details", async () => {

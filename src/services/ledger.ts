@@ -31,7 +31,6 @@ import type {
 } from "../providers/corporate-actions";
 import { easternMarketDate } from "../shared/dates";
 
-const MAX_CURRENT_POSITIONS = 100;
 const PLANNING_WORK_TYPE = "ledger_reconciliation_plan";
 const DEFAULT_SPLIT_PROVIDER = "yahoo-chart-v8";
 
@@ -498,15 +497,6 @@ export class LedgerService {
     splitStatements: D1PreparedStatement[];
     warningCode?: LedgerWarningCode;
   }): Promise<LedgerMutationResult> {
-    const withinPositionLimit = await this.withinPositionLimit({
-      today: input.today,
-      targetInstrumentId: input.resolved.instrumentId,
-      targetTransactions: input.resolved.after,
-      targetSplits: input.targetSplits,
-    });
-    if (!withinPositionLimit)
-      return { kind: "validation_error", code: "position_limit" };
-
     const jobId = this.newId();
     const workId = this.newId();
     const mutationId = this.newId();
@@ -1384,53 +1374,6 @@ export class LedgerService {
       },
       [],
     );
-  }
-
-  private async withinPositionLimit(input: {
-    today: string;
-    targetInstrumentId: string;
-    targetTransactions: readonly TransactionRecord[];
-    targetSplits: readonly ActiveSplit[];
-  }): Promise<boolean> {
-    const rows = await this.dependencies.db
-      .prepare("SELECT id FROM instruments ORDER BY id")
-      .all<{ id: string }>();
-    let positive = 0;
-    for (const row of rows.results) {
-      const transactions =
-        row.id === input.targetInstrumentId
-          ? input.targetTransactions
-          : await this.transactions.listForInstrument(row.id);
-      const actions =
-        row.id === input.targetInstrumentId
-          ? input.targetSplits
-          : (await this.actions.listForInstrument(row.id))
-              .filter((action) => action.status === "active")
-              .map(toActiveSplit);
-      try {
-        const scoped = holdingsByAccount({
-          today: input.today,
-          transactions,
-          activeSplits: actions,
-        });
-        // Validate every account and count the instrument once globally.
-        for (const holdings of scoped.values()) {
-          // currentQuantity() is reached only after deriveHoldings has
-          // successfully validated the complete account history.
-          void holdings.currentQuantity();
-        }
-        if (
-          [...scoped.values()].some(
-            (holdings) => holdings.currentQuantity() !== "0",
-          )
-        )
-          positive += 1;
-      } catch {
-        return false;
-      }
-      if (positive > MAX_CURRENT_POSITIONS) return false;
-    }
-    return true;
   }
 
   private batchFailure(error: unknown): LedgerMutationResult {

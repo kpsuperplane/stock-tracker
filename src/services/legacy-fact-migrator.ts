@@ -503,10 +503,8 @@ export class LegacyFactMigrator {
 
   /**
    * Preserve every currently known legacy ticker identity, including deleted
-   * watchlist entries. The watchlist is capped at 100 active entries, so this
-   * set-based sweep is bounded by the personal ticker table (active watchlist
-   * entries are capped at 100); referenced identities are always ensured by
-   * the row materializer as well.
+   * watchlist entries. The set-based sweep avoids per-symbol reads; referenced
+   * identities are always ensured by the row materializer as well.
    */
   private async sweepTickerIdentities(now: string): Promise<void> {
     await this.db.batch([

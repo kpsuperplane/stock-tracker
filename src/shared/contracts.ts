@@ -9,7 +9,15 @@ export interface PipelineDispatchMessage {
   dispatchBatchId: string;
 }
 
-export type QueueMessage = ScreeningJobMessage | PipelineDispatchMessage;
+/** A continuation for one durable portfolio-import batch. */
+export interface ImportDispatchMessage {
+  importBatchId: string;
+}
+
+export type NormalizedQueueMessage =
+  | PipelineDispatchMessage
+  | ImportDispatchMessage;
+export type QueueMessage = ScreeningJobMessage | NormalizedQueueMessage;
 
 /**
  * Queue routing discriminants.  The two message contracts are intentionally
@@ -25,6 +33,18 @@ export const isPipelineDispatchMessage = (
     Object.keys(candidate).length === 1 &&
     typeof candidate.dispatchBatchId === "string" &&
     candidate.dispatchBatchId.length > 0
+  );
+};
+
+export const isImportDispatchMessage = (
+  body: unknown,
+): body is ImportDispatchMessage => {
+  if (typeof body !== "object" || body === null) return false;
+  const candidate = body as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 1 &&
+    typeof candidate.importBatchId === "string" &&
+    candidate.importBatchId.length > 0
   );
 };
 
@@ -457,6 +477,29 @@ export interface ReconciliationStatusDto {
   errorMessage: string | null;
 }
 
+export type PortfolioImportState =
+  | "pending"
+  | "running"
+  | "committed"
+  | "complete_with_errors"
+  | "terminal"
+  | "expired";
+
+export interface PortfolioImportStatusDto {
+  id: string;
+  filename: string;
+  status: PortfolioImportState;
+  processedSymbols: number;
+  totalSymbols: number;
+  failedRows: number;
+  resultPipelineJobId: string | null;
+  terminalErrorCode: string | null;
+  terminalErrorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
 export interface StatusReadModelDto {
   earningsCoverage: EarningsSyncStatusDto | null;
   reconciliation: {
@@ -464,6 +507,7 @@ export interface StatusReadModelDto {
     dividends: ReconciliationStatusDto;
     financialReports: ReconciliationStatusDto;
   };
+  imports: PortfolioImportStatusDto[];
   jobs: JobReadModelDto[];
   nextCursor: string | null;
 }

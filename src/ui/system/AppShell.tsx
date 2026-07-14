@@ -348,13 +348,24 @@ export const ProductApp = ({
               (router.route === "today" ? (
                 <TodayPage />
               ) : router.route === "events" ? (
-                <EventsPage />
+                <EventsPage
+                  onImportAccepted={({ importId }) =>
+                    navigate("status", { import: importId })
+                  }
+                />
               ) : router.route === "portfolio" ? (
                 <PortfolioPage />
               ) : router.route === "calendar" ? (
                 <CalendarPage />
               ) : router.route === "status" ? (
-                <StatusPage />
+                <StatusPage
+                  {...(() => {
+                    const importId = new URLSearchParams(
+                      router.pathname.split("?", 2)[1] ?? "",
+                    ).get("import");
+                    return importId ? { highlightedImportId: importId } : {};
+                  })()}
+                />
               ) : router.route === "accounts" ? (
                 <AccountsPage />
               ) : (

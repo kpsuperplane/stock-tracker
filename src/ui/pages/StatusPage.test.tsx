@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { StatusReadModelDto } from "../../shared/contracts";
 import { I18nProvider } from "../i18n/I18nProvider";
-import { StatusPage, syncHealthFor } from "./StatusPage";
+import { StatusPage, shouldPollStatus, syncHealthFor } from "./StatusPage";
 
 const status: StatusReadModelDto = {
   earningsCoverage: {
@@ -47,6 +47,22 @@ const status: StatusReadModelDto = {
       errorMessage: null,
     },
   },
+  imports: [
+    {
+      id: "import-1",
+      filename: "portfolio.csv",
+      status: "committed",
+      processedSymbols: 3,
+      totalSymbols: 3,
+      failedRows: 0,
+      resultPipelineJobId: "job-import-1",
+      terminalErrorCode: null,
+      terminalErrorMessage: null,
+      createdAt: "2026-07-13T11:50:00.000Z",
+      updatedAt: "2026-07-13T11:55:00.000Z",
+      completedAt: "2026-07-13T11:55:00.000Z",
+    },
+  ],
   jobs: [
     {
       id: "scheduled:portfolio:2026-07-13",
@@ -88,6 +104,10 @@ describe("StatusPage", () => {
     expect(markup).toContain("Stock values");
     expect(markup).toContain("Dividends");
     expect(markup).toContain("Financial reports");
+    expect(markup).toContain("Portfolio imports");
+    expect(markup).toContain("portfolio.csv");
+    expect(markup).toContain('href="/events"');
+    expect(markup).toContain("job-import-1");
     expect(markup).toContain("8 / 8 facts reconciled");
     expect(markup).toContain("Scheduled sync");
     expect(markup).toContain("8 / 8");
@@ -100,7 +120,9 @@ describe("StatusPage", () => {
   it("surfaces provider and job errors as needs-attention details", () => {
     const earningsCoverage = status.earningsCoverage;
     const job = status.jobs[0];
-    if (!earningsCoverage || !job) throw new Error("status fixture incomplete");
+    const imported = status.imports[0];
+    if (!earningsCoverage || !job || !imported)
+      throw new Error("status fixture incomplete");
     const failing: StatusReadModelDto = {
       ...status,
       earningsCoverage: {
@@ -109,6 +131,15 @@ describe("StatusPage", () => {
         errorCode: "provider_rate_limited",
         errorMessage: "Alpha Vantage rate limit reached.",
       },
+      imports: [
+        {
+          ...imported,
+          status: "terminal",
+          terminalErrorCode: "provider_retry_exhausted",
+          terminalErrorMessage: "Provider retries were exhausted.",
+          resultPipelineJobId: null,
+        },
+      ],
       jobs: [
         {
           ...job,
@@ -135,6 +166,8 @@ describe("StatusPage", () => {
     expect(markup).toContain("Needs attention");
     expect(markup).toContain("Alpha Vantage rate limit reached.");
     expect(markup).toContain("Price provider unavailable.");
+    expect(markup).toContain("Provider retries were exhausted.");
+    expect(markup).toContain("View errors");
     expect(markup).toContain("Complete with errors");
     expect(markup).toContain('colSpan="9"');
   });
@@ -148,6 +181,37 @@ describe("StatusPage", () => {
         jobs: [{ ...job, status: "running" }],
       }),
     ).toBe("syncing");
+  });
+
+  it("polls and highlights an active localized import", () => {
+    const imported = status.imports[0];
+    if (!imported) throw new Error("import fixture incomplete");
+    const active: StatusReadModelDto = {
+      ...status,
+      imports: [
+        {
+          ...imported,
+          id: "active-import",
+          status: "running",
+          processedSymbols: 2,
+          totalSymbols: 5,
+          resultPipelineJobId: null,
+          completedAt: null,
+        },
+      ],
+    };
+    expect(shouldPollStatus(active)).toBe(true);
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="cn">
+        <StatusPage
+          initialStatus={active}
+          highlightedImportId="active-import"
+        />
+      </I18nProvider>,
+    );
+    expect(markup).toContain("投资组合导入");
+    expect(markup).toContain("2 / 5");
+    expect(markup).toContain('data-import-highlighted="true"');
   });
 
   it("surfaces domain reconciliation work in the overall health", () => {

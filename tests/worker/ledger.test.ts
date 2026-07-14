@@ -572,7 +572,7 @@ describe("LedgerService", () => {
     ).toEqual({ revision: 2 });
   });
 
-  it("allows only one of two competing 100-position proposals to commit", async () => {
+  it("serializes competing mutations and permits 101 current positions", async () => {
     for (let index = 0; index < 101; index += 1) {
       await insertInstrument(`instrument-${index}`, `S${index}`);
       if (index < 99) {
@@ -592,9 +592,9 @@ describe("LedgerService", () => {
       }
     }
     const provider = dynamicProvider();
-    const proposal = (instrumentId: string) =>
+    const proposal = (instrumentId: string, revision = 0) =>
       service(provider).apply({
-        expectedPositionBasisRevision: 0,
+        expectedPositionBasisRevision: revision,
         proposal: {
           kind: "create",
           instrumentId,
@@ -614,10 +614,15 @@ describe("LedgerService", () => {
     expect(results.filter((result) => result.kind === "conflict")).toHaveLength(
       1,
     );
+    const conflictedInstrument =
+      results[0]?.kind === "conflict" ? "instrument-99" : "instrument-100";
+    await expect(proposal(conflictedInstrument, 1)).resolves.toMatchObject({
+      kind: "committed",
+    });
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM transactions",
       ).first(),
-    ).toEqual({ count: 100 });
+    ).toEqual({ count: 101 });
   });
 });

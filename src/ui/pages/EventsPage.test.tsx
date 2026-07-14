@@ -1,12 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { EventsTimelineDto } from "../../shared/contracts";
-import type { ImportPreviewResponse } from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
-import {
-  EventImportDialog,
-  isCurrentPreviewRequest,
-} from "./EventImportDialog";
+import { EventImportDialog } from "./EventImportDialog";
 import { EventsPage } from "./EventsPage";
 
 const timeline: EventsTimelineDto = {
@@ -87,70 +83,20 @@ describe("EventsPage", () => {
 });
 
 describe("EventImportDialog", () => {
-  it("ignores a preview response after a newer file selection", () => {
-    const first = new File(["first"], "first.csv");
-    const second = new File(["second"], "second.csv");
-
-    expect(isCurrentPreviewRequest(1, 2, first, second)).toBe(false);
-    expect(isCurrentPreviewRequest(2, 2, second, second)).toBe(true);
-  });
-
-  it("documents the template and review-first import flow", () => {
+  it("documents the template and direct asynchronous import flow", () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">
-        <EventImportDialog
-          isOpen
-          onOpenChange={() => undefined}
-          positionBasisRevision={3}
-        />
+        <EventImportDialog isOpen onOpenChange={() => undefined} />
       </I18nProvider>,
     );
 
     expect(markup).toContain("Import portfolio events");
     expect(markup).toContain("Download template");
-    expect(markup).toContain("Preview import");
+    expect(markup).toContain("Import CSV");
+    expect(markup).toContain("Status page");
     expect(markup).not.toContain(">Account</label>");
     expect(markup).toContain(
       "trade_date,symbol,side,quantity,price,category,account",
     );
-  });
-
-  it("keeps the preview error table wide enough to read its columns", () => {
-    const preview: ImportPreviewResponse = {
-      kind: "preview",
-      batchId: "batch-1",
-      basePositionBasisRevision: 0,
-      rows: [
-        {
-          rowNumber: 2,
-          symbol: "MISSING",
-          tradeDate: "2026-07-10",
-          side: "buy",
-          quantityDecimal: "1",
-          priceDecimal: "10",
-          accountId: "account-default",
-          categoryName: "Uncategorized",
-          accountName: "Default Account",
-          status: "invalid",
-          errors: ["unknown_symbol"],
-        },
-      ],
-      reviews: [],
-      projectedHoldings: [],
-      expiresAt: "2026-07-11T12:00:00.000Z",
-    };
-    const markup = renderToStaticMarkup(
-      <I18nProvider initialLocale="en">
-        <EventImportDialog
-          isOpen
-          onOpenChange={() => undefined}
-          positionBasisRevision={0}
-          initialPreview={preview}
-        />
-      </I18nProvider>,
-    );
-
-    expect(markup).toContain("product-event-import-table");
-    expect(markup).toContain("MISSING");
   });
 });

@@ -250,7 +250,7 @@ describe("accounts and categories", () => {
        (id, file_digest, original_filename, base_position_basis_revision,
         status, expires_at, created_at, updated_at)
        VALUES ('archived-import', 'archived-digest', 'x.csv', 0,
-               'preview', ?1, ?1, ?1)`,
+               'pending', ?1, ?1, ?1)`,
     )
       .bind(now)
       .run();

@@ -290,7 +290,7 @@ describe("portfolio ledger migration", () => {
       `INSERT INTO import_batches
        (id, file_digest, original_filename, base_position_basis_revision,
         status, expires_at, created_at, updated_at)
-       VALUES ('batch-1', 'digest-1', 'events.csv', 0, 'preview',
+       VALUES ('batch-1', 'digest-1', 'events.csv', 0, 'pending',
                '2026-07-11T12:00:00.000Z', ?1, ?1)`,
     )
       .bind(now)
@@ -308,7 +308,7 @@ describe("portfolio ledger migration", () => {
       `INSERT INTO import_batches
        (id, file_digest, original_filename, base_position_basis_revision,
         status, expires_at, created_at, updated_at)
-       VALUES ('batch-2', 'digest-1', 'copy.csv', 0, 'preview',
+       VALUES ('batch-2', 'digest-1', 'copy.csv', 0, 'pending',
                '2026-07-11T12:00:00.000Z', ?1, ?1)`,
     )
       .bind(now)

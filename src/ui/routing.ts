@@ -64,7 +64,7 @@ export const isPlainLeftClick = (event: {
 export interface AppRouter {
   pathname: string;
   route: AppRoute;
-  navigate: (route: AppRoute) => void;
+  navigate: (route: AppRoute, query?: Record<string, string>) => void;
 }
 
 export const sharedScopeSearch = (search: string): string => {
@@ -89,21 +89,28 @@ export const useAppRouter = (initialPath?: string): AppRouter => {
     return () => window.removeEventListener("popstate", onPopState);
   }, [initialPath]);
 
-  const navigate = useCallback((route: AppRoute) => {
-    const query =
-      typeof window === "undefined"
-        ? ""
-        : sharedScopeSearch(window.location.search);
-    const nextPath = `${pathForRoute(route)}${query}`;
-    if (typeof window === "undefined") {
+  const navigate = useCallback(
+    (route: AppRoute, extra?: Record<string, string>) => {
+      const query = new URLSearchParams(
+        typeof window === "undefined"
+          ? ""
+          : sharedScopeSearch(window.location.search).replace(/^\?/, ""),
+      );
+      for (const [key, value] of Object.entries(extra ?? {}))
+        query.set(key, value);
+      const search = query.toString();
+      const nextPath = `${pathForRoute(route)}${search ? `?${search}` : ""}`;
+      if (typeof window === "undefined") {
+        setPathname(nextPath);
+        return;
+      }
+      if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+        window.history.pushState({}, "", nextPath);
+      }
       setPathname(nextPath);
-      return;
-    }
-    if (`${window.location.pathname}${window.location.search}` !== nextPath) {
-      window.history.pushState({}, "", nextPath);
-    }
-    setPathname(nextPath);
-  }, []);
+    },
+    [],
+  );
 
   return { pathname, route: routeForPath(pathname), navigate };
 };
