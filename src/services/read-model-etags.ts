@@ -5,6 +5,8 @@ interface RevisionRow {
   revision: number;
 }
 
+const MAX_D1_BIND_PARAMETERS = 100;
+
 export interface ReadModelTagInput {
   model: "portfolio" | "portfolio_history" | "calendar";
   locale: ReadModelLocale;
@@ -40,9 +42,9 @@ const uniqueBuckets = (bucketKeys: readonly string[]): string[] =>
     });
 
 /**
- * ETags intentionally read only the requested revision bucket rows. Calendar
- * ranges are bounded, so this remains a small point lookup rather than a scan
- * of all fact state.
+ * ETags intentionally read only the requested revision bucket rows. Long
+ * histories are split into one batched request so each statement stays within
+ * D1's bind-variable limit without penalizing the common single-query path.
  */
 export const readModelTag = async (
   db: D1Database,
@@ -51,17 +53,34 @@ export const readModelTag = async (
   const buckets = uniqueBuckets(input.bucketKeys);
   const revisions: Record<string, number> = {};
   if (buckets.length > 0) {
-    const placeholders = buckets
-      .map((_key, index) => `?${index + 1}`)
-      .join(", ");
-    const rows = await db
-      .prepare(
-        `SELECT bucket_key, revision FROM fact_revision_buckets
-         WHERE bucket_key IN (${placeholders}) ORDER BY bucket_key`,
-      )
-      .bind(...buckets)
-      .all<RevisionRow>();
-    for (const row of rows.results) revisions[row.bucket_key] = row.revision;
+    const statements: D1PreparedStatement[] = [];
+    for (
+      let start = 0;
+      start < buckets.length;
+      start += MAX_D1_BIND_PARAMETERS
+    ) {
+      const chunk = buckets.slice(start, start + MAX_D1_BIND_PARAMETERS);
+      const placeholders = chunk
+        .map((_key, index) => `?${index + 1}`)
+        .join(", ");
+      statements.push(
+        db
+          .prepare(
+            `SELECT bucket_key, revision FROM fact_revision_buckets
+             WHERE bucket_key IN (${placeholders}) ORDER BY bucket_key`,
+          )
+          .bind(...chunk),
+      );
+    }
+    const [singleStatement] = statements;
+    const results =
+      statements.length === 1 && singleStatement
+        ? [await singleStatement.all<RevisionRow>()]
+        : await db.batch<RevisionRow>(statements);
+    for (const result of results) {
+      for (const row of result.results)
+        revisions[row.bucket_key] = row.revision;
+    }
   }
   const canonical = [
     input.model,

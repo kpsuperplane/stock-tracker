@@ -319,6 +319,72 @@ describe("portfolio and calendar read models", () => {
     expect(cached.status).toBe(304);
   });
 
+  it("builds history ETags across more than 100 monthly revision buckets", async () => {
+    await insertInstrument({
+      id: "long-history-instrument",
+      symbol: "LONG",
+      currency: "CAD",
+    });
+    await insertTransaction({
+      id: "long-history-buy",
+      instrumentId: "long-history-instrument",
+      date: "2016-06-06",
+      quantity: "1",
+    });
+    await insertFact({
+      id: "long-history-fact",
+      instrumentId: "long-history-instrument",
+      date: "2026-07-10",
+      previous: "9",
+      current: "10",
+      pct: "1",
+    });
+    await env.DB.prepare(
+      `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
+       VALUES ('2026-07', 1, ?1)`,
+    )
+      .bind(now)
+      .run();
+
+    const url =
+      "http://local/api/portfolio/history?range=custom&startDate=2026-07-10&endDate=2026-07-10";
+    const response = await exports.default.fetch(
+      new Request(url, { headers: { Authorization: authorization } }),
+    );
+
+    expect(response.status).toBe(200);
+    const etag = response.headers.get("ETag");
+    expect(etag).not.toBeNull();
+
+    const cached = await exports.default.fetch(
+      new Request(url, {
+        headers: {
+          Authorization: authorization,
+          "If-None-Match": etag ?? "",
+        },
+      }),
+    );
+    expect(cached.status).toBe(304);
+
+    await env.DB.prepare(
+      `UPDATE fact_revision_buckets
+          SET revision = revision + 1, updated_at = ?1
+        WHERE bucket_key = '2026-07'`,
+    )
+      .bind(now)
+      .run();
+    const changed = await exports.default.fetch(
+      new Request(url, {
+        headers: {
+          Authorization: authorization,
+          "If-None-Match": etag ?? "",
+        },
+      }),
+    );
+    expect(changed.status).toBe(200);
+    expect(changed.headers.get("ETag")).not.toBe(etag);
+  });
+
   it("validates portfolio history ranges and resolves Today to two closes", async () => {
     await insertInstrument({
       id: "history-range-instrument",
