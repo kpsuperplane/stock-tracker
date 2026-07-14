@@ -37,12 +37,18 @@ const instrument = {
 
 describe("SecEarningsHistoryProvider", () => {
   it("maps Item 2.02 reports to the corresponding fiscal period", async () => {
-    const fetcher = vi.fn(
-      async (input: RequestInfo | URL, _init?: RequestInit) =>
+    const fetcher = vi.fn(function (
+      this: unknown,
+      input: RequestInfo | URL,
+      _init?: RequestInit,
+    ) {
+      expect(this).toBeUndefined();
+      return Promise.resolve(
         Response.json(
           String(input).includes("company_tickers") ? directory : submissions(),
         ),
-    );
+      );
+    });
     const result = await new SecEarningsHistoryProvider(
       "Stock Tracker contact@example.com",
       fetcher as typeof fetch,

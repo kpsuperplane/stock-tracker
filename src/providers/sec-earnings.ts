@@ -5,6 +5,7 @@ import type {
   EarningsInstrumentReference,
   NormalizedEarningsEvent,
 } from "./earnings";
+import { ProviderResponseError } from "./provider-errors";
 import { isIsoCalendarDate, readBoundedJson } from "./provider-http";
 
 export const secEarningsProvider = "sec-edgar-earnings";
@@ -125,7 +126,8 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
   }
 
   private async request(url: string): Promise<unknown> {
-    const response = await this.fetcher(url, {
+    const fetcher = this.fetcher;
+    const response = await fetcher(url, {
       headers: {
         "User-Agent": this.userAgent,
         "Accept-Encoding": "gzip, deflate",
@@ -149,7 +151,20 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
         if (error instanceof Error && error.message.startsWith("provider_")) {
           throw error;
         }
-        throw new Error("provider_schema");
+        if (error instanceof z.ZodError) {
+          const issue = error.issues[0];
+          const field =
+            issue?.path[0] === "data" ? issue.path[2] : issue?.path[0];
+          const issueCode = issue?.code ?? "unknown";
+          throw new ProviderResponseError(
+            `provider_directory_schema_${String(field ?? "root")}_${issueCode}`,
+            JSON.stringify(error.issues.slice(0, 3)),
+          );
+        }
+        throw new ProviderResponseError(
+          "provider_directory_response_invalid",
+          error instanceof Error ? error.message : "Invalid SEC response",
+        );
       }
       return new Map(
         payload.data.map(([cik, , ticker]) => [
@@ -187,7 +202,7 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
       if (error instanceof Error && error.message.startsWith("provider_")) {
         throw error;
       }
-      throw new Error("provider_schema");
+      throw new Error("provider_submissions_schema");
     }
     if (
       payload.cik !== cik ||
@@ -214,7 +229,7 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
         if (error instanceof Error && error.message.startsWith("provider_")) {
           throw error;
         }
-        throw new Error("provider_schema");
+        throw new Error("provider_archive_schema");
       }
       rows.push(...rowsFrom(archived));
     }

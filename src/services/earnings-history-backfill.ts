@@ -32,6 +32,8 @@ export interface EarningsHistoryBackfillSummary {
   events: number;
   retried: number;
   fallbackDeferred: number;
+  secFailures: Record<string, number>;
+  secFailureDetails: Record<string, string>;
 }
 
 const addMilliseconds = (timestamp: string, milliseconds: number): string =>
@@ -43,6 +45,10 @@ const fallbackImmediately = new Set([
   "provider_history_archived",
   "provider_history_unavailable",
   "provider_schema",
+  "provider_directory_schema",
+  "provider_directory_response_invalid",
+  "provider_submissions_schema",
+  "provider_archive_schema",
   "provider_user_agent_unavailable",
   "provider_http_404",
 ]);
@@ -267,6 +273,8 @@ export class EarningsHistoryBackfillService {
       events: 0,
       retried: 0,
       fallbackDeferred: 0,
+      secFailures: {},
+      secFailureDetails: {},
     };
     let fallbacks = 0;
     for (let index = 0; index < this.batchSize; index += 1) {
@@ -287,9 +295,16 @@ export class EarningsHistoryBackfillService {
           secFailure = describeProviderError(error);
         }
       }
+      if (!range) {
+        summary.secFailures[secFailure.code] =
+          (summary.secFailures[secFailure.code] ?? 0) + 1;
+        summary.secFailureDetails[secFailure.code] ??= secFailure.message;
+      }
       const shouldFallback =
         range === null &&
-        (fallbackImmediately.has(secFailure.code) || row.attempt_count >= 2);
+        (fallbackImmediately.has(secFailure.code) ||
+          secFailure.code.startsWith("provider_directory_schema_") ||
+          row.attempt_count >= 2);
       if (shouldFallback) {
         if (
           !this.dependencies.alphaProvider ||

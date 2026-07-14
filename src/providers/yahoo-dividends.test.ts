@@ -6,23 +6,26 @@ describe("YahooDividendEventProvider", () => {
     const eventDate = Math.floor(
       Date.parse("2026-02-09T14:30:00.000Z") / 1_000,
     );
-    const fetcher = vi.fn(async (_input: RequestInfo | URL) =>
-      Response.json({
-        chart: {
-          result: [
-            {
-              meta: { symbol: "AAPL", currency: "USD" },
-              events: {
-                dividends: {
-                  [eventDate]: { amount: 0.26, date: eventDate },
+    const fetcher = vi.fn(function (this: unknown, _input: RequestInfo | URL) {
+      expect(this).toBeUndefined();
+      return Promise.resolve(
+        Response.json({
+          chart: {
+            result: [
+              {
+                meta: { symbol: "AAPL", currency: "USD" },
+                events: {
+                  dividends: {
+                    [eventDate]: { amount: 0.26, date: eventDate },
+                  },
                 },
               },
-            },
-          ],
-          error: null,
-        },
-      }),
-    );
+            ],
+            error: null,
+          },
+        }),
+      );
+    });
     const provider = new YahooDividendEventProvider(
       fetcher as typeof fetch,
       () => new Date("2026-07-12T12:00:00.000Z"),
