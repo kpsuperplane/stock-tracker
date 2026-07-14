@@ -41,7 +41,7 @@ const submissionsSchema = z.object({
     recent: recentFilingsSchema,
     files: z.array(
       z.object({
-        name: z.string().min(1),
+        name: z.string().regex(/^CIK\d{10}-submissions-\d{3}\.json$/),
         filingFrom: z.string().refine(isIsoCalendarDate),
         filingTo: z.string().refine(isIsoCalendarDate),
       }),
@@ -201,22 +201,28 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
     }
 
     const rows = rowsFrom(payload.filings.recent);
-    const oldestRecent = rows.reduce<string | null>(
-      (oldest, row) =>
-        oldest === null || row.filingDate < oldest ? row.filingDate : oldest,
-      null,
-    );
-    if (
-      oldestRecent &&
-      startDate < oldestRecent &&
-      payload.filings.files.some(
-        (file) => file.filingTo >= startDate && file.filingFrom <= endDate,
-      )
-    ) {
-      throw new Error("provider_history_archived");
+    for (const file of payload.filings.files.filter(
+      (candidate) =>
+        candidate.filingTo >= startDate && candidate.filingFrom <= endDate,
+    )) {
+      let archived: z.infer<typeof recentFilingsSchema>;
+      try {
+        archived = recentFilingsSchema.parse(
+          await this.request(`https://data.sec.gov/submissions/${file.name}`),
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("provider_")) {
+          throw error;
+        }
+        throw new Error("provider_schema");
+      }
+      rows.push(...rowsFrom(archived));
     }
-    const periodic = rows.filter((row) => periodicForm(row.form));
-    const earningsRows = rows.filter(
+    const uniqueRows = [
+      ...new Map(rows.map((row) => [row.accessionNumber, row])).values(),
+    ];
+    const periodic = uniqueRows.filter((row) => periodicForm(row.form));
+    const earningsRows = uniqueRows.filter(
       (row) =>
         (row.form === "8-K" || row.form === "8-K/A") &&
         hasItem202(row.items) &&

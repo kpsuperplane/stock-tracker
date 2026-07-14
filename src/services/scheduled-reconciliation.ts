@@ -271,7 +271,7 @@ export class ScheduledReconciliationService {
       ((date, exchange = "") => isMarketHolidayForExchange(date, exchange));
     this.plannerPageSize = Math.min(
       1_000,
-      Math.max(1, Math.floor(dependencies.plannerPageSize ?? 100)),
+      Math.max(1, Math.floor(dependencies.plannerPageSize ?? 500)),
     );
   }
 
@@ -404,6 +404,7 @@ export class ScheduledReconciliationService {
           row.id,
           row.requestedEndDate ?? torontoTradingDate(at),
           timestamp,
+          1,
         );
         await this.completeIfSettled(row.id, timestamp);
         pages += result.pages;
@@ -467,11 +468,12 @@ export class ScheduledReconciliationService {
     pipelineJobId: string,
     tradingDate: string,
     timestamp: string,
+    maxPages = 10,
   ): Promise<{ pages: number; workItems: number }> {
     const latestCompletedTradingDate = latestTorontoWeekday(tradingDate);
     let pages = 0;
     let workItems = 0;
-    for (; pages < 10; pages += 1) {
+    for (; pages < maxPages; pages += 1) {
       const job = await this.jobs.findById(pipelineJobId);
       if (
         !job ||
@@ -496,8 +498,8 @@ export class ScheduledReconciliationService {
         ...(job.plannerDividendCursor
           ? { dividendCursor: job.plannerDividendCursor }
           : {}),
-        ...(job.plannerLeaseUntil
-          ? { plannerLeaseUntil: job.plannerLeaseUntil }
+        ...(planner.processingLeaseUntil
+          ? { plannerLeaseUntil: planner.processingLeaseUntil }
           : {}),
         pageSize: this.plannerPageSize,
         latestCompletedTradingDate,

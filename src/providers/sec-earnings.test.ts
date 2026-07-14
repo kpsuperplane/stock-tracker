@@ -71,28 +71,40 @@ describe("SecEarningsHistoryProvider", () => {
     );
   });
 
-  it("falls back instead of crawling archived SEC submission shards", async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
-      Response.json(
-        String(input).includes("company_tickers")
-          ? directory
-          : submissions({
-              files: [
-                {
-                  name: "CIK0000051143-submissions-001.json",
-                  filingFrom: "2015-01-01",
-                  filingTo: "2025-12-31",
-                },
-              ],
-            }),
-      ),
-    );
-    await expect(
-      new SecEarningsHistoryProvider(
-        "Stock Tracker contact@example.com",
-        fetcher as typeof fetch,
-      ).getEarningsHistory(instrument, "2020-01-01", "2026-07-13"),
-    ).rejects.toThrow("provider_history_archived");
+  it("loads archived SEC submission shards that overlap the requested range", async () => {
+    const archived = {
+      accessionNumber: ["0000051143-25-000036", "0000051143-25-000037"],
+      filingDate: ["2025-01-22", "2025-01-23"],
+      reportDate: ["2025-01-22", "2024-12-31"],
+      form: ["8-K", "10-K"],
+      items: ["2.02,9.01", ""],
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("company_tickers")) return Response.json(directory);
+      if (url.includes("submissions-001")) return Response.json(archived);
+      return Response.json(
+        submissions({
+          files: [
+            {
+              name: "CIK0000051143-submissions-001.json",
+              filingFrom: "2015-01-01",
+              filingTo: "2025-12-31",
+            },
+          ],
+        }),
+      );
+    });
+    const result = await new SecEarningsHistoryProvider(
+      "Stock Tracker contact@example.com",
+      fetcher as typeof fetch,
+    ).getEarningsHistory(instrument, "2020-01-01", "2026-07-13");
+
+    expect(result.events.map((event) => event.fiscalDateEnding)).toEqual([
+      "2024-12-31",
+      "2026-03-31",
+    ]);
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
   it("rejects partial SEC matches so Alpha can supply a complete snapshot", async () => {

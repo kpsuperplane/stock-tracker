@@ -265,6 +265,60 @@ describe("ledger reconciliation lifecycle", () => {
     ).toEqual({ status: "running" });
   });
 
+  it("recovers when a crash advanced the planner work lease but not the job lease", async () => {
+    await insertLedger();
+    await createLedgerJob("ledger-lease-drift");
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE work_items
+            SET state = 'processing', attempt_count = 1,
+                processing_lease_until = ?1
+          WHERE id = 'planner-ledger-lease-drift'`,
+      ).bind(createdAt),
+      env.DB.prepare(
+        `UPDATE pipeline_jobs
+            SET status = 'planning', planner_lease_until = NULL
+          WHERE id = 'ledger-lease-drift'`,
+      ),
+    ]);
+
+    const result = await recoveryService().continueAutomaticPlanning(
+      new Date(recoveredAt),
+    );
+
+    expect(result).toEqual({ jobs: 1, pages: 1, workItems: 2, errors: [] });
+    expect(
+      await env.DB.prepare(
+        `SELECT state, processing_lease_until AS leaseUntil
+           FROM work_items WHERE id = 'planner-ledger-lease-drift'`,
+      ).first(),
+    ).toEqual({ state: "complete", leaseUntil: null });
+  });
+
+  it("bounds automatic continuation to one page per job", async () => {
+    await insertLedger();
+    await createLedgerJob("ledger-bounded", [
+      { startDate: "2026-07-01", endDate: "2026-07-10" },
+    ]);
+    const service = new ScheduledReconciliationService({
+      db: env.DB,
+      now: () => new Date(recoveredAt),
+      plannerPageSize: 1,
+      newId: () => crypto.randomUUID(),
+    });
+
+    const result = await service.continueAutomaticPlanning(
+      new Date(recoveredAt),
+    );
+
+    expect(result).toEqual({ jobs: 1, pages: 1, workItems: 1, errors: [] });
+    expect(
+      await env.DB.prepare(
+        "SELECT planner_cursor AS cursor FROM pipeline_jobs WHERE id = 'ledger-bounded'",
+      ).first(),
+    ).toEqual({ cursor: "1" });
+  });
+
   it("terminalizes a planner after its retry budget is exhausted", async () => {
     await insertLedger();
     await createLedgerJob("ledger-exhausted");

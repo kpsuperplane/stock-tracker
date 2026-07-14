@@ -1,17 +1,15 @@
 import { readPortfolioFeatureFlags } from "../config/features";
 import { RunRepository } from "../db/runs";
 import { TickerRepository } from "../db/tickers";
-import { AlphaVantageDividendEventProvider } from "../providers/alpha-vantage-dividends";
 import { AlphaVantageEarningsProvider } from "../providers/alpha-vantage-earnings";
 import { YahooCorporateActionProvider } from "../providers/yahoo-corporate-actions";
-import { YahooDividendEventProvider } from "../providers/yahoo-dividends";
 import { AlphaVantageRequestBudget } from "../services/alpha-vantage-budget";
 import {
   BackfillPipelineAdapter,
   backfillPipelineFlagEnabled,
 } from "../services/backfill-pipeline";
-import { ScheduledDividendRefreshService } from "../services/dividend-refresh";
 import { ScheduledEarningsRefreshService } from "../services/earnings-refresh";
+import { reconcileEventCoverage } from "../services/event-coverage";
 import { EventImportRecoveryService } from "../services/event-import-recovery";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
@@ -25,6 +23,7 @@ import {
 import { ScheduledSplitRefreshService } from "../services/split-refresh";
 import { WorkDispatcherService } from "../services/work-dispatcher";
 import { easternMarketDate } from "../shared/dates";
+import { runDividendRefresh } from "./dividends";
 import { runEarningsHistoryBackfill } from "./earnings-history";
 import type { Env } from "./env";
 import { safeErrorMessage } from "./errors";
@@ -34,14 +33,6 @@ export const LEGACY_SCREENING_CRON = "0 22 * * MON-FRI";
 
 const isNormalizedPlannerCron = (cron: string): boolean =>
   (NORMALIZED_PLANNER_CRONS as readonly string[]).includes(cron);
-
-const dividendProviderFor = (env: Env, budget: AlphaVantageRequestBudget) =>
-  env.ALPHA_VANTAGE_API_KEY
-    ? new AlphaVantageDividendEventProvider(
-        env.ALPHA_VANTAGE_API_KEY,
-        budget.fetcher("dividend"),
-      )
-    : new YahooDividendEventProvider();
 
 const continueActiveBackfills = async (
   env: Env,
@@ -96,29 +87,37 @@ export const handleScheduled = async (
       queue: env.NORMALIZED_WORK_QUEUE,
       now: () => scheduledTime,
     }).recover();
+    const eventCoverage = await reconcileEventCoverage(
+      env.DB,
+      scheduledTime.toISOString(),
+    );
     if (!portfolioFlags.newWrites) {
       logEvent("portfolio_cleanup_scheduled", {
         scheduledTime: scheduledTime.toISOString(),
         cleanup: JSON.stringify(cleanup),
         importRecovery: JSON.stringify(importRecovery),
+        eventCoverage: JSON.stringify(eventCoverage),
       });
       return;
     }
-    const plannerContinuation = await new ScheduledReconciliationService({
-      db: env.DB,
-      now: () => scheduledTime,
-    }).continueAutomaticPlanning(scheduledTime);
-    await continueActiveBackfills(env, scheduledTime.toISOString());
     const result = await new WorkDispatcherService({
       db: env.DB,
       queue: env.NORMALIZED_WORK_QUEUE,
       dlq: env.NORMALIZED_WORK_DLQ,
       now: () => scheduledTime,
     }).dispatch();
+    // Dispatch durable work first so a large reconciliation page cannot starve
+    // market facts and analyses that are already ready for the queue.
+    const plannerContinuation = await new ScheduledReconciliationService({
+      db: env.DB,
+      now: () => scheduledTime,
+    }).continueAutomaticPlanning(scheduledTime);
+    await continueActiveBackfills(env, scheduledTime.toISOString());
     logEvent("portfolio_dispatch_scheduled", {
       scheduledTime: scheduledTime.toISOString(),
       cleanup: JSON.stringify(cleanup),
       importRecovery: JSON.stringify(importRecovery),
+      eventCoverage: JSON.stringify(eventCoverage),
       plannerContinuation: JSON.stringify(plannerContinuation),
       result: JSON.stringify(result),
     });
@@ -208,11 +207,7 @@ export const handleScheduled = async (
   let dividendRefresh: string | null = null;
   try {
     dividendRefresh = JSON.stringify(
-      await new ScheduledDividendRefreshService({
-        db: env.DB,
-        provider: dividendProviderFor(env, alphaBudget),
-        now: () => new Date(now),
-      }).refreshHeldInstruments(),
+      await runDividendRefresh(env, new Date(now), alphaBudget),
     );
     logEvent("dividend_refresh_scheduled", {
       scheduledTime: now,
