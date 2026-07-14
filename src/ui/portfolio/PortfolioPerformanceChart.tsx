@@ -1,6 +1,8 @@
 import { useTheme } from "@astryxdesign/core";
 import {
   CartesianGrid,
+  Curve,
+  type CurveProps,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -36,6 +38,61 @@ export const pointMetricValue = (
   point: PortfolioHistoryPointDto,
   metric: PortfolioMetric,
 ): string | null => point[metricKeys[metric]];
+
+type ChartCoordinate = NonNullable<CurveProps["points"]>[number];
+
+const hasCoordinates = (
+  point: ChartCoordinate,
+): point is { x: number; y: number } =>
+  point.x !== null &&
+  point.y !== null &&
+  Number.isFinite(point.x) &&
+  Number.isFinite(point.y);
+
+export const gapBridgePath = (
+  points: readonly ChartCoordinate[],
+): string | null => {
+  const segments: string[] = [];
+  let previous: { x: number; y: number } | null = null;
+  let crossedGap = false;
+
+  for (const point of points) {
+    if (!hasCoordinates(point)) {
+      crossedGap ||= previous !== null;
+      continue;
+    }
+
+    if (previous && crossedGap) {
+      segments.push(`M ${previous.x} ${previous.y} L ${point.x} ${point.y}`);
+    }
+    previous = point;
+    crossedGap = false;
+  }
+
+  return segments.length > 0 ? segments.join(" ") : null;
+};
+
+const PortfolioLineShape = (props: CurveProps) => {
+  const bridgePath = gapBridgePath(props.points ?? []);
+
+  return (
+    <>
+      <Curve {...props} connectNulls={false} />
+      {bridgePath && (
+        <path
+          d={bridgePath}
+          className="portfolio-chart-gap-bridge"
+          clipPath={props.clipPath}
+          fill="none"
+          stroke={props.stroke}
+          strokeDasharray="1 5"
+          strokeLinecap="round"
+          strokeWidth={props.strokeWidth}
+        />
+      )}
+    </>
+  );
+};
 
 export const PortfolioPerformanceChart = ({
   points,
@@ -128,6 +185,7 @@ export const PortfolioPerformanceChart = ({
             dataKey="value"
             stroke={token("--color-data-categorical-blue")}
             strokeWidth={2}
+            shape={PortfolioLineShape}
             dot={false}
             activeDot={{ r: 4 }}
             connectNulls={false}

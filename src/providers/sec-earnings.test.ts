@@ -126,6 +126,21 @@ describe("SecEarningsHistoryProvider", () => {
     ).rejects.toThrow("provider_history_unavailable");
   });
 
+  it("uses a release before the requested range to validate an in-range filing", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+      Response.json(
+        String(input).includes("company_tickers") ? directory : submissions(),
+      ),
+    );
+
+    const result = await new SecEarningsHistoryProvider(
+      "Stock Tracker contact@example.com",
+      fetcher as typeof fetch,
+    ).getEarningsHistory(instrument, "2026-04-23", "2026-07-13");
+
+    expect(result.events).toEqual([]);
+  });
+
   it("rejects a snapshot when one of several fiscal periods has no Item 2.02", async () => {
     const partial = submissions();
     partial.filings.recent.accessionNumber.push("0000051143-26-000004");

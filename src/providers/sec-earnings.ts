@@ -226,9 +226,7 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
       (row) =>
         (row.form === "8-K" || row.form === "8-K/A") &&
         hasItem202(row.items) &&
-        isIsoCalendarDate(row.reportDate) &&
-        row.reportDate >= startDate &&
-        row.reportDate <= endDate,
+        isIsoCalendarDate(row.reportDate),
     );
     const byFiscalDate = new Map<string, NormalizedEarningsEvent>();
     for (const row of earningsRows) {
@@ -265,9 +263,11 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
       throw new Error("provider_history_unavailable");
     }
 
-    const events = [...byFiscalDate.values()].sort((left, right) =>
-      left.reportDate.localeCompare(right.reportDate),
-    );
+    const events = [...byFiscalDate.values()]
+      .filter(
+        (event) => event.reportDate >= startDate && event.reportDate <= endDate,
+      )
+      .sort((left, right) => left.reportDate.localeCompare(right.reportDate));
     const observedAt = this.now().toISOString();
     return {
       range: {
