@@ -51,6 +51,22 @@ const flagKeys = [
 ] as const;
 
 describe("deployment safety", () => {
+  it("keeps production deployment manual and separates migration from upload", () => {
+    const workflow = readFileSync(".github/workflows/deploy.yml", "utf8");
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toMatch(/^\s*push:/m);
+    expect(workflow).toContain("run: npm run migrate:production");
+    expect(workflow).toContain("run: npm run deploy:worker");
+    expect(packageJson.scripts?.["migrate:production"]).toBe(
+      "wrangler d1 migrations apply DB --remote",
+    );
+    expect(packageJson.scripts?.["deploy:worker"]).toBe("wrangler deploy");
+  });
+
   it("keeps cutover flags disabled by default and rejects arbitrary truthy strings", () => {
     expect(defaultPortfolioFeatureFlags).toEqual({
       dualWrite: false,

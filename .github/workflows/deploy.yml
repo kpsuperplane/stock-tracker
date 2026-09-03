@@ -1,8 +1,6 @@
 name: Deploy to Cloudflare
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -26,4 +24,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run deploy:production
+      - name: Verify release
+        run: npm run check
+      - name: Apply production migrations
+        run: npm run migrate:production
+      - name: Deploy Worker
+        run: npm run deploy:worker
