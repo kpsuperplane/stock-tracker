@@ -41,7 +41,12 @@ export const reconcileDividendCoverage = async (
            THEN excluded.next_attempt_at
            ELSE dividend_refresh_state.next_attempt_at
          END,
-         updated_at = ?1`,
+         updated_at = CASE
+           WHEN excluded.requested_start_date
+                  < dividend_refresh_state.requested_start_date
+           THEN ?1
+           ELSE dividend_refresh_state.updated_at
+         END`,
     )
     .bind(timestamp)
     .run();
@@ -79,7 +84,12 @@ export const reconcileEarningsHistoryCoverage = async (
            THEN excluded.next_attempt_at
            ELSE earnings_history_coverage.next_attempt_at
          END,
-         updated_at = ?1`,
+         updated_at = CASE
+           WHEN excluded.requested_start_date
+                  < earnings_history_coverage.requested_start_date
+           THEN ?1
+           ELSE earnings_history_coverage.updated_at
+         END`,
     )
     .bind(timestamp)
     .run();

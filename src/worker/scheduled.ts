@@ -1,61 +1,144 @@
 import { readPortfolioFeatureFlags } from "../config/features";
 import { RunRepository } from "../db/runs";
 import { TickerRepository } from "../db/tickers";
+import { isMarketTradingDayForExchange } from "../domain/market-calendar";
 import { AlphaVantageEarningsProvider } from "../providers/alpha-vantage-earnings";
 import { YahooCorporateActionProvider } from "../providers/yahoo-corporate-actions";
 import { AlphaVantageRequestBudget } from "../services/alpha-vantage-budget";
-import {
-  BackfillPipelineAdapter,
-  backfillPipelineFlagEnabled,
-} from "../services/backfill-pipeline";
 import { ScheduledEarningsRefreshService } from "../services/earnings-refresh";
 import { reconcileEventCoverage } from "../services/event-coverage";
 import { EventImportRecoveryService } from "../services/event-import-recovery";
 import { JobsService } from "../services/jobs";
 import { LegacyDualWriteService } from "../services/legacy-dual-write";
 import { LegacyFactMigrator } from "../services/legacy-fact-migrator";
+import { ReadModelRefreshOutbox } from "../services/read-model-refresh";
+import {
+  RESOURCE_ENVELOPES,
+  ResourceGovernor,
+} from "../services/resource-governor";
 import { RetentionCleanupService } from "../services/retention-cleanup";
 import {
+  listHeldInstruments,
   NORMALIZED_DISPATCH_CRON,
   NORMALIZED_PLANNER_CRONS,
+  type ScheduledPlannerResult,
   ScheduledReconciliationService,
 } from "../services/scheduled-reconciliation";
 import { ScheduledSplitRefreshService } from "../services/split-refresh";
 import { WorkDispatcherService } from "../services/work-dispatcher";
-import { easternMarketDate } from "../shared/dates";
-import { runDividendRefresh } from "./dividends";
+import type { ReadModelRefreshMessage } from "../shared/contracts";
+import {
+  easternCloseUtc,
+  easternMarketDate,
+  previousCalendarDate,
+} from "../shared/dates";
+import { dispatchDividendRefreshes } from "./dividends";
 import { runEarningsHistoryBackfill } from "./earnings-history";
 import type { Env } from "./env";
 import { safeErrorMessage } from "./errors";
 import { logEvent } from "./log";
+import { syncSchedulerFor } from "./sync";
 
 export const LEGACY_SCREENING_CRON = "0 22 * * MON-FRI";
+
+const latestCompletedDate = (now: Date, exchange: string): string => {
+  const timestamp = now.toISOString();
+  const today = easternMarketDate(timestamp);
+  let candidate =
+    timestamp >= easternCloseUtc(today) ? today : previousCalendarDate(today);
+  while (!isMarketTradingDayForExchange(candidate, exchange)) {
+    candidate = previousCalendarDate(candidate);
+  }
+  return candidate;
+};
 
 const isNormalizedPlannerCron = (cron: string): boolean =>
   (NORMALIZED_PLANNER_CRONS as readonly string[]).includes(cron);
 
+const refreshEarningsHistory = async (env: Env, now: Date): Promise<string> => {
+  try {
+    const result = JSON.stringify(await runEarningsHistoryBackfill(env, now));
+    logEvent("earnings_history_refresh_scheduled", {
+      scheduledTime: now.toISOString(),
+      result,
+    });
+    return result;
+  } catch (error) {
+    const result = JSON.stringify({
+      status: "failed",
+      message: safeErrorMessage(error),
+    });
+    logEvent("earnings_history_refresh_failed", {
+      scheduledTime: now.toISOString(),
+      message: safeErrorMessage(error),
+    });
+    return result;
+  }
+};
+
 const continueActiveBackfills = async (
   env: Env,
-  now: string,
+  _now: string,
 ): Promise<void> => {
-  if (!backfillPipelineFlagEnabled(env)) return;
+  if (!readPortfolioFeatureFlags(env).newWrites) return;
   const pendingBackfills = await env.DB.prepare(
-    `SELECT id FROM pipeline_jobs
-        WHERE trigger_type = 'backfill'
-          AND status IN ('pending', 'planning', 'running')
-        ORDER BY priority DESC, created_at
+    `SELECT job.id FROM pipeline_jobs job
+        JOIN work_items planner
+          ON planner.pipeline_job_id = job.id
+         AND planner.scope = 'job_planning'
+       WHERE job.sync_lane = 'history'
+         AND job.status IN ('pending', 'planning', 'running')
+         AND planner.state = 'pending'
+         AND (
+           job.planning_phase = 'market'
+           OR (job.planning_phase = 'analysis'
+             AND job.market_work_pending = 0)
+           OR (job.planning_phase = 'dividends'
+             AND job.analysis_work_pending = 0)
+         )
+        ORDER BY job.priority DESC, job.created_at
         LIMIT 10`,
   ).all<{ id: string }>();
-  const adapter = new BackfillPipelineAdapter({
-    db: env.DB,
-    listActiveSymbols: async () =>
-      (await new TickerRepository(env.DB).listActive()).map(
-        (ticker) => ticker.symbol,
-      ),
-  });
-  await Promise.all(
-    pendingBackfills.results.map(({ id }) => adapter.continuePlanning(id, now)),
+  if (pendingBackfills.results.length === 0) return;
+  await env.NORMALIZED_WORK_QUEUE.sendBatch(
+    pendingBackfills.results.map(({ id }) => ({
+      body: { planningPipelineJobId: id },
+      contentType: "json" as const,
+    })),
   );
+};
+
+export const shouldRunRetentionCleanup = (scheduledTime: Date): boolean =>
+  scheduledTime.getUTCHours() === 8 && scheduledTime.getUTCMinutes() === 0;
+
+const emptyCleanup = {
+  expiredImportBatches: 0,
+  deletedImportRows: 0,
+  deletedJobLinks: 0,
+  deletedDispatchLinks: 0,
+  deletedWorkItems: 0,
+  deletedDispatchBatches: 0,
+  deletedPipelineJobs: 0,
+  deletedRepairMarkers: 0,
+};
+
+const enqueueActiveForegroundContinuation = async (
+  env: Env,
+  recovery: ScheduledPlannerResult,
+): Promise<boolean> => {
+  if (recovery.kind === "skipped") return false;
+  const row = await env.DB.prepare(
+    `SELECT 1 AS active FROM pipeline_jobs
+      WHERE id = ?1 AND sync_lane = 'current'
+        AND status IN ('pending', 'planning', 'running')`,
+  )
+    .bind(recovery.pipelineJobId)
+    .first<{ active: number }>();
+  if (row?.active !== 1) return false;
+  await env.NORMALIZED_WORK_QUEUE.send({
+    planningPipelineJobId: recovery.pipelineJobId,
+  });
+  return true;
 };
 
 export const handleScheduled = async (
@@ -78,18 +161,85 @@ export const handleScheduled = async (
     return;
   }
   if (controller.cron === NORMALIZED_DISPATCH_CRON) {
-    const cleanup = await new RetentionCleanupService({
-      db: env.DB,
-      now: () => scheduledTime,
-    }).run();
+    const compactSyncEnabled =
+      portfolioFlags.syncCurrent ||
+      portfolioFlags.syncFuture ||
+      portfolioFlags.syncRecent ||
+      portfolioFlags.syncHistory;
+    const cleanup = shouldRunRetentionCleanup(scheduledTime)
+      ? await new RetentionCleanupService({
+          db: env.DB,
+          now: () => scheduledTime,
+        }).run()
+      : emptyCleanup;
+    if (!compactSyncEnabled && !portfolioFlags.legacySync) {
+      const readModelRefreshes = portfolioFlags.readModelPublish
+        ? await new ReadModelRefreshOutbox(
+            env.DB,
+            env.SYNC_FOREGROUND_QUEUE as Queue<ReadModelRefreshMessage>,
+            () => scheduledTime,
+          ).recover()
+        : 0;
+      logEvent("background_sync_paused", {
+        scheduledTime: scheduledTime.toISOString(),
+        cleanup: JSON.stringify(cleanup),
+        readModelRefreshes,
+      });
+      return;
+    }
     const importRecovery = await new EventImportRecoveryService({
       db: env.DB,
-      queue: env.NORMALIZED_WORK_QUEUE,
+      queue: compactSyncEnabled
+        ? env.SYNC_FOREGROUND_QUEUE
+        : env.NORMALIZED_WORK_QUEUE,
       now: () => scheduledTime,
     }).recover();
+    if (compactSyncEnabled) {
+      const scheduler = syncSchedulerFor(env, () => scheduledTime);
+      const recovered = await scheduler.recoverExpired();
+      const readModelRefreshes = portfolioFlags.readModelPublish
+        ? await new ReadModelRefreshOutbox(
+            env.DB,
+            env.SYNC_FOREGROUND_QUEUE as Queue<ReadModelRefreshMessage>,
+            () => scheduledTime,
+          ).recover()
+        : 0;
+      const jobs = await env.DB.prepare(
+        `SELECT job.id
+           FROM pipeline_jobs job
+          WHERE job.superseded_at IS NULL
+            AND job.status IN ('pending', 'planning', 'running')
+            AND NOT EXISTS (
+              SELECT 1 FROM sync_intents intent
+               WHERE intent.pipeline_job_id = job.id
+            )
+          ORDER BY CASE job.sync_lane WHEN 'current' THEN 0 ELSE 1 END,
+                   job.priority DESC, job.created_at, job.id
+          LIMIT 20`,
+      ).all<{ id: string }>();
+      let createdIntents = 0;
+      for (const job of jobs.results) {
+        createdIntents += await scheduler.createForPipelineJob(job.id);
+      }
+      const dispatch = await scheduler.dispatch(16);
+      logEvent("compact_sync_recovery_scheduled", {
+        scheduledTime: scheduledTime.toISOString(),
+        cleanup: JSON.stringify(cleanup),
+        importRecovery: JSON.stringify(importRecovery),
+        recovered,
+        readModelRefreshes,
+        createdIntents,
+        dispatch: JSON.stringify(dispatch),
+      });
+      return;
+    }
     const eventCoverage = await reconcileEventCoverage(
       env.DB,
       scheduledTime.toISOString(),
+    );
+    const dividendDispatch = await dispatchDividendRefreshes(
+      env,
+      scheduledTime,
     );
     if (!portfolioFlags.newWrites) {
       logEvent("portfolio_cleanup_scheduled", {
@@ -97,27 +247,44 @@ export const handleScheduled = async (
         cleanup: JSON.stringify(cleanup),
         importRecovery: JSON.stringify(importRecovery),
         eventCoverage: JSON.stringify(eventCoverage),
+        dividendDispatch: JSON.stringify(dividendDispatch),
       });
       return;
     }
+    const foregroundRecovery = await new ScheduledReconciliationService({
+      db: env.DB,
+      now: () => scheduledTime,
+    }).recoverLatestCompletedTradingDate(scheduledTime);
     const result = await new WorkDispatcherService({
       db: env.DB,
       queue: env.NORMALIZED_WORK_QUEUE,
       dlq: env.NORMALIZED_WORK_DLQ,
       now: () => scheduledTime,
     }).dispatch();
+    const foregroundContinuation = await enqueueActiveForegroundContinuation(
+      env,
+      foregroundRecovery,
+    );
     // Dispatch durable work first so a large reconciliation page cannot starve
     // market facts and analyses that are already ready for the queue.
     const plannerContinuation = await new ScheduledReconciliationService({
       db: env.DB,
       now: () => scheduledTime,
     }).continueAutomaticPlanning(scheduledTime);
+    const earningsHistoryRefresh = await refreshEarningsHistory(
+      env,
+      scheduledTime,
+    );
     await continueActiveBackfills(env, scheduledTime.toISOString());
     logEvent("portfolio_dispatch_scheduled", {
       scheduledTime: scheduledTime.toISOString(),
       cleanup: JSON.stringify(cleanup),
       importRecovery: JSON.stringify(importRecovery),
       eventCoverage: JSON.stringify(eventCoverage),
+      dividendDispatch: JSON.stringify(dividendDispatch),
+      foregroundRecovery: JSON.stringify(foregroundRecovery),
+      foregroundContinuation,
+      earningsHistory: earningsHistoryRefresh,
       plannerContinuation: JSON.stringify(plannerContinuation),
       result: JSON.stringify(result),
     });
@@ -126,6 +293,12 @@ export const handleScheduled = async (
   // Keep the legacy scheduler authoritative while the normalized write flag
   // is disabled (and available as the rollback path after enabling it).
   if (controller.cron !== LEGACY_SCREENING_CRON) return;
+  const compactSyncEnabled =
+    portfolioFlags.syncCurrent ||
+    portfolioFlags.syncFuture ||
+    portfolioFlags.syncRecent ||
+    portfolioFlags.syncHistory;
+  if (!portfolioFlags.legacySync && !compactSyncEnabled) return;
   const now = new Date(controller.scheduledTime).toISOString();
   let splitRefresh: string | null = null;
   try {
@@ -156,9 +329,27 @@ export const handleScheduled = async (
     () => new Date(now),
   );
   let earningsRefresh: string | null = null;
+  const shouldRefreshEarnings =
+    portfolioFlags.legacySync || portfolioFlags.syncFuture;
+  const earningsReservation = shouldRefreshEarnings
+    ? await new ResourceGovernor(env.DB, () => new Date(now)).reserve(
+        `earnings-calendar:${easternMarketDate(now)}`,
+        RESOURCE_ENVELOPES.foregroundEarnings,
+      )
+    : null;
   try {
-    earningsRefresh = JSON.stringify(
-      await new ScheduledEarningsRefreshService({
+    if (!shouldRefreshEarnings) {
+      earningsRefresh = JSON.stringify({ status: "future_lane_disabled" });
+    } else if (!earningsReservation) {
+      earningsRefresh = JSON.stringify({
+        status: "waiting",
+        reason: "daily_budget",
+      });
+    } else {
+      await new ResourceGovernor(env.DB, () => new Date(now)).consume(
+        earningsReservation.id,
+      );
+      const result = await new ScheduledEarningsRefreshService({
         db: env.DB,
         ...(env.ALPHA_VANTAGE_API_KEY
           ? {
@@ -169,8 +360,9 @@ export const handleScheduled = async (
             }
           : {}),
         now: () => new Date(now),
-      }).refreshHeldInstruments(),
-    );
+      }).refreshHeldInstruments();
+      earningsRefresh = JSON.stringify(result);
+    }
     logEvent("earnings_refresh_scheduled", {
       scheduledTime: now,
       result: earningsRefresh,
@@ -186,42 +378,33 @@ export const handleScheduled = async (
     });
   }
   let earningsHistoryRefresh: string | null = null;
-  try {
-    earningsHistoryRefresh = JSON.stringify(
-      await runEarningsHistoryBackfill(env, new Date(now), alphaBudget),
-    );
-    logEvent("earnings_history_refresh_scheduled", {
-      scheduledTime: now,
-      result: earningsHistoryRefresh,
-    });
-  } catch (error) {
+  if (compactSyncEnabled) {
+    earningsHistoryRefresh = portfolioFlags.syncHistory
+      ? await refreshEarningsHistory(env, new Date(now))
+      : JSON.stringify({ status: "history_lane_disabled" });
+  } else if (portfolioFlags.newWrites) {
     earningsHistoryRefresh = JSON.stringify({
-      status: "failed",
-      message: safeErrorMessage(error),
+      status: "scheduled_by_normalized_dispatcher",
     });
-    logEvent("earnings_history_refresh_failed", {
-      scheduledTime: now,
-      message: safeErrorMessage(error),
-    });
-  }
-  let dividendRefresh: string | null = null;
-  try {
-    dividendRefresh = JSON.stringify(
-      await runDividendRefresh(env, new Date(now), alphaBudget),
-    );
-    logEvent("dividend_refresh_scheduled", {
-      scheduledTime: now,
-      result: dividendRefresh,
-    });
-  } catch (error) {
-    dividendRefresh = JSON.stringify({
-      status: "failed",
-      message: safeErrorMessage(error),
-    });
-    logEvent("dividend_refresh_failed", {
-      scheduledTime: now,
-      message: safeErrorMessage(error),
-    });
+  } else {
+    try {
+      earningsHistoryRefresh = JSON.stringify(
+        await runEarningsHistoryBackfill(env, new Date(now), alphaBudget),
+      );
+      logEvent("earnings_history_refresh_scheduled", {
+        scheduledTime: now,
+        result: earningsHistoryRefresh,
+      });
+    } catch (error) {
+      earningsHistoryRefresh = JSON.stringify({
+        status: "failed",
+        message: safeErrorMessage(error),
+      });
+      logEvent("earnings_history_refresh_failed", {
+        scheduledTime: now,
+        message: safeErrorMessage(error),
+      });
+    }
   }
   let migrationResult: string | null = null;
   if (portfolioFlags.migrator) {
@@ -245,6 +428,52 @@ export const handleScheduled = async (
         message: safeErrorMessage(error),
       });
     }
+  }
+  let compactProduction: string | null = null;
+  if (compactSyncEnabled) {
+    const eventCoverage = await reconcileEventCoverage(env.DB, now);
+    const dividendDispatch =
+      portfolioFlags.syncCurrent || portfolioFlags.syncFuture
+        ? await dispatchDividendRefreshes(
+            env,
+            new Date(now),
+            env.SYNC_FOREGROUND_QUEUE as Queue<
+              import("../shared/contracts").DividendRefreshMessage
+            >,
+            12,
+          )
+        : { due: 0, queued: 0, sendFailures: 0, recovered: 0 };
+    const scheduler = syncSchedulerFor(env, () => new Date(now));
+    const held = portfolioFlags.syncCurrent
+      ? await listHeldInstruments(env.DB, easternMarketDate(now))
+      : [];
+    const foregroundIntents = await scheduler.ensureForegroundCoverage(
+      held.map((instrument) => ({
+        id: instrument.id,
+        latestCompletedDate: latestCompletedDate(
+          new Date(now),
+          instrument.exchange,
+        ),
+      })),
+      portfolioFlags.syncRecent,
+    );
+    const dispatch = await scheduler.dispatch(16);
+    compactProduction = JSON.stringify({
+      eventCoverage,
+      dividendDispatch,
+      foregroundIntents,
+      dispatch,
+    });
+  }
+  if (!portfolioFlags.legacySync) {
+    logEvent("future_refresh_scheduled", {
+      scheduledTime: now,
+      splits: splitRefresh,
+      earnings: earningsRefresh,
+      earningsHistory: earningsHistoryRefresh,
+      compactProduction,
+    });
+    return;
   }
   const dualWrite = new LegacyDualWriteService(env.DB, {
     enabled: portfolioFlags.dualWrite,
@@ -278,7 +507,6 @@ export const handleScheduled = async (
     compatibilityRetried,
     migration: migrationResult,
     splits: splitRefresh,
-    dividends: dividendRefresh,
     earnings: earningsRefresh,
     earningsHistory: earningsHistoryRefresh,
   });

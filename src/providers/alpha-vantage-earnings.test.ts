@@ -55,6 +55,7 @@ describe("AlphaVantageEarningsProvider", () => {
       requestedStartDate: "2026-07-13",
       requestedEndDate: "2026-10-13",
       provider: "alpha-vantage-earnings",
+      sourceEventCount: 3,
     });
     const request = new URL(String(fetcher.mock.calls[0]?.[0]));
     expect(request.searchParams.get("function")).toBe("EARNINGS_CALENDAR");
@@ -113,6 +114,19 @@ describe("AlphaVantageEarningsProvider", () => {
     await expect(
       unavailable.getEarningsCalendar(instruments, "2026-07-13", "2026-10-13"),
     ).rejects.toThrow("provider_http_429");
+  });
+
+  it("rejects a header-only bulk snapshot when instruments were requested", async () => {
+    const provider = new AlphaVantageEarningsProvider(
+      "test-key",
+      async () =>
+        new Response(
+          "symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\n",
+        ),
+    );
+    await expect(
+      provider.getEarningsCalendar(instruments, "2026-07-13", "2026-10-13"),
+    ).rejects.toThrow("provider_empty_snapshot");
   });
 
   it("classifies JSON notices returned by the CSV endpoint", async () => {

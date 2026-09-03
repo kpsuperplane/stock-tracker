@@ -12,16 +12,9 @@ interface SettlementRow {
   plannerCursor: string | null;
   plannerDividendCursor: string | null;
   plannerState: string | null;
-  storedSkipped: number;
-  linkedTotal: number;
-  linkedReused: number;
-  linkedSkipped: number;
-  linkedFetched: number;
-  linkedAnalyzed: number;
-  linkedProcessed: number;
-  linkedFailed: number;
-  unsettled: number;
-  terminal: number;
+  workTotal: number;
+  workProcessed: number;
+  workFailed: number;
 }
 
 /** Updates progress and settles every active job touched by a finished batch. */
@@ -57,50 +50,16 @@ export class PipelineJobSettlementService {
         `SELECT job.status,
                 job.planner_cursor AS plannerCursor,
                 job.planner_dividend_cursor AS plannerDividendCursor,
-                job.work_skipped AS storedSkipped,
                 planner.state AS plannerState,
-                COUNT(CASE WHEN work.scope = 'global_fact' THEN 1 END)
-                  AS linkedTotal,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND link.outcome = 'reused' THEN 1 ELSE 0 END)
-                  AS linkedReused,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND link.outcome = 'skipped' THEN 1 ELSE 0 END)
-                  AS linkedSkipped,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND work.work_type = 'market_fact'
-                           AND work.state = 'complete'
-                           AND link.outcome = 'processed' THEN 1 ELSE 0 END)
-                  AS linkedFetched,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND work.work_type = 'analysis'
-                           AND work.state = 'complete'
-                           AND link.outcome = 'processed' THEN 1 ELSE 0 END)
-                  AS linkedAnalyzed,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND work.state = 'complete' THEN 1 ELSE 0 END)
-                  AS linkedProcessed,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND (work.state = 'terminal'
-                             OR link.outcome = 'failed') THEN 1 ELSE 0 END)
-                  AS linkedFailed,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND link.outcome = 'pending'
-                           AND work.state IN
-                             ('pending', 'dispatching', 'queued', 'processing')
-                         THEN 1 ELSE 0 END) AS unsettled,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND (work.state = 'terminal'
-                             OR link.outcome = 'failed') THEN 1 ELSE 0 END)
-                  AS terminal
+                job.work_total AS workTotal,
+                job.work_processed AS workProcessed,
+                job.work_failed AS workFailed
            FROM pipeline_jobs job
            LEFT JOIN work_items planner
              ON planner.pipeline_job_id = job.id
             AND planner.scope = 'job_planning'
-           LEFT JOIN job_work_items link ON link.pipeline_job_id = job.id
-           LEFT JOIN work_items work ON work.id = link.work_item_id
           WHERE job.id = ?1
-          GROUP BY job.id, planner.id`,
+          LIMIT 1`,
       )
       .bind(pipelineJobId)
       .first<SettlementRow>();
@@ -113,29 +72,73 @@ export class PipelineJobSettlementService {
     ) {
       return false;
     }
-    const skipped = Math.max(
-      Number(row.storedSkipped ?? 0),
-      Number(row.linkedSkipped ?? 0),
-    );
-    await this.jobs.updateProgress({
-      id: pipelineJobId,
-      now,
-      progress: {
-        workTotal: Number(row.linkedTotal ?? 0) + skipped,
-        workReused: Number(row.linkedReused ?? 0),
-        workSkipped: skipped,
-        workFetched: Number(row.linkedFetched ?? 0),
-        workAnalyzed: Number(row.linkedAnalyzed ?? 0),
-        workProcessed: Number(row.linkedProcessed ?? 0) + skipped,
-        workFailed: Number(row.linkedFailed ?? 0),
-      },
-    });
-    if (Number(row.unsettled ?? 0) > 0) return false;
+    if (Number(row.workProcessed) + Number(row.workFailed) < row.workTotal) {
+      return false;
+    }
     return this.jobs.transition({
       id: pipelineJobId,
       from: row.status,
-      to: Number(row.terminal ?? 0) > 0 ? "complete_with_errors" : "complete",
+      to: row.workFailed > 0 ? "complete_with_errors" : "complete",
       now,
     });
+  }
+
+  /**
+   * A phase continuation becomes actionable when the last pending work link
+   * for the preceding phase settles. The batch join is bounded by the batch's
+   * own work items rather than by the size of the historical job.
+   */
+  async planningContinuationsForBatch(batchId: string): Promise<string[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT DISTINCT job.id
+           FROM dispatch_batch_items item
+           JOIN job_work_items link ON link.work_item_id = item.work_item_id
+           JOIN pipeline_jobs job ON job.id = link.pipeline_job_id
+           JOIN work_items planner
+             ON planner.pipeline_job_id = job.id
+            AND planner.scope = 'job_planning'
+          WHERE item.dispatch_batch_id = ?1
+            AND job.status IN ('pending', 'planning', 'running')
+            AND planner.state = 'pending'
+            AND (
+              (job.planning_phase = 'analysis'
+                AND job.market_work_pending = 0)
+              OR (job.planning_phase = 'dividends'
+                AND job.analysis_work_pending = 0)
+            )
+          ORDER BY job.id`,
+      )
+      .bind(batchId)
+      .all<LinkedJobRow>();
+    return rows.results.map((row) => row.id);
+  }
+
+  /** Bounded recovery for a crash after the final link was accounted. */
+  async settleReady(now: string, limit = 25): Promise<number> {
+    const rows = await this.db
+      .prepare(
+        `SELECT job.id
+           FROM pipeline_jobs job
+          WHERE job.status IN ('pending', 'planning', 'running')
+            AND job.work_processed + job.work_failed >= job.work_total
+            AND job.planner_cursor IS NULL
+            AND job.planner_dividend_cursor IS NULL
+            AND EXISTS (
+              SELECT 1 FROM work_items planner
+               WHERE planner.pipeline_job_id = job.id
+                 AND planner.scope = 'job_planning'
+                 AND planner.state = 'complete'
+            )
+          ORDER BY job.priority DESC, job.created_at, job.id
+          LIMIT ?1`,
+      )
+      .bind(Math.max(1, Math.min(100, Math.floor(limit))))
+      .all<LinkedJobRow>();
+    let settled = 0;
+    for (const row of rows.results) {
+      if (await this.settle(row.id, now)) settled += 1;
+    }
+    return settled;
   }
 }

@@ -1,8 +1,9 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "stock-movement-explainer",
+  "account_id": "3c4f2d86c3cfab0f72d944fdeac28e7b",
   "main": "src/worker/index.ts",
-  "compatibility_date": "2026-07-09",
+  "compatibility_date": "2026-09-02",
   "compatibility_flags": ["nodejs_compat"],
   "secrets": {
     "required": ["ALPHA_VANTAGE_API_KEY", "SEC_USER_AGENT"]
@@ -14,7 +15,14 @@
     "PORTFOLIO_HISTORY_ENABLED": "true",
     "CALENDAR_READ_MODELS_ENABLED": "true",
     "JOB_READ_MODELS_ENABLED": "true",
-    "PORTFOLIO_NEW_WRITES_ENABLED": "true"
+    "PORTFOLIO_NEW_WRITES_ENABLED": "true",
+    "SYNC_CURRENT_ENABLED": "false",
+    "SYNC_FUTURE_ENABLED": "false",
+    "SYNC_RECENT_ENABLED": "false",
+    "SYNC_HISTORY_ENABLED": "false",
+    "READ_MODEL_CACHE_ENABLED": "true",
+    "READ_MODEL_PUBLISH_ENABLED": "true",
+    "LEGACY_SYNC_ENABLED": "false"
   },
   "assets": {
     "binding": "ASSETS",
@@ -27,6 +35,11 @@
       "database_name": "stock-tracker",
       "database_id": "6ab627d4-873c-4525-a86b-4b99d245bde7",
       "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "READ_MODEL_CACHE"
     }
   ],
   "ai": {
@@ -46,35 +59,41 @@
       {
         "binding": "NORMALIZED_WORK_DLQ",
         "queue": "stock-tracker-normalized-work-dlq"
+      },
+      {
+        "binding": "SYNC_FOREGROUND_QUEUE",
+        "queue": "stock-tracker-sync-foreground"
+      },
+      {
+        "binding": "SYNC_HISTORY_QUEUE",
+        "queue": "stock-tracker-sync-history"
       }
     ],
     "consumers": [
       {
-        "queue": "stock-tracker-screenings",
-        "max_batch_size": 5,
-        "max_batch_timeout": 5,
+        "queue": "stock-tracker-sync-foreground",
+        "max_batch_size": 1,
+        "max_batch_timeout": 2,
         "max_retries": 3,
-        "max_concurrency": 5
+        "dead_letter_queue": "stock-tracker-sync-foreground-dlq",
+        "max_concurrency": 3,
+        "visibility_timeout_ms": 600000,
+        "retry_delay": 30
       },
       {
-        "queue": "stock-tracker-normalized-work",
-        "max_batch_size": 10,
+        "queue": "stock-tracker-sync-history",
+        "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_retries": 3,
-        "dead_letter_queue": "stock-tracker-normalized-work-dlq",
-        "max_concurrency": 5,
+        "dead_letter_queue": "stock-tracker-sync-history-dlq",
+        "max_concurrency": 2,
         "visibility_timeout_ms": 600000,
         "retry_delay": 30
       }
     ]
   },
   "triggers": {
-    "crons": [
-      "0 22 * * MON-FRI",
-      "30 20 * * MON-FRI",
-      "30 21 * * MON-FRI",
-      "*/15 * * * *"
-    ]
+    "crons": ["0 22 * * MON-FRI", "*/15 * * * *"]
   },
   "observability": {
     "enabled": true,

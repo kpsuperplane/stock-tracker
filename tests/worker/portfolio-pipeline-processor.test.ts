@@ -315,7 +315,7 @@ describe("normalized portfolio pipeline processor", () => {
     ).toEqual({ status: "valid", current_raw_close_decimal: "112.2" });
   });
 
-  it("marks an absent current close as delayed, but historical gaps as terminal", async () => {
+  it("marks absent current and historical closes as retryable provider states", async () => {
     await insertInstrument();
     const delayedProvider: MarketDataProvider = {
       getInstrument: vi.fn(async (symbol) => ({
@@ -385,9 +385,10 @@ describe("normalized portfolio pipeline processor", () => {
     ).resolves.toEqual([
       {
         workItemId: "fact-historical-gap",
-        kind: "terminal",
+        kind: "retry",
         errorCode: "market_bar_missing",
         errorMessage: "No market bar was returned for 2026-07-10.",
+        retryDelaySeconds: 900,
       },
     ]);
   });

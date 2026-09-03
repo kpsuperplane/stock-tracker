@@ -5,10 +5,25 @@ import {
 import { type WorkItemRecord, WorkItemRepository } from "../db/work-items";
 import type { PipelineDispatchMessage } from "../shared/contracts";
 import { easternMarketDate } from "../shared/dates";
+import { PipelineBatchSettlementService } from "./pipeline-batch-settlement";
+import { PipelineJobSettlementService } from "./pipeline-job-settlement";
 
 const MARKET_FACT_WORK_TYPE = "market_fact";
 const DEFAULT_DAILY_CEILING = 2_500;
+// A 365-day Yahoo response can exceed the Free-plan Worker CPU ceiling while
+// normalizing and persisting hundreds of daily facts. Keep provider requests
+// bounded to a range that has proven safe in production; keyset continuation
+// still materializes the next range immediately without cron-sized gaps.
 const DEFAULT_MAX_BATCH_DAYS = 90;
+const DEFAULT_MAX_NEW_BATCHES_PER_DISPATCH = 8;
+const DEFAULT_MAX_GROUPS_PER_DISPATCH = 8;
+const DEFAULT_PROVIDER_SCAN_LIMIT =
+  DEFAULT_MAX_BATCH_DAYS * DEFAULT_MAX_NEW_BATCHES_PER_DISPATCH;
+const PROVIDER_BUDGETS = {
+  foreground_market: 100,
+  history_market: 250,
+  analysis: 250,
+} as const;
 const DEFAULT_DISPATCH_LEASE_MS = 5 * 60_000;
 const DEFAULT_QUEUED_RECOVERY_DELAY_MS = 10 * 60_000;
 const DEFAULT_QUEUED_RECOVERY_LIMIT = 100;
@@ -113,6 +128,8 @@ const mapWork = (row: WorkItemRow): WorkItemRecord => ({
 
 export class WorkDispatcherService {
   private readonly batches: DispatchBatchRepository;
+  private readonly batchSettlement: PipelineBatchSettlementService;
+  private readonly jobSettlement: PipelineJobSettlementService;
   private readonly workItems: WorkItemRepository;
   private readonly now: () => Date;
   private readonly newId: () => string;
@@ -126,6 +143,8 @@ export class WorkDispatcherService {
 
   constructor(private readonly dependencies: WorkDispatcherDependencies) {
     this.batches = new DispatchBatchRepository(dependencies.db);
+    this.batchSettlement = new PipelineBatchSettlementService(dependencies.db);
+    this.jobSettlement = new PipelineJobSettlementService(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
     this.now = dependencies.now ?? (() => new Date());
     this.newId = dependencies.newId ?? (() => crypto.randomUUID());
@@ -169,10 +188,10 @@ export class WorkDispatcherService {
   async dispatch(input: DispatchWorkInput = {}): Promise<DispatchResult> {
     const timestamp = this.now().toISOString();
     await this.batches.recoverExpiredDailyReservations(timestamp);
-    await this.recoverTerminalBatches(timestamp);
-    await this.reconcileSettledLinks(timestamp);
+    await this.recoverUnsettledBatches(timestamp);
     await this.recoverPendingDlq(timestamp);
     const recovered = await this.recover(timestamp);
+    await this.jobSettlement.settleReady(timestamp);
     let dispatchedBatches = 0;
     let dispatchedWorkItems = 0;
     let sentBatches = 0;
@@ -195,10 +214,19 @@ export class WorkDispatcherService {
     }
 
     const reservationDay = easternMarketDate(timestamp);
-    const dispatchedToday = await this.countDispatchedWork(reservationDay);
-    const ceilingRemaining = Math.max(0, this.dailyCeiling - dispatchedToday);
-    const requested = input.maxWorkItems ?? ceilingRemaining;
-    const allowance = Math.max(0, Math.min(ceilingRemaining, requested));
+    const providerAware = this.dependencies.dailyCeiling === undefined;
+    const dispatchedToday = providerAware
+      ? 0
+      : await this.countDispatchedWork(reservationDay);
+    const ceilingRemaining = providerAware
+      ? Object.values(PROVIDER_BUDGETS).reduce((sum, value) => sum + value, 0)
+      : Math.max(0, this.dailyCeiling - dispatchedToday);
+    const requested =
+      input.maxWorkItems ??
+      (providerAware ? DEFAULT_PROVIDER_SCAN_LIMIT : ceilingRemaining);
+    const allowance = providerAware
+      ? Math.max(0, Math.min(DEFAULT_PROVIDER_SCAN_LIMIT, requested))
+      : Math.max(0, Math.min(ceilingRemaining, requested));
     if (allowance === 0) {
       return {
         dispatchedBatches,
@@ -215,8 +243,15 @@ export class WorkDispatcherService {
     const pending = await this.listPendingWork(allowance);
     const groups = this.buildGroups(pending);
     let remaining = allowance;
-    for (const group of groups) {
-      if (remaining <= 0) break;
+    const exhaustedBudgets = new Set<keyof typeof PROVIDER_BUDGETS>();
+    for (const [groupIndex, group] of groups.entries()) {
+      if (
+        remaining <= 0 ||
+        dispatchedBatches >= DEFAULT_MAX_NEW_BATCHES_PER_DISPATCH ||
+        groupIndex >= DEFAULT_MAX_GROUPS_PER_DISPATCH
+      ) {
+        break;
+      }
       const selected = group.work.slice(0, remaining);
       const leaseUntil = new Date(
         Date.parse(timestamp) + this.dispatchLeaseMs,
@@ -235,7 +270,7 @@ export class WorkDispatcherService {
         dispatchLeaseUntil: leaseUntil,
         processingLeaseUntil: null,
         attemptCount: 0,
-        maxAttempts: 3,
+        maxAttempts: group.workType === MARKET_FACT_WORK_TYPE ? 5 : 3,
         dispatchAttemptCount: 0,
         dispatchMaxAttempts: this.dispatchMaxAttempts,
         dlqState: "none",
@@ -250,15 +285,34 @@ export class WorkDispatcherService {
         completedAt: null,
         retentionUntil: null,
       };
-      const reserved = await this.batches.reserveDailyCapacity({
-        dispatchBatchId: batch.id,
-        reservationDay,
-        workCount: selected.length,
-        dailyCeiling: this.dailyCeiling,
-        createdAt: timestamp,
-        expiresAt: leaseUntil,
-      });
-      if (!reserved) break;
+      const budgetKind =
+        group.workType === MARKET_FACT_WORK_TYPE
+          ? (await this.hasCurrentLane(selected.map((item) => item.id)))
+            ? "foreground_market"
+            : "history_market"
+          : "analysis";
+      if (providerAware && exhaustedBudgets.has(budgetKind)) continue;
+      const reserved = providerAware
+        ? await this.batches.reserveProviderCapacity({
+            dispatchBatchId: batch.id,
+            reservationDay,
+            budgetKind,
+            dailyLimit: PROVIDER_BUDGETS[budgetKind],
+            createdAt: timestamp,
+            expiresAt: leaseUntil,
+          })
+        : await this.batches.reserveDailyCapacity({
+            dispatchBatchId: batch.id,
+            reservationDay,
+            workCount: selected.length,
+            dailyCeiling: this.dailyCeiling,
+            createdAt: timestamp,
+            expiresAt: leaseUntil,
+          });
+      if (!reserved) {
+        if (providerAware) exhaustedBudgets.add(budgetKind);
+        continue;
+      }
       try {
         await this.batches.createClaimedForWork({ batch, work: selected });
       } catch (error) {
@@ -282,7 +336,11 @@ export class WorkDispatcherService {
       recoveredDispatchBatches: recovered.dispatchBatchIds.length,
       recoveredProcessingBatches: recovered.processingBatchIds.length,
       recoveredQueuedBatches: recovered.queuedBatchIds.length,
-      ceilingRemaining: Math.max(0, ceilingRemaining - dispatchedWorkItems),
+      ceilingRemaining: Math.max(
+        0,
+        ceilingRemaining -
+          (providerAware ? dispatchedBatches : dispatchedWorkItems),
+      ),
     };
   }
 
@@ -322,27 +380,13 @@ export class WorkDispatcherService {
         now: timestamp,
       }))
     ) {
-      const current = await this.batches.findById(batch.id);
-      if (
-        current?.state === "queued" &&
-        (current.dispatchAttemptCount ?? 0) >=
-          (current.dispatchMaxAttempts ?? 3)
-      ) {
-        await this.terminalizeDispatchBatch(current, timestamp);
-      }
       return false;
     }
     try {
       await this.dependencies.queue.send({ dispatchBatchId: batch.id });
     } catch {
       const current = await this.batches.findById(batch.id);
-      if (
-        current?.state === "queued" &&
-        (current.dispatchAttemptCount ?? 0) >=
-          (current.dispatchMaxAttempts ?? 3)
-      ) {
-        await this.terminalizeDispatchBatch(current, timestamp);
-      } else if (current?.state === "queued") {
+      if (current?.state === "queued") {
         await this.batches.moveQueuedToDispatching({
           id: current.id,
           now: timestamp,
@@ -368,27 +412,14 @@ export class WorkDispatcherService {
         expectedDispatchLeaseUntil: expectedLeaseUntil,
       }))
     ) {
-      const current = await this.batches.findById(batchId);
-      if (
-        current?.state === "dispatching" &&
-        (current.dispatchAttemptCount ?? 0) >=
-          (current.dispatchMaxAttempts ?? 3)
-      ) {
-        await this.terminalizeDispatchBatch(current, timestamp);
-      }
       return false;
     }
     try {
       await this.dependencies.queue.send({ dispatchBatchId: batchId });
     } catch {
-      const current = await this.batches.findById(batchId);
-      if (
-        current?.state === "dispatching" &&
-        (current.dispatchAttemptCount ?? 0) >=
-          (current.dispatchMaxAttempts ?? 3)
-      ) {
-        await this.terminalizeDispatchBatch(current, timestamp);
-      }
+      // Queue transport has not started provider work. Keep the durable batch
+      // dispatching so the recovery scheduler can redeliver it after platform
+      // capacity returns; terminal state is reserved for processing failures.
       return false;
     }
     const transitioned = await this.batches.transition({
@@ -407,46 +438,11 @@ export class WorkDispatcherService {
     return true;
   }
 
-  private async terminalizeDispatchBatch(
-    batch: DispatchBatchRecord,
-    timestamp: string,
-  ): Promise<boolean> {
-    if (batch.state !== "dispatching" && batch.state !== "queued") {
-      return batch.state === "terminal";
-    }
-    const transitioned =
-      batch.state === "dispatching"
-        ? batch.dispatchLeaseUntil
-          ? await this.batches.terminalizeBatchAndItems({
-              id: batch.id,
-              from: "dispatching",
-              now: timestamp,
-              errorCode: "dispatch_attempts_exhausted",
-              errorMessage: "Queue dispatch attempt ceiling exhausted.",
-              expectedDispatchLeaseUntil: batch.dispatchLeaseUntil,
-            })
-          : false
-        : await this.batches.terminalizeBatchAndItems({
-            id: batch.id,
-            from: "queued",
-            now: timestamp,
-            errorCode: "dispatch_attempts_exhausted",
-            errorMessage: "Queue dispatch attempt ceiling exhausted.",
-          });
-    if (!transitioned) return false;
-    await this.markSettledLinks(batch.id, timestamp);
-    await this.deliverDlq(batch.id, timestamp);
-    return true;
-  }
-
   private async markSettledLinks(
     batchId: string,
     timestamp: string,
   ): Promise<void> {
-    await this.workItems.reconcileJobLinksForBatch({
-      dispatchBatchId: batchId,
-      now: timestamp,
-    });
+    await this.batchSettlement.settle(batchId, timestamp);
   }
 
   private async deliverDlq(
@@ -503,7 +499,9 @@ export class WorkDispatcherService {
              dlq_state = 'pending'
              OR (dlq_state = 'sending' AND dlq_lease_until IS NOT NULL
                  AND dlq_lease_until <= ?1)
-           )`,
+           )
+         ORDER BY COALESCE(dlq_lease_until, updated_at), id
+         LIMIT 25`,
       )
       .bind(timestamp)
       .all<{ id: string }>();
@@ -515,51 +513,11 @@ export class WorkDispatcherService {
     );
   }
 
-  private async reconcileSettledLinks(timestamp: string): Promise<void> {
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT DISTINCT batch.id
-         FROM dispatch_batches batch
-         JOIN dispatch_batch_items item
-           ON item.dispatch_batch_id = batch.id
-         JOIN job_work_items link ON link.work_item_id = item.work_item_id
-         WHERE batch.state IN ('complete', 'terminal')
-           AND link.outcome = 'pending'`,
-      )
-      .all<{ id: string }>();
-    await Promise.all(
-      rows.results.map((row) => this.markSettledLinks(row.id, timestamp)),
-    );
-  }
-
-  private async recoverTerminalBatches(timestamp: string): Promise<void> {
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT DISTINCT batch.id, batch.terminal_error_code AS errorCode,
-                batch.terminal_error_message AS errorMessage
-         FROM dispatch_batches batch
-         JOIN dispatch_batch_items item
-           ON item.dispatch_batch_id = batch.id
-         JOIN work_items work ON work.id = item.work_item_id
-         WHERE batch.state = 'terminal'
-           AND work.state NOT IN ('complete', 'terminal')`,
-      )
-      .all<{
-        id: string;
-        errorCode: string | null;
-        errorMessage: string | null;
-      }>();
-    await Promise.all(
-      rows.results.map(async (row) => {
-        await this.workItems.terminalizeUnsettledBatchItems({
-          dispatchBatchId: row.id,
-          now: timestamp,
-          errorCode: row.errorCode ?? "dispatch_terminal",
-          errorMessage: row.errorMessage ?? "Dispatch batch was terminalized.",
-        });
-        await this.markSettledLinks(row.id, timestamp);
-      }),
-    );
+  private async recoverUnsettledBatches(timestamp: string): Promise<void> {
+    const batches = await this.batches.listUnsettled(25);
+    for (const batch of batches) {
+      await this.batchSettlement.settle(batch.id, timestamp);
+    }
   }
 
   private async listPendingWork(limit: number): Promise<WorkItemRecord[]> {
@@ -593,6 +551,28 @@ export class WorkDispatcherService {
     return rows.results.map(mapWork);
   }
 
+  private async hasCurrentLane(
+    workItemIds: readonly string[],
+  ): Promise<boolean> {
+    if (workItemIds.length === 0) return false;
+    const row = await this.dependencies.db
+      .prepare(
+        `SELECT 1 AS found
+           FROM job_work_items link
+           JOIN pipeline_jobs job ON job.id = link.pipeline_job_id
+          WHERE job.sync_lane = 'current'
+            AND job.status IN ('pending', 'planning', 'running')
+            AND link.outcome = 'pending'
+            AND link.work_item_id IN (
+              SELECT CAST(value AS TEXT) FROM json_each(?1)
+            )
+          LIMIT 1`,
+      )
+      .bind(JSON.stringify(workItemIds))
+      .first<{ found: number }>();
+    return row?.found === 1;
+  }
+
   private buildGroups(work: readonly WorkItemRecord[]): DispatchGroup[] {
     const market = new Map<string, WorkItemRecord[]>();
     const other: WorkItemRecord[] = [];
@@ -623,9 +603,8 @@ export class WorkDispatcherService {
             current[0]?.effectiveDate ?? item.effectiveDate ?? "",
             item.effectiveDate ?? "",
           ) <= this.maxBatchCalendarDays;
-        // Provider ranges are calendar ranges, so trading dates separated by
-        // weekends/holidays remain compatible as long as the requested span
-        // stays within the 90-calendar-day ceiling.
+        // Provider ranges are calendar ranges, so weekends and holidays stay
+        // compatible inside the 90-day provider-call boundary.
         if (current.length > 0 && !withinLimit) {
           groups.push(this.groupFrom(current));
           current = [];
@@ -673,21 +652,14 @@ export class WorkDispatcherService {
         `SELECT id, dispatch_lease_until AS leaseUntil
          FROM dispatch_batches
          WHERE state = 'dispatching' AND dispatch_lease_until IS NOT NULL
-           AND dispatch_lease_until <= ?1`,
+           AND dispatch_lease_until <= ?1
+         ORDER BY dispatch_lease_until, id
+         LIMIT ?2`,
       )
-      .bind(timestamp)
+      .bind(timestamp, this.queuedRecoveryLimit)
       .all<{ id: string; leaseUntil: string }>();
     const dispatchBatchIds: string[] = [];
     for (const row of expiredDispatches.results) {
-      const current = await this.batches.findById(row.id);
-      if (
-        current &&
-        (current.dispatchAttemptCount ?? 0) >=
-          (current.dispatchMaxAttempts ?? 3)
-      ) {
-        await this.terminalizeDispatchBatch(current, timestamp);
-        continue;
-      }
       const leaseUntil = new Date(
         Date.parse(timestamp) + this.dispatchLeaseMs,
       ).toISOString();
@@ -708,9 +680,11 @@ export class WorkDispatcherService {
         `SELECT id, processing_lease_until AS leaseUntil
          FROM dispatch_batches
          WHERE state = 'processing' AND processing_lease_until IS NOT NULL
-           AND processing_lease_until <= ?1`,
+           AND processing_lease_until <= ?1
+         ORDER BY processing_lease_until, id
+         LIMIT ?2`,
       )
-      .bind(timestamp)
+      .bind(timestamp, this.queuedRecoveryLimit)
       .all<{ id: string; leaseUntil: string }>();
     const processingBatchIds: string[] = [];
     for (const row of expiredProcessing.results) {

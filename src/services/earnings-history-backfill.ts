@@ -43,6 +43,7 @@ const fallbackImmediately = new Set([
   "provider_symbol_unavailable",
   "provider_symbol_mismatch",
   "provider_history_archived",
+  "provider_history_incomplete",
   "provider_history_unavailable",
   "provider_schema",
   "provider_directory_schema",
@@ -77,7 +78,7 @@ export class EarningsHistoryBackfillService {
     this.now = dependencies.now ?? (() => new Date());
     this.newId = dependencies.newId ?? (() => crypto.randomUUID());
     this.batchSize = dependencies.batchSize ?? 8;
-    this.fallbackLimit = dependencies.fallbackLimit ?? 4;
+    this.fallbackLimit = dependencies.fallbackLimit ?? this.batchSize;
   }
 
   private async reconcile(timestamp: string): Promise<number> {
@@ -124,8 +125,7 @@ export class EarningsHistoryBackfillService {
     failure: ProviderFailure,
     timestamp: string,
   ): Promise<void> {
-    const retryDelay =
-      failure.code === "provider_rate_limited" ? 15 * 60_000 : 86_400_000;
+    const retryDelay = 86_400_000;
     await this.dependencies.db
       .prepare(
         `UPDATE earnings_history_coverage
@@ -141,6 +141,24 @@ export class EarningsHistoryBackfillService {
         timestamp,
         instrumentId,
       )
+      .run();
+  }
+
+  private async deferFallback(
+    instrumentId: string,
+    timestamp: string,
+  ): Promise<void> {
+    await this.dependencies.db
+      .prepare(
+        `UPDATE earnings_history_coverage
+            SET status = 'retry', next_attempt_at = ?1, lease_until = NULL,
+                attempt_count = MAX(attempt_count - 1, 0),
+                last_error_code = 'provider_fallback_budget_deferred',
+                last_error_message = 'provider_fallback_budget_deferred',
+                updated_at = ?2
+          WHERE instrument_id = ?3`,
+      )
+      .bind(addMilliseconds(timestamp, 86_400_000), timestamp, instrumentId)
       .run();
   }
 
@@ -178,6 +196,7 @@ export class EarningsHistoryBackfillService {
     row: ClaimedHistoryRow,
     range: EarningsHistoryRange,
     timestamp: string,
+    complete = true,
   ): Promise<void> {
     const existing = await this.earnings.listForInstruments(
       [row.instrument_id],
@@ -224,10 +243,11 @@ export class EarningsHistoryBackfillService {
       );
       bucketKeys.add(event.reportDate.slice(0, 7));
     }
-    statements.push(
-      this.dependencies.db
-        .prepare(
-          `UPDATE earnings_history_coverage
+    if (complete) {
+      statements.push(
+        this.dependencies.db
+          .prepare(
+            `UPDATE earnings_history_coverage
               SET coverage_start_date = requested_start_date,
                   coverage_end_date = ?1, provider = ?2, sec_cik = ?3,
                   status = 'current', attempt_count = 0,
@@ -235,20 +255,23 @@ export class EarningsHistoryBackfillService {
                   completed_at = ?5, last_error_code = NULL,
                   last_error_message = NULL, updated_at = ?5
             WHERE instrument_id = ?6`,
-        )
-        .bind(
-          range.range.requestedEndDate,
-          range.range.provider,
-          range.range.secCik,
-          addMilliseconds(timestamp, 14 * 86_400_000),
-          timestamp,
-          row.instrument_id,
-        ),
-    );
+          )
+          .bind(
+            range.range.requestedEndDate,
+            range.range.provider,
+            range.range.secCik,
+            addMilliseconds(timestamp, 14 * 86_400_000),
+            timestamp,
+            row.instrument_id,
+          ),
+      );
+    }
     for (const bucket of bucketKeys) {
       statements.push(this.buckets.bumpStatement(bucket, timestamp));
     }
-    await this.dependencies.db.batch(statements);
+    if (statements.length > 0) {
+      await this.dependencies.db.batch(statements);
+    }
   }
 
   private instrument(row: ClaimedHistoryRow) {
@@ -277,6 +300,7 @@ export class EarningsHistoryBackfillService {
       secFailureDetails: {},
     };
     let fallbacks = 0;
+    let alphaUnavailableForRun = false;
     for (let index = 0; index < this.batchSize; index += 1) {
       const row = await this.claim(timestamp);
       if (!row) break;
@@ -291,7 +315,15 @@ export class EarningsHistoryBackfillService {
             startDate,
             endDate,
           );
+          this.validateRange(row, range, startDate, endDate);
+          if (range.range.complete === false) {
+            await this.persist(row, range, timestamp, false);
+            summary.events += range.events.length;
+            range = null;
+            secFailure = providerFailure("provider_history_incomplete");
+          }
         } catch (error) {
+          range = null;
           secFailure = describeProviderError(error);
         }
       }
@@ -308,16 +340,18 @@ export class EarningsHistoryBackfillService {
       if (shouldFallback) {
         if (
           !this.dependencies.alphaProvider ||
-          fallbacks >= this.fallbackLimit
+          fallbacks >= this.fallbackLimit ||
+          alphaUnavailableForRun
         ) {
-          const code = this.dependencies.alphaProvider
-            ? "provider_fallback_budget_deferred"
-            : "provider_fallback_unavailable";
-          await this.markRetry(
-            row.instrument_id,
-            providerFailure(code),
-            timestamp,
-          );
+          if (this.dependencies.alphaProvider) {
+            await this.deferFallback(row.instrument_id, timestamp);
+          } else {
+            await this.markRetry(
+              row.instrument_id,
+              providerFailure("provider_fallback_unavailable"),
+              timestamp,
+            );
+          }
           summary.retried += 1;
           summary.fallbackDeferred += 1;
           continue;
@@ -329,12 +363,17 @@ export class EarningsHistoryBackfillService {
             startDate,
             endDate,
           );
+          this.validateRange(row, range, startDate, endDate);
         } catch (error) {
-          await this.markRetry(
-            row.instrument_id,
-            describeProviderError(error),
-            timestamp,
-          );
+          const failure = describeProviderError(error);
+          if (
+            failure.code === "provider_rate_limited" ||
+            failure.code === "provider_daily_limit" ||
+            failure.code === "provider_entitlement"
+          ) {
+            alphaUnavailableForRun = true;
+          }
+          await this.markRetry(row.instrument_id, failure, timestamp);
           summary.retried += 1;
           continue;
         }
@@ -345,7 +384,6 @@ export class EarningsHistoryBackfillService {
         continue;
       }
       try {
-        this.validateRange(row, range, startDate, endDate);
         await this.persist(row, range, timestamp);
       } catch (error) {
         await this.markRetry(

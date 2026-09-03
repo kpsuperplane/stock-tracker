@@ -390,6 +390,17 @@ html[lang="zh-CN"]
   font-variant-numeric: tabular-nums;
 }
 
+.status-capacity-row__details {
+  font-variant-numeric: tabular-nums;
+}
+
+.status-section-heading > time {
+  color: var(--color-text-secondary);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .status-source-row__error {
   grid-column: 1 / -1;
   padding-inline-start: 1.125rem;

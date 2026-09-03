@@ -3,6 +3,7 @@ import type { JobReadModelDto } from "../shared/contracts";
 interface JobRow {
   id: string;
   trigger_type: string;
+  sync_lane: "current" | "history";
   requested_start_date: string | null;
   requested_end_date: string | null;
   priority: number;
@@ -125,7 +126,7 @@ export class JobReadModelService {
   ): Promise<JobReadModelDto | null> {
     const job = await this.db
       .prepare(
-        `SELECT id, trigger_type, requested_start_date, requested_end_date,
+        `SELECT id, trigger_type, sync_lane, requested_start_date, requested_end_date,
                 priority, status, work_total, work_reused, work_skipped,
                 work_fetched, work_analyzed, work_processed, work_failed,
                 created_at, updated_at
@@ -181,6 +182,7 @@ export class JobReadModelService {
     return {
       id: job.id,
       triggerType: job.trigger_type,
+      syncLane: job.sync_lane,
       requestedStartDate: job.requested_start_date,
       requestedEndDate: job.requested_end_date,
       priority: job.priority,

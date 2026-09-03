@@ -58,6 +58,13 @@ describe("deployment safety", () => {
       newReads: false,
       history: false,
       newWrites: false,
+      syncCurrent: false,
+      syncFuture: false,
+      syncRecent: false,
+      syncHistory: false,
+      readModelCache: false,
+      readModelPublish: false,
+      legacySync: false,
     });
     expect(parseFeatureFlag(true)).toBe(true);
     expect(parseFeatureFlag("true")).toBe(true);
@@ -79,6 +86,13 @@ describe("deployment safety", () => {
       newReads: true,
       history: true,
       newWrites: false,
+      syncCurrent: false,
+      syncFuture: false,
+      syncRecent: false,
+      syncHistory: false,
+      readModelCache: false,
+      readModelPublish: false,
+      legacySync: false,
     });
   });
 
@@ -152,17 +166,9 @@ describe("deployment safety", () => {
     const testWorkConsumer = test.queues?.consumers?.find(
       (consumer) => consumer.queue === "stock-tracker-normalized-work-test",
     );
-    expect(productionWorkConsumer).toMatchObject({
-      max_batch_size: 10,
-      max_batch_timeout: 5,
-      max_retries: 3,
-      dead_letter_queue: "stock-tracker-normalized-work-dlq",
-      max_concurrency: 5,
-      visibility_timeout_ms: 600000,
-      retry_delay: 30,
-    });
+    expect(productionWorkConsumer).toBeUndefined();
     expect(testWorkConsumer).toMatchObject({
-      max_batch_size: 10,
+      max_batch_size: 1,
       max_batch_timeout: 5,
       max_retries: 3,
       dead_letter_queue: "stock-tracker-normalized-work-dlq-test",
@@ -170,6 +176,21 @@ describe("deployment safety", () => {
       visibility_timeout_ms: 600000,
       retry_delay: 30,
     });
+    expect(
+      production.queues?.consumers?.find(
+        (consumer) => consumer.queue === "stock-tracker-screenings",
+      ),
+    ).toBeUndefined();
+    expect(
+      production.queues?.consumers?.find(
+        (consumer) => consumer.queue === "stock-tracker-sync-foreground",
+      ),
+    ).toMatchObject({ max_batch_size: 1, max_concurrency: 3 });
+    expect(
+      production.queues?.consumers?.find(
+        (consumer) => consumer.queue === "stock-tracker-sync-history",
+      ),
+    ).toMatchObject({ max_batch_size: 1, max_concurrency: 2 });
   });
 
   it("enables the production pipeline while keeping rollback-sensitive flags off", () => {
@@ -180,6 +201,17 @@ describe("deployment safety", () => {
     expect(production.vars?.CALENDAR_READ_MODELS_ENABLED).toBe("true");
     expect(production.vars?.JOB_READ_MODELS_ENABLED).toBe("true");
     expect(production.vars?.PORTFOLIO_NEW_WRITES_ENABLED).toBe("true");
+    expect(production.vars?.READ_MODEL_CACHE_ENABLED).toBe("true");
+    expect(production.vars?.READ_MODEL_PUBLISH_ENABLED).toBe("true");
+    expect(production.vars?.LEGACY_SYNC_ENABLED).toBe("false");
+    for (const key of [
+      "SYNC_CURRENT_ENABLED",
+      "SYNC_FUTURE_ENABLED",
+      "SYNC_RECENT_ENABLED",
+      "SYNC_HISTORY_ENABLED",
+    ]) {
+      expect(production.vars?.[key]).toBe("false");
+    }
     for (const key of [
       "PORTFOLIO_DUAL_WRITE_ENABLED",
       "PORTFOLIO_MIGRATOR_ENABLED",
@@ -191,13 +223,8 @@ describe("deployment safety", () => {
     expect(test.vars?.PORTFOLIO_HISTORY_ENABLED).toBe("false");
   });
 
-  it("covers both Toronto 4:30 p.m. UTC candidates and the 15-minute dispatcher", () => {
-    const expectedCrons = [
-      "0 22 * * MON-FRI",
-      "30 20 * * MON-FRI",
-      "30 21 * * MON-FRI",
-      "*/15 * * * *",
-    ];
+  it("keeps only recovery and data-refresh cron definitions", () => {
+    const expectedCrons = ["0 22 * * MON-FRI", "*/15 * * * *"];
     for (const config of [
       readJsonc("wrangler.jsonc"),
       readJsonc("wrangler.test.jsonc"),
@@ -211,5 +238,23 @@ describe("deployment safety", () => {
 
     expect(config).not.toContain('configPath: "./wrangler.jsonc"');
     expect(config).toContain('configPath: "./wrangler.test.jsonc"');
+  });
+
+  it("keeps the quota scheduler migration compact and after incremental accounting", () => {
+    const incremental = readFileSync(
+      "migrations/0029_incremental_pipeline_accounting.sql",
+      "utf8",
+    );
+    const quotaAware = readFileSync(
+      "migrations/0030_quota_aware_sync.sql",
+      "utf8",
+    );
+
+    expect(incremental).toContain("market_work_pending");
+    expect(quotaAware).toContain("CREATE TABLE sync_intents");
+    expect(quotaAware).toContain("repair:0030:current");
+    expect(quotaAware).toContain("repair:0030:history");
+    expect(quotaAware).not.toMatch(/WITH\s+RECURSIVE/i);
+    expect(quotaAware).not.toMatch(/INSERT\s+INTO\s+work_items/i);
   });
 });

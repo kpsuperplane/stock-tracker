@@ -4,7 +4,9 @@ import { DividendRepository } from "../../src/db/dividends";
 import { MarketFactRepository } from "../../src/db/market-facts";
 import { PipelineJobRepository } from "../../src/db/pipeline-jobs";
 import { WorkItemRepository } from "../../src/db/work-items";
+import { isMarketTradingDayForExchange } from "../../src/domain/market-calendar";
 import { ReconciliationPlannerService } from "../../src/services/reconciliation-planner";
+import { ScheduledReconciliationService } from "../../src/services/scheduled-reconciliation";
 
 const now = "2026-07-10T21:00:00.000Z";
 const latestDate = "2026-07-10";
@@ -165,6 +167,128 @@ const validFact = (input: {
 });
 
 describe("incremental reconciliation planner", () => {
+  it("finishes a stable 46,637-date history fixture without exhausting its lease", async () => {
+    const tradingDates: string[] = [];
+    for (
+      let date = "2023-01-03";
+      tradingDates.length < 648;
+      date = new Date(Date.parse(`${date}T12:00:00Z`) + 86_400_000)
+        .toISOString()
+        .slice(0, 10)
+    ) {
+      if (isMarketTradingDayForExchange(date, "NYSE")) {
+        tradingDates.push(date);
+      }
+    }
+    const instrumentIds = Array.from(
+      { length: 72 },
+      (_, index) => `scale-${String(index).padStart(2, "0")}`,
+    );
+    const firstDate = tradingDates[0];
+    const shortenedStartDate = tradingDates[19];
+    const lastDate = tradingDates.at(-1);
+    if (!firstDate || !shortenedStartDate || !lastDate) {
+      throw new Error("scale_fixture_dates_missing");
+    }
+    const intervals = instrumentIds.map((instrumentId, index) => ({
+      instrumentId,
+      startDate: index === 71 ? shortenedStartDate : firstDate,
+      endDate: lastDate,
+    }));
+    await env.DB.prepare(
+      `INSERT INTO instruments
+         (id, symbol, company_name, exchange, currency, instrument_type,
+          provider, provider_symbol, created_at, updated_at)
+         SELECT CAST(value AS TEXT), CAST(value AS TEXT), 'Scale fixture',
+                'NYSE', 'USD', 'stock', 'yahoo', CAST(value AS TEXT), ?2, ?2
+           FROM json_each(?1)`,
+    )
+      .bind(JSON.stringify(instrumentIds), now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO daily_market_facts
+         (id, instrument_id, trading_date, previous_trading_date,
+          previous_raw_close_decimal, current_raw_close_decimal,
+          crossing_split_numerator, crossing_split_denominator,
+          split_adjusted_previous_close_decimal, movement_amount_decimal,
+          movement_percent_decimal, raw_close_difference_decimal,
+          movement_basis, provider, provider_revision, retrieved_at, status,
+          created_at, updated_at)
+         SELECT 'scale-fact:' || CAST(instrument.value AS TEXT) || ':' ||
+                  CAST(trading.value AS TEXT),
+                CAST(instrument.value AS TEXT), CAST(trading.value AS TEXT),
+                NULL, NULL, '100', '1', '1', NULL, NULL, NULL, NULL,
+                'split_adjusted_price_return', 'yahoo-chart-v8', 'scale-r1',
+                ?3, 'valid', ?3, ?3
+           FROM json_each(?1) instrument CROSS JOIN json_each(?2) trading
+          WHERE CAST(instrument.key AS INTEGER) < 71
+             OR CAST(trading.key AS INTEGER) >= 19`,
+    )
+      .bind(JSON.stringify(instrumentIds), JSON.stringify(tradingDates), now)
+      .run();
+    await createJob({
+      id: "scale-history",
+      triggerType: "backfill",
+      startDate: firstDate,
+      endDate: lastDate,
+      intervals,
+      instruments: instrumentIds,
+      priority: 20,
+    });
+
+    const started = Date.now();
+    const service = new ScheduledReconciliationService({
+      db: env.DB,
+      now: () => new Date(now),
+      plannerPageSize: 1_000,
+    });
+    let active = true;
+    let deliveries = 0;
+    let pages = 0;
+    while (active && deliveries < 25) {
+      const result = await service.continueJob(
+        "scale-history",
+        new Date(now),
+        5,
+      );
+      active = result.active;
+      pages += result.pages;
+      deliveries += 1;
+    }
+
+    expect(active).toBe(false);
+    expect(deliveries).toBeLessThan(25);
+    expect(pages).toBeGreaterThan(90);
+    expect(Date.now() - started).toBeLessThan(15 * 60_000);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM daily_market_facts",
+      ).first(),
+    ).toEqual({ count: 46_637 });
+    expect(
+      await env.DB.prepare(
+        `SELECT status, planning_phase AS planningPhase,
+                  planner_cursor AS plannerCursor
+             FROM pipeline_jobs WHERE id = 'scale-history'`,
+      ).first(),
+    ).toEqual({
+      status: "complete",
+      planningPhase: "complete",
+      plannerCursor: null,
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT state, attempt_count AS attemptCount
+             FROM work_items WHERE id = 'planner-scale-history'`,
+      ).first(),
+    ).toEqual({ state: "complete", attemptCount: 1 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM work_items WHERE scope = 'global_fact'",
+      ).first(),
+    ).toEqual({ count: 0 });
+  }, 120_000);
+
   it("skips exchange holidays even when a broad backfill interval includes them", async () => {
     await insertInstrument();
     await insertTransaction({ id: "holiday-buy", tradeDate: "2026-07-01" });
@@ -220,6 +344,35 @@ describe("incremental reconciliation planner", () => {
            AND work.scope = 'global_fact'`,
       ).first<{ count: number }>(),
     ).toEqual({ count: 0 });
+  });
+
+  it("keeps historical first-buy reconstruction out of the current lane", async () => {
+    await insertInstrument();
+    await insertTransaction({
+      id: "historical-first-buy",
+      tradeDate: "2026-07-01",
+    });
+    await createJob({
+      id: "current-only",
+      startDate: latestDate,
+      intervals: [
+        {
+          instrumentId: "instrument-1",
+          startDate: latestDate,
+          endDate: latestDate,
+        },
+      ],
+    });
+
+    const result = await planner().planPage({
+      pipelineJobId: "current-only",
+      latestCompletedTradingDate: latestDate,
+      previousCompletedTradingDate: previousDate,
+    });
+
+    expect(result.globalWork.map((work) => work.effectiveDate)).toEqual([
+      latestDate,
+    ]);
   });
 
   it("requests both latest completed bars for a first current buy", async () => {
@@ -283,16 +436,16 @@ describe("incremental reconciliation planner", () => {
       previousCompletedTradingDate: previousDate,
     });
 
-    expect(first.globalWork).toHaveLength(3);
-    expect(second.globalWork).toHaveLength(3);
-    expect(await listGlobal()).toHaveLength(3);
+    expect(first.globalWork).toHaveLength(2);
+    expect(second.globalWork).toHaveLength(2);
+    expect(await listGlobal()).toHaveLength(2);
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM job_work_items WHERE work_item_id IN (SELECT id FROM work_items WHERE scope = 'global_fact')",
       ).first<{ count: number }>(),
-    ).toEqual({ count: 6 });
+    ).toEqual({ count: 4 });
     expect(second.createdCount).toBe(0);
-    expect(second.attachedCount).toBe(3);
+    expect(second.attachedCount).toBe(2);
   });
 
   it("resumes a long historical plan in bounded, idempotent pages", async () => {
@@ -325,6 +478,63 @@ describe("incremental reconciliation planner", () => {
     expect(new Set(pages).size).toBe(pages.length);
     expect(pages.length).toBeGreaterThan(100);
     expect(await listGlobal()).toHaveLength(pages.length);
+  });
+
+  it("keeps foreground pages stable when facts arrive between cursors", async () => {
+    await insertInstrument();
+    await createJob({
+      id: "stable-current-pages",
+      startDate: "2026-07-06",
+      endDate: "2026-07-08",
+      intervals: [{ startDate: "2026-07-06", endDate: "2026-07-08" }],
+    });
+    const service = planner();
+    const first = await service.planPage({
+      pipelineJobId: "stable-current-pages",
+      pageSize: 1,
+      latestCompletedTradingDate: latestDate,
+    });
+    expect(first.globalWork.map((work) => work.effectiveDate)).toEqual([
+      "2026-07-06",
+    ]);
+
+    await env.DB.batch([
+      new MarketFactRepository(env.DB).upsertStatement(
+        validFact({
+          id: "stable-page-fact-1",
+          date: "2026-07-06",
+          movement: "1",
+        }),
+      ),
+      new MarketFactRepository(env.DB).upsertStatement(
+        validFact({
+          id: "stable-page-fact-2",
+          date: "2026-07-07",
+          movement: "1",
+        }),
+      ),
+    ]);
+    const second = await service.planPage({
+      pipelineJobId: "stable-current-pages",
+      cursor: first.nextCursor,
+      plannerLeaseUntil: first.plannerLeaseUntil as string,
+      pageSize: 1,
+      latestCompletedTradingDate: latestDate,
+    });
+    expect(second.globalWork).toHaveLength(0);
+    expect(second.nextCursor).not.toBeNull();
+
+    const third = await service.planPage({
+      pipelineJobId: "stable-current-pages",
+      cursor: second.nextCursor,
+      plannerLeaseUntil: second.plannerLeaseUntil as string,
+      pageSize: 1,
+      latestCompletedTradingDate: latestDate,
+    });
+    expect(third.globalWork.map((work) => work.effectiveDate)).toEqual([
+      "2026-07-08",
+    ]);
+    expect(third.complete).toBe(true);
   });
 
   it("queues legacy and split-correction refreshes, and only missing qualifying analysis", async () => {
@@ -429,7 +639,7 @@ describe("incremental reconciliation planner", () => {
       await env.DB.prepare(
         "SELECT work_total, work_skipped FROM pipeline_jobs WHERE id = 'dividend-only'",
       ).first(),
-    ).toEqual({ work_total: 2, work_skipped: 2 });
+    ).toEqual({ work_total: 1, work_skipped: 1 });
 
     await createJob({
       id: "forced-backfill",
@@ -508,8 +718,16 @@ describe("incremental reconciliation planner", () => {
       "2026-07-02",
       "2026-07-03",
     ]);
-    expect(first.nextCursor).toBe("2");
-    expect(first.nextDividendCursor).toBe("2");
+    expect(JSON.parse(first.nextCursor ?? "null")).toEqual({
+      phase: "current",
+      instrumentId: "instrument-1",
+      date: "2026-07-06",
+    });
+    expect(JSON.parse(first.nextDividendCursor ?? "null")).toEqual({
+      phase: "dividends",
+      instrumentId: "instrument-1",
+      date: "2026-07-03",
+    });
     expect(first.complete).toBe(false);
 
     const second = await service.planPage({
@@ -524,12 +742,12 @@ describe("incremental reconciliation planner", () => {
       "2026-07-02",
       "2026-07-03",
     ]);
-    expect(second.nextDividendCursor).toBe("2");
+    expect(second.nextDividendCursor).toBe(first.nextDividendCursor);
     expect(second.complete).toBe(false);
 
     const third = await service.planPage({
       pipelineJobId: "dividend-pages",
-      cursor: "4",
+      cursor: second.nextCursor,
       dividendCursor: second.nextDividendCursor,
       plannerLeaseUntil: second.plannerLeaseUntil as string,
       pageSize: 2,

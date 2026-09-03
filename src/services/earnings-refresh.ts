@@ -31,15 +31,10 @@ export interface EarningsRefreshSummary {
   coverageStatus: "current" | "stale" | "unavailable";
 }
 
-const addMonthsClamped = (date: string, months: number): string => {
-  const [year, month, day] = date.split("-").map(Number);
-  const first = new Date(Date.UTC(year ?? 0, (month ?? 1) - 1 + months, 1));
-  const lastDay = new Date(
-    Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0),
-  ).getUTCDate();
-  first.setUTCDate(Math.min(day ?? 1, lastDay));
-  return first.toISOString().slice(0, 10);
-};
+const addDays = (date: string, days: number): string =>
+  new Date(Date.parse(`${date}T12:00:00.000Z`) + days * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
 
 const instrumentReferences = (
   rows: readonly HeldInstrumentRow[],
@@ -123,7 +118,7 @@ export class ScheduledEarningsRefreshService {
     const rows = await this.rows();
     const timestamp = this.now().toISOString();
     const startDate = easternMarketDate(timestamp);
-    const endDate = addMonthsClamped(startDate, 3);
+    const endDate = addDays(startDate, 60);
     if (!this.dependencies.provider) {
       const failure = providerFailure("provider_key_unavailable");
       const coverageStatus = await this.recordCoverageFailure({
@@ -173,6 +168,23 @@ export class ScheduledEarningsRefreshService {
       range.range.requestedEndDate !== endDate
     ) {
       const failure = providerFailure("provider_snapshot_mismatch");
+      const coverageStatus = await this.recordCoverageFailure({
+        startDate,
+        endDate,
+        errorCode: failure.code,
+        errorMessage: failure.message,
+        timestamp,
+      });
+      return {
+        instruments: rows.length,
+        events: 0,
+        insertedOrCorrected: 0,
+        markedStale: 0,
+        coverageStatus,
+      };
+    }
+    if (rows.length > 0 && range.range.sourceEventCount === 0) {
+      const failure = providerFailure("provider_empty_snapshot");
       const coverageStatus = await this.recordCoverageFailure({
         startDate,
         endDate,

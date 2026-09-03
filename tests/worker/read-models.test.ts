@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountRepository } from "../../src/db/accounts";
 import { WorkItemRepository } from "../../src/db/work-items";
 import type { Env } from "../../src/worker/env";
@@ -95,6 +95,7 @@ describe("portfolio and calendar read models", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     delete (env as unknown as Record<string, unknown>).READ_MODELS_ENABLED;
     (env as unknown as Record<string, unknown>).PORTFOLIO_HISTORY_ENABLED =
       "false";
@@ -889,6 +890,8 @@ describe("portfolio and calendar read models", () => {
   });
 
   it("isolates read-model ETags to the buckets each representation reads", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
     const portfolioResponse = await exports.default.fetch(
       new Request("http://local/api/portfolio?today=2026-07-10", {
         headers: { Authorization: authorization },
@@ -1652,9 +1655,9 @@ describe("portfolio and calendar read models", () => {
     await env.DB.prepare(
       `INSERT INTO pipeline_jobs
        (id, trigger_type, requested_start_date, requested_end_date,
-        priority, status, work_total, work_processed, created_at, updated_at)
+        priority, status, created_at, updated_at)
        VALUES ('read-job', 'backfill', '2026-07-01', '2026-07-02', 1,
-               'running', 2, 1, ?1, ?1)`,
+               'running', ?1, ?1)`,
     )
       .bind(now)
       .run();
@@ -1701,7 +1704,7 @@ describe("portfolio and calendar read models", () => {
         nextCursor: string | null;
       };
     }>();
-    expect(jobPayload.job.progress.workTotal).toBe(2);
+    expect(jobPayload.job.progress.workTotal).toBe(3);
     expect(jobPayload.job.work).toHaveLength(2);
     expect(jobPayload.job.nextCursor).not.toBeNull();
     const nextJobResponse = await exports.default.fetch(
@@ -1765,6 +1768,20 @@ describe("portfolio and calendar read models", () => {
                  'complete', 1, 3, ?1, ?1, ?1)`,
       ).bind(now),
       env.DB.prepare(
+        `INSERT INTO daily_market_facts
+         (id, instrument_id, trading_date, previous_trading_date,
+          previous_raw_close_decimal, current_raw_close_decimal,
+          crossing_split_numerator, crossing_split_denominator,
+          split_adjusted_previous_close_decimal, movement_amount_decimal,
+          movement_percent_decimal, raw_close_difference_decimal,
+          movement_basis, provider, provider_revision, retrieved_at, status,
+          created_at, updated_at)
+         VALUES ('status-fact', 'status-instrument', '2026-07-09', '2026-07-08',
+                 '10', '11', '1', '1', '10', '1', '10', '1',
+                 'split_adjusted_price_return', 'yahoo', 'r1', ?1, 'valid',
+                 ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
         `INSERT INTO dividend_refresh_state
          (instrument_id, requested_start_date, status, attempt_count,
           next_attempt_at, completed_at, created_at, updated_at)
@@ -1787,11 +1804,14 @@ describe("portfolio and calendar read models", () => {
       ).bind(now),
     ]);
 
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
     const response = await exports.default.fetch(
       new Request("http://local/api/status?limit=10", {
         headers: { Authorization: authorization },
       }),
     );
+    vi.useRealTimers();
     expect(response.status).toBe(200);
     const payload = await response.json<{
       status: {
@@ -1804,6 +1824,7 @@ describe("portfolio and calendar read models", () => {
             total: number;
             completed: number;
           };
+          history: { status: string; total: number; completed: number };
         };
         jobs: Array<{ id: string; status: string }>;
       };
@@ -1827,6 +1848,11 @@ describe("portfolio and calendar read models", () => {
         status: "current",
         total: 1,
         completed: 1,
+      }),
+      history: expect.objectContaining({
+        status: "unknown",
+        total: 0,
+        completed: 0,
       }),
     });
     expect(payload.status.jobs).toEqual(

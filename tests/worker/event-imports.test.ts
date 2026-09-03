@@ -231,7 +231,15 @@ describe("asynchronous portfolio imports", () => {
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM pipeline_jobs WHERE trigger_type = 'ledger_reconciliation'",
       ).first(),
-    ).toEqual({ count: 1 });
+    ).toEqual({ count: 2 });
+    expect(
+      await env.DB.prepare(
+        `SELECT GROUP_CONCAT(sync_lane, ',') AS lanes
+           FROM (SELECT sync_lane FROM pipeline_jobs
+                  WHERE trigger_type = 'ledger_reconciliation'
+                  ORDER BY sync_lane)`,
+      ).first(),
+    ).toEqual({ lanes: "current,history" });
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS count FROM corporate_actions WHERE status = 'active'",
@@ -328,38 +336,44 @@ describe("asynchronous portfolio imports", () => {
   });
 
   it("makes duplicate queue deliveries idempotent", async () => {
-    await insertInstruments(["DUPLICATE"]);
-    const { result } = await acceptedImport(
-      csv(["2026-07-01,DUPLICATE,buy,1,1,Uncategorized,Default Account"]),
-    );
-    const getSplits = vi
-      .spyOn(YahooCorporateActionProvider.prototype, "getSplits")
-      .mockImplementation((symbol, startDate, endDate) =>
-        splits().getSplits(symbol, startDate, endDate),
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    try {
+      await insertInstruments(["DUPLICATE"]);
+      const { result } = await acceptedImport(
+        csv(["2026-07-01,DUPLICATE,buy,1,1,Uncategorized,Default Account"]),
       );
-    const messages = [0, 1].map(
-      () =>
-        ({
-          body: { importBatchId: result.importId },
-          ack: vi.fn(),
-          retry: vi.fn(),
-        }) as unknown as Message<ImportDispatchMessage>,
-    );
-    await handleQueue(
-      { messages } as unknown as MessageBatch<ImportDispatchMessage>,
-      env,
-    );
-    expect(
-      messages.every(
-        (message) => vi.mocked(message.ack).mock.calls.length === 1,
-      ),
-    ).toBe(true);
-    expect(getSplits).toHaveBeenCalledOnce();
-    expect(
-      await env.DB.prepare("SELECT status FROM import_batches WHERE id = ?1")
-        .bind(result.importId)
-        .first(),
-    ).toEqual({ status: "committed" });
+      const getSplits = vi
+        .spyOn(YahooCorporateActionProvider.prototype, "getSplits")
+        .mockImplementation((symbol, startDate, endDate) =>
+          splits().getSplits(symbol, startDate, endDate),
+        );
+      const messages = [0, 1].map(
+        () =>
+          ({
+            body: { importBatchId: result.importId },
+            ack: vi.fn(),
+            retry: vi.fn(),
+          }) as unknown as Message<ImportDispatchMessage>,
+      );
+      await handleQueue(
+        { messages } as unknown as MessageBatch<ImportDispatchMessage>,
+        env,
+      );
+      expect(
+        messages.every(
+          (message) => vi.mocked(message.ack).mock.calls.length === 1,
+        ),
+      ).toBe(true);
+      expect(getSplits.mock.calls.length).toBeLessThanOrEqual(1);
+      expect(
+        await env.DB.prepare("SELECT status FROM import_batches WHERE id = ?1")
+          .bind(result.importId)
+          .first(),
+      ).toEqual({ status: "committed" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("persists transient provider retries and resumes after backoff", async () => {

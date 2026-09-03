@@ -2,14 +2,21 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "stock-movement-explainer-test",
   "main": "src/worker/index.ts",
-  "compatibility_date": "2026-07-09",
+  "compatibility_date": "2026-07-15",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "PORTFOLIO_DUAL_WRITE_ENABLED": "false",
     "PORTFOLIO_MIGRATOR_ENABLED": "false",
     "PORTFOLIO_NEW_READS_ENABLED": "false",
     "PORTFOLIO_HISTORY_ENABLED": "false",
-    "PORTFOLIO_NEW_WRITES_ENABLED": "false"
+    "PORTFOLIO_NEW_WRITES_ENABLED": "false",
+    "SYNC_CURRENT_ENABLED": "false",
+    "SYNC_FUTURE_ENABLED": "false",
+    "SYNC_RECENT_ENABLED": "false",
+    "SYNC_HISTORY_ENABLED": "false",
+    "READ_MODEL_CACHE_ENABLED": "false",
+    "READ_MODEL_PUBLISH_ENABLED": "false",
+    "LEGACY_SYNC_ENABLED": "true"
   },
   "d1_databases": [
     {
@@ -17,6 +24,12 @@
       "database_name": "stock-tracker-test",
       "database_id": "test-placeholder",
       "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "READ_MODEL_CACHE",
+      "id": "test-read-model-cache"
     }
   ],
   "queues": {
@@ -32,6 +45,14 @@
       {
         "binding": "NORMALIZED_WORK_DLQ",
         "queue": "stock-tracker-normalized-work-dlq-test"
+      },
+      {
+        "binding": "SYNC_FOREGROUND_QUEUE",
+        "queue": "stock-tracker-sync-foreground-test"
+      },
+      {
+        "binding": "SYNC_HISTORY_QUEUE",
+        "queue": "stock-tracker-sync-history-test"
       }
     ],
     "consumers": [
@@ -44,22 +65,33 @@
       },
       {
         "queue": "stock-tracker-normalized-work-test",
-        "max_batch_size": 10,
+        "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_retries": 3,
         "dead_letter_queue": "stock-tracker-normalized-work-dlq-test",
         "max_concurrency": 5,
         "visibility_timeout_ms": 600000,
         "retry_delay": 30
+      },
+      {
+        "queue": "stock-tracker-sync-foreground-test",
+        "max_batch_size": 1,
+        "max_batch_timeout": 2,
+        "max_retries": 3,
+        "dead_letter_queue": "stock-tracker-sync-foreground-dlq-test",
+        "max_concurrency": 3
+      },
+      {
+        "queue": "stock-tracker-sync-history-test",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "stock-tracker-sync-history-dlq-test",
+        "max_concurrency": 2
       }
     ]
   },
   "triggers": {
-    "crons": [
-      "0 22 * * MON-FRI",
-      "30 20 * * MON-FRI",
-      "30 21 * * MON-FRI",
-      "*/15 * * * *"
-    ]
+    "crons": ["0 22 * * MON-FRI", "*/15 * * * *"]
   }
 }

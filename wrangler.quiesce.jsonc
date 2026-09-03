@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "stock-movement-explainer",
+  "account_id": "3c4f2d86c3cfab0f72d944fdeac28e7b",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-09-02",
+  "triggers": {
+    "crons": []
+  }
+}

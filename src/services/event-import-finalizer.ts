@@ -165,6 +165,8 @@ export class EventImportFinalizer {
     }));
     const jobId = this.newId();
     const workId = this.newId();
+    const historyJobId = this.newId();
+    const historyWorkId = this.newId();
     const mutationId = this.newId();
     const jobs = new PipelineJobRepository(this.dependencies.db);
     const workItems = new WorkItemRepository(this.dependencies.db);
@@ -340,18 +342,21 @@ export class EventImportFinalizer {
       jobs.createStatement({
         id: jobId,
         triggerType: "ledger_reconciliation",
-        requestedStartDate:
-          intervals.map((entry) => entry.startDate).sort()[0] ?? null,
-        requestedEndDate:
-          intervals
-            .map((entry) => entry.endDate)
-            .sort()
-            .at(-1) ?? null,
+        requestedStartDate: today,
+        requestedEndDate: today,
         affectedInstrumentsJson: JSON.stringify(
           intervals.map((entry) => entry.instrumentId),
         ),
-        eligibilityIntervalsJson: JSON.stringify(intervals),
+        eligibilityIntervalsJson: JSON.stringify(
+          intervals
+            .filter(
+              (entry) => entry.startDate <= today && entry.endDate >= today,
+            )
+            .map((entry) => ({ ...entry, startDate: today, endDate: today })),
+        ),
         priority: 100,
+        syncLane: "current",
+        jobGroupId: jobId,
         status: "pending",
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -372,16 +377,60 @@ export class EventImportFinalizer {
         relationship: "required",
         createdAt: timestamp,
       }),
+      jobs.createStatement({
+        id: historyJobId,
+        triggerType: "ledger_reconciliation",
+        requestedStartDate:
+          intervals.map((entry) => entry.startDate).sort()[0] ?? null,
+        requestedEndDate:
+          intervals
+            .map((entry) => entry.endDate)
+            .sort()
+            .at(-1) ?? null,
+        affectedInstrumentsJson: JSON.stringify(
+          intervals.map((entry) => entry.instrumentId),
+        ),
+        eligibilityIntervalsJson: JSON.stringify(intervals),
+        priority: 20,
+        syncLane: "history",
+        jobGroupId: jobId,
+        status: "pending",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+      workItems.createPlanningStatement({
+        id: historyWorkId,
+        pipelineJobId: historyJobId,
+        workType: "ledger_reconciliation_plan",
+        deterministicKey: `job:${historyJobId}:ledger-reconciliation-plan`,
+        priority: 20,
+        maxAttempts: RESUMABLE_PLANNING_MAX_ATTEMPTS,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+      workItems.linkToJobStatement({
+        pipelineJobId: historyJobId,
+        workItemId: historyWorkId,
+        relationship: "required",
+        createdAt: timestamp,
+      }),
       this.dependencies.db
         .prepare(
           `UPDATE import_batches
               SET status = 'committed', result_pipeline_job_id = ?2,
+                  history_pipeline_job_id = ?5,
                   committed_at = ?3, completed_at = ?3, updated_at = ?3,
                   processing_lease_until = NULL, processing_lease_token = NULL
             WHERE id = ?1 AND status = 'running'
               AND base_position_basis_revision = ?4`,
         )
-        .bind(batchId, jobId, timestamp, batch.base_position_basis_revision),
+        .bind(
+          batchId,
+          jobId,
+          timestamp,
+          batch.base_position_basis_revision,
+          historyJobId,
+        ),
     ];
     if (intervals.length > 0) {
       statements.push(

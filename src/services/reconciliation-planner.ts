@@ -1,5 +1,8 @@
 import type { CorporateActionRecord } from "../db/corporate-actions";
-import type { PipelineJobRecord } from "../db/pipeline-jobs";
+import type {
+  PipelineJobRecord,
+  PipelinePlanningPhase,
+} from "../db/pipeline-jobs";
 import { PipelineJobRepository } from "../db/pipeline-jobs";
 import { ReconciliationWorkRepository } from "../db/reconciliation-work";
 import type { TransactionRecord } from "../db/transactions";
@@ -12,7 +15,6 @@ import { DecimalValue } from "../domain/decimal";
 import {
   type ActiveSplit,
   deriveHoldings,
-  type Holdings,
   type LedgerTransaction,
 } from "../domain/holdings";
 import { isMarketTradingDayForExchange } from "../domain/market-calendar";
@@ -79,6 +81,22 @@ export interface ReconciliationPlanPage {
   globalWork: WorkItemRecord[];
   dividendRecalculations: PlannedDividendRecalculation[];
   priority: number;
+  nextPlanningPhase?: PipelinePlanningPhase;
+  pausePlanning?: boolean;
+}
+
+type PlanningCursorPhase = PipelinePlanningPhase | "current";
+
+interface HistoryCursor {
+  phase: PlanningCursorPhase;
+  instrumentId: string;
+  date: string;
+}
+
+interface HistoryDate {
+  instrumentId: string;
+  date: string;
+  valuationOnly?: boolean;
 }
 
 interface FactRow {
@@ -121,12 +139,6 @@ interface PlannerCandidate {
   priority: number;
 }
 
-interface InstrumentTimeline {
-  holdings: Holdings;
-  actions: CorporateActionRecord[];
-  exchange: string;
-}
-
 const nextDate = (date: string): string => {
   const value = new Date(`${date}T12:00:00.000Z`);
   value.setUTCDate(value.getUTCDate() + 1);
@@ -149,13 +161,35 @@ const latestWeekday = (date: string): string => {
   return value.toISOString().slice(0, 10);
 };
 
-const parseCursor = (cursor: string | null | undefined): number => {
-  if (cursor === undefined || cursor === null || cursor === "") return 0;
-  if (!/^\d+$/.test(cursor)) throw new Error("invalid_planner_cursor");
-  const value = Number(cursor);
-  if (!Number.isSafeInteger(value)) throw new Error("invalid_planner_cursor");
-  return value;
+const parseHistoryCursor = (
+  cursor: string | null | undefined,
+  phase: PlanningCursorPhase,
+): HistoryCursor | null => {
+  if (!cursor) return null;
+  try {
+    const parsed = JSON.parse(cursor) as Record<string, unknown>;
+    if (
+      parsed.phase !== phase ||
+      typeof parsed.instrumentId !== "string" ||
+      typeof parsed.date !== "string"
+    ) {
+      throw new Error("invalid_planner_cursor");
+    }
+    return {
+      phase,
+      instrumentId: parsed.instrumentId,
+      date: parsed.date,
+    };
+  } catch {
+    throw new Error("invalid_planner_cursor");
+  }
 };
+
+const historyCursorFor = (
+  phase: PlanningCursorPhase,
+  value: HistoryDate,
+): string =>
+  JSON.stringify({ phase, instrumentId: value.instrumentId, date: value.date });
 
 const parseJsonArray = (value: string, code: string): unknown[] => {
   try {
@@ -439,78 +473,26 @@ export class ReconciliationPlannerService {
       MAX_PAGE_SIZE,
       Math.max(1, Math.floor(input.pageSize ?? DEFAULT_PAGE_SIZE)),
     );
-    const offset = parseCursor(input.cursor);
-    const built = await this.buildCandidates(job, input);
-    const page = built.candidates.slice(offset, offset + pageSize);
-    const dividendOffset = parseCursor(input.dividendCursor);
-    const dividendPage = built.dividendRecalculations.slice(
-      dividendOffset,
-      dividendOffset + pageSize,
-    );
-    const workRecords: GlobalFactWorkRecord[] = page.map((candidate) => ({
-      id: this.newId(),
-      workType: candidate.workType,
-      instrumentId: candidate.instrumentId,
-      effectiveDate: candidate.effectiveDate,
-      dependencyRevision: candidate.dependencyRevision,
-      forcedRefreshGeneration: candidate.forcedRefreshGeneration,
-      deterministicKey: WorkItemRepository.globalFactKey(candidate),
-      priority: candidate.priority,
-      maxAttempts: 3,
-      availableAt: timestamp,
-      retentionUntil: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }));
-    const { createdCount, reusedCount, attachedCount, globalWork } =
-      await this.reconciliationWork.materializePage({
-        pipelineJobId,
-        work: workRecords,
-        now: timestamp,
-      });
-    const end = offset + page.length;
-    const dividendEnd = dividendOffset + dividendPage.length;
-    const globalComplete = end >= built.candidates.length;
-    const dividendsComplete =
-      dividendEnd >= built.dividendRecalculations.length;
-    const complete = globalComplete && dividendsComplete;
-    const nextCursor = globalComplete ? null : String(end);
-    const nextDividendCursor = dividendsComplete ? null : String(dividendEnd);
-    let returnedLease: string | null = leaseUntil;
-    if (complete) {
-      const completed = await this.workItems.completePlanning({
-        id: planner.id,
-        pipelineJobId,
-        now: timestamp,
-        expectedLeaseUntil: leaseUntil,
-      });
-      if (!completed) throw new Error("planner_completion_conflict");
-      returnedLease = null;
-    }
-    if (complete && planningStatus === "planning") {
-      await this.jobs.transition({
-        id: pipelineJobId,
-        from: "planning",
-        to: "running",
-        now: timestamp,
+    if (job.syncLane === "history") {
+      return this.planHistoryPage({
+        job,
+        planner,
+        leaseUntil,
+        timestamp,
+        pageSize,
+        input,
+        planningStatus,
       });
     }
-    await this.updateProgress(pipelineJobId, timestamp, built.skippedCount);
-    return {
-      pipelineJobId,
-      plannerWorkItemId: planner.id,
-      plannerLeaseUntil: returnedLease,
-      complete,
-      nextCursor,
-      nextDividendCursor,
-      createdCount,
-      reusedCount,
-      attachedCount,
-      skippedCount: built.skippedCount,
-      globalWork,
-      dividendRecalculations: dividendPage,
-      priority: built.priority,
-    };
+    return this.planCurrentPage({
+      job,
+      planner,
+      leaseUntil,
+      timestamp,
+      pageSize,
+      input,
+      planningStatus,
+    });
   }
 
   async plan(
@@ -525,308 +507,751 @@ export class ReconciliationPlannerService {
     return this.planPage(input);
   }
 
-  private async buildCandidates(
-    job: PipelineJobRecord,
-    input: PlanReconciliationPageInput,
-  ): Promise<{
-    candidates: PlannerCandidate[];
-    dividendRecalculations: PlannedDividendRecalculation[];
-    skippedCount: number;
-    priority: number;
-  }> {
-    const instruments = parseAffectedInstruments(job);
-    if (instruments.length === 0) {
-      return {
-        candidates: [],
-        dividendRecalculations: [],
-        skippedCount: 0,
-        priority: this.priorityFor(job.triggerType, false),
-      };
-    }
-    const today = easternMarketDate(this.now());
+  /**
+   * Foreground jobs page over their frozen date domain. Facts and work may
+   * change while the queue is running, but the cursor never depends on those
+   * mutable candidate sets, so a completed first page cannot shift page two.
+   */
+  private async planCurrentPage(input: {
+    job: PipelineJobRecord;
+    planner: WorkItemRecord;
+    leaseUntil: string;
+    timestamp: string;
+    pageSize: number;
+    input: PlanReconciliationPageInput;
+    planningStatus: PipelineJobRecord["status"];
+  }): Promise<ReconciliationPlanPage> {
     const latestCompleted = latestWeekday(
-      input.latestCompletedTradingDate ?? today,
+      input.input.latestCompletedTradingDate ?? easternMarketDate(this.now()),
     );
-    const previousCompleted =
-      input.previousCompletedTradingDate ?? previousWeekday(latestCompleted);
-    // Scheduled jobs normally omit a range; retain a valid lower bound so a
-    // future backfill adapter can derive held intervals without passing an
-    // invalid year-zero date through the holdings domain.
-    const rangeStart = job.requestedStartDate ?? "1900-01-01";
-    const rangeEnd = job.requestedEndDate ?? latestCompleted;
-    const intervals = parseIntervals(job, instruments);
-    const [
-      transactions,
-      actions,
-      facts,
-      analyses,
-      dividends,
-      workStates,
-      exchanges,
-    ] = await Promise.all([
-      this.loadTransactions(instruments),
-      this.loadActions(instruments),
-      this.loadFacts(instruments),
-      this.loadAnalyses(instruments),
-      this.loadDividends(instruments),
-      this.loadWorkStates(instruments),
-      this.loadExchanges(instruments),
-    ]);
-    const timelines = new Map<string, InstrumentTimeline>();
-    for (const instrumentId of instruments) {
-      const instrumentActions = actions.get(instrumentId) ?? [];
-      timelines.set(instrumentId, {
-        actions: instrumentActions,
-        exchange: exchanges.get(instrumentId) ?? "",
-        holdings: deriveHoldings({
-          today,
+    const domain = await this.historyDatePage({
+      job: input.job,
+      phase: "current",
+      ...(input.input.cursor === undefined
+        ? {}
+        : { cursor: input.input.cursor }),
+      pageSize: input.pageSize,
+      latestCompleted,
+    });
+    const facts = await this.factsForDates(domain.page);
+    const analyses = await this.analysesForFacts([...facts.values()]);
+    const pageInstrumentIds = [
+      ...new Set(domain.page.map((value) => value.instrumentId)),
+    ];
+    const actions =
+      pageInstrumentIds.length > 0
+        ? await this.loadActions(pageInstrumentIds)
+        : new Map<string, CorporateActionRecord[]>();
+    const forcedGeneration =
+      input.input.forcedRefreshGeneration ??
+      input.job.backfillForcedRefreshGeneration ??
+      (input.input.forceRefresh || input.input.reprocessExisting ? 1 : null);
+    const candidates: PlannerCandidate[] = [];
+    let skippedCount = 0;
+    for (const value of domain.page) {
+      const fact = facts.get(`${value.instrumentId}|${value.date}`);
+      const splitRatio = fact
+        ? ratio(actions.get(value.instrumentId) ?? [], fact)
+        : null;
+      const splitChanged =
+        fact !== undefined &&
+        splitRatio !== null &&
+        (fact.crossing_split_numerator !== splitRatio.numerator ||
+          fact.crossing_split_denominator !== splitRatio.denominator);
+      const priority = this.priorityFor(
+        input.job.triggerType,
+        value.date === latestCompleted,
+      );
+      if (
+        forcedGeneration !== null ||
+        !fact ||
+        fact.status !== "valid" ||
+        fact.movement_basis === "legacy_migration" ||
+        splitChanged
+      ) {
+        let dependencyRevision =
+          fact?.provider_revision ?? this.marketDependencyRevision;
+        if (splitChanged && fact) {
+          dependencyRevision = `${dependencyRevision}:split:${splitFingerprint(
+            actions.get(value.instrumentId) ?? [],
+            fact,
+          )}`;
+        }
+        candidates.push({
+          workType: MARKET_FACT_WORK_TYPE,
+          instrumentId: value.instrumentId,
+          effectiveDate: value.date,
+          dependencyRevision,
+          forcedRefreshGeneration: forcedGeneration,
+          priority,
+        });
+        continue;
+      }
+      if (value.valuationOnly || !isQualifiedMovement(fact)) {
+        skippedCount += 1;
+        continue;
+      }
+      const analysis = analyses.get(fact.id);
+      if (
+        analysis?.status === "complete" &&
+        analysis.updated_at >= fact.updated_at
+      ) {
+        skippedCount += 1;
+        continue;
+      }
+      candidates.push({
+        workType: ANALYSIS_WORK_TYPE,
+        instrumentId: value.instrumentId,
+        effectiveDate: value.date,
+        dependencyRevision: fact.provider_revision,
+        forcedRefreshGeneration: null,
+        priority,
+      });
+    }
+    candidates.sort(
+      (left, right) =>
+        right.priority - left.priority ||
+        left.instrumentId.localeCompare(right.instrumentId) ||
+        left.effectiveDate.localeCompare(right.effectiveDate) ||
+        left.workType.localeCompare(right.workType),
+    );
+    const states = await this.statesForCandidates(candidates);
+    for (const candidate of candidates) {
+      const key = WorkItemRepository.globalFactKey(candidate);
+      const state = states.get(key);
+      if (state !== "complete" && state !== "terminal") continue;
+      const fact = facts.get(
+        `${candidate.instrumentId}|${candidate.effectiveDate}`,
+      );
+      candidate.dependencyRevision =
+        candidate.workType === ANALYSIS_WORK_TYPE
+          ? `${candidate.dependencyRevision}:analysis:${fact?.updated_at ?? "retry"}`
+          : `${candidate.dependencyRevision}:refresh:${fact?.updated_at ?? "missing"}`;
+    }
+    const workRecords: GlobalFactWorkRecord[] = candidates.map((candidate) => ({
+      id: this.newId(),
+      ...candidate,
+      deterministicKey: WorkItemRepository.globalFactKey(candidate),
+      maxAttempts: candidate.workType === MARKET_FACT_WORK_TYPE ? 5 : 3,
+      availableAt: input.timestamp,
+      retentionUntil: null,
+      createdAt: input.timestamp,
+      updatedAt: input.timestamp,
+    }));
+    const materialized = await this.reconciliationWork.materializePage({
+      pipelineJobId: input.job.id,
+      work: workRecords,
+      now: input.timestamp,
+    });
+    const dividendPage = await this.historyDividendPage({
+      job: input.job,
+      ...(input.input.dividendCursor === undefined
+        ? {}
+        : { cursor: input.input.dividendCursor }),
+      pageSize: input.pageSize,
+    });
+    const last = domain.page.at(-1) ?? null;
+    const dateCursor = last ? historyCursorFor("current", last) : null;
+    const datesComplete = !domain.hasMore;
+    const dividendsComplete = !dividendPage.hasMore;
+    const complete = datesComplete && dividendsComplete;
+    const nextCursor = domain.hasMore
+      ? dateCursor
+      : dividendsComplete
+        ? null
+        : (input.input.cursor ?? dateCursor);
+    const nextDividendCursor = dividendPage.hasMore
+      ? dividendPage.last
+        ? historyCursorFor("dividends", dividendPage.last)
+        : (input.input.dividendCursor ?? null)
+      : null;
+    let returnedLease: string | null = input.leaseUntil;
+    if (complete) {
+      const completed = await this.workItems.completePlanning({
+        id: input.planner.id,
+        pipelineJobId: input.job.id,
+        now: input.timestamp,
+        expectedLeaseUntil: input.leaseUntil,
+      });
+      if (!completed) throw new Error("planner_completion_conflict");
+      returnedLease = null;
+      if (input.planningStatus === "planning") {
+        await this.jobs.transition({
+          id: input.job.id,
+          from: "planning",
+          to: "running",
+          now: input.timestamp,
+        });
+      }
+    }
+    await this.jobs.recordPlanningPage({
+      id: input.job.id,
+      phase: "current",
+      cursorStart: input.input.cursor ?? "start",
+      cursorEnd: nextCursor,
+      skippedCount,
+      now: input.timestamp,
+    });
+    return {
+      pipelineJobId: input.job.id,
+      plannerWorkItemId: input.planner.id,
+      plannerLeaseUntil: returnedLease,
+      complete,
+      nextCursor,
+      nextDividendCursor,
+      createdCount: materialized.createdCount,
+      reusedCount: materialized.reusedCount,
+      attachedCount: materialized.attachedCount,
+      skippedCount: skippedCount + domain.skipped,
+      globalWork: materialized.globalWork,
+      dividendRecalculations: dividendPage.page,
+      priority: Math.max(
+        ...candidates.map((candidate) => candidate.priority),
+        this.priorityFor(input.job.triggerType, false),
+      ),
+    };
+  }
+
+  private async unsettledForPhase(
+    pipelineJobId: string,
+    workType: typeof MARKET_FACT_WORK_TYPE | typeof ANALYSIS_WORK_TYPE,
+  ): Promise<number> {
+    const row = await this.dependencies.db
+      .prepare(
+        `SELECT CASE WHEN ?2 = 'market_fact' THEN market_work_pending
+                     ELSE analysis_work_pending END AS count
+           FROM pipeline_jobs WHERE id = ?1`,
+      )
+      .bind(pipelineJobId, workType)
+      .first<{ count: number }>();
+    return Number(row?.count ?? 0);
+  }
+
+  private async historyDatePage(input: {
+    job: PipelineJobRecord;
+    phase: PlanningCursorPhase;
+    cursor?: string | null;
+    pageSize: number;
+    latestCompleted: string;
+  }): Promise<{ page: HistoryDate[]; hasMore: boolean; skipped: number }> {
+    const instruments = parseAffectedInstruments(input.job);
+    let intervals = parseIntervals(input.job, instruments);
+    const valuationOnly = new Set<string>();
+    if (intervals.length === 0 && input.job.triggerType === "backfill") {
+      const [transactions, actions] = await Promise.all([
+        this.loadTransactions(instruments),
+        this.loadActions(instruments),
+      ]);
+      intervals = instruments.flatMap((instrumentId) =>
+        deriveHoldings({
+          today: input.latestCompleted,
           transactions: (transactions.get(instrumentId) ?? []).map(
             toLedgerTransaction,
           ),
-          activeSplits: instrumentActions.map(toActiveSplit),
-        }),
-      });
-    }
-    const requestedDates = new Map<string, Set<string>>();
-    const screeningDates = new Set<string>();
-    const valuationOnlyDates = new Set<string>();
-    const calendarSkipped = new Set<string>();
-    const addDate = (
-      instrumentId: string,
-      date: string,
-      allowBeforeRangeStart = false,
-      purpose: "screening" | "valuation" = "screening",
-    ) => {
-      const timeline = timelines.get(instrumentId);
-      if (!timeline) return;
-      if (!isMarketTradingDayForExchange(date, timeline.exchange)) {
-        calendarSkipped.add(`${instrumentId}:${date}`);
-        return;
-      }
-      if (
-        (!allowBeforeRangeStart && date < rangeStart) ||
-        date > rangeEnd ||
-        date > latestCompleted
-      )
-        return;
-      const dates = requestedDates.get(instrumentId) ?? new Set<string>();
-      dates.add(date);
-      requestedDates.set(instrumentId, dates);
-      const key = `${instrumentId}:${date}`;
-      if (purpose === "screening") {
-        screeningDates.add(key);
-        valuationOnlyDates.delete(key);
-      } else if (!screeningDates.has(key)) valuationOnlyDates.add(key);
-    };
-    const intervalsByInstrument = new Map<string, EligibilityInterval[]>();
-    for (const interval of intervals) {
-      if (!interval.instrumentId) continue;
-      const list = intervalsByInstrument.get(interval.instrumentId) ?? [];
-      list.push(interval);
-      intervalsByInstrument.set(interval.instrumentId, list);
-    }
-    for (const instrumentId of instruments) {
-      const timeline = timelines.get(instrumentId);
-      if (!timeline) continue;
-      let instrumentIntervals = intervalsByInstrument.get(instrumentId) ?? [];
-      if (instrumentIntervals.length === 0 && job.triggerType === "backfill") {
-        instrumentIntervals = timeline.holdings.heldIntervals({
-          startDate: rangeStart,
-          endDate: rangeEnd,
-        });
-      }
-      for (const interval of instrumentIntervals) {
-        const start =
-          interval.startDate < rangeStart ? rangeStart : interval.startDate;
-        const end = interval.endDate > rangeEnd ? rangeEnd : interval.endDate;
-        for (let date = start; date <= end; date = nextDate(date)) {
-          if (timeline.holdings.isEligibleForScreening(date))
-            addDate(instrumentId, date);
-        }
-      }
-      if (
-        job.triggerType === "scheduled" &&
-        timeline.holdings.isEligibleForScreening(latestCompleted)
-      ) {
-        addDate(instrumentId, latestCompleted);
-      }
-      const firstCurrentBuy =
-        timeline.holdings.currentQuantity() !== "0" &&
-        timeline.holdings.quantityAtStartOfDay(latestCompleted) === "0";
-      const reconciliationTouchesCurrentDay = instrumentIntervals.some(
-        (interval) =>
-          interval.startDate <= latestCompleted &&
-          interval.endDate >= latestCompleted,
+          activeSplits: (actions.get(instrumentId) ?? []).map(toActiveSplit),
+        })
+          .heldIntervals({
+            startDate: input.job.requestedStartDate ?? "1900-01-01",
+            endDate: input.job.requestedEndDate ?? input.latestCompleted,
+          })
+          .map((interval) => ({ instrumentId, ...interval })),
       );
-      if (
-        job.triggerType === "ledger_reconciliation" &&
-        timeline.holdings.currentQuantity() !== "0" &&
-        (reconciliationTouchesCurrentDay || firstCurrentBuy)
-      ) {
-        addDate(
-          instrumentId,
-          latestCompleted,
-          false,
-          firstCurrentBuy ? "valuation" : "screening",
-        );
-        if (firstCurrentBuy) {
-          addDate(instrumentId, previousCompleted, true, "valuation");
+    } else if (
+      intervals.length === 0 &&
+      input.phase === "current" &&
+      input.job.triggerType === "ledger_reconciliation"
+    ) {
+      const [transactions, actions] = await Promise.all([
+        this.loadTransactions(instruments),
+        this.loadActions(instruments),
+      ]);
+      const previousCompleted = previousWeekday(input.latestCompleted);
+      for (const instrumentId of instruments) {
+        const holdings = deriveHoldings({
+          today: input.latestCompleted,
+          transactions: (transactions.get(instrumentId) ?? []).map(
+            toLedgerTransaction,
+          ),
+          activeSplits: (actions.get(instrumentId) ?? []).map(toActiveSplit),
+        });
+        if (
+          holdings.currentQuantity() === "0" ||
+          holdings.quantityAtStartOfDay(input.latestCompleted) !== "0"
+        ) {
+          continue;
         }
+        intervals.push(
+          {
+            instrumentId,
+            startDate: previousCompleted,
+            endDate: previousCompleted,
+          },
+          {
+            instrumentId,
+            startDate: input.latestCompleted,
+            endDate: input.latestCompleted,
+          },
+        );
+        valuationOnly.add(`${instrumentId}|${previousCompleted}`);
+        valuationOnly.add(`${instrumentId}|${input.latestCompleted}`);
       }
-      if (job.triggerType === "ledger_reconciliation") {
-        for (const transaction of transactions.get(instrumentId) ?? []) {
-          if (
-            transaction.side === "buy" &&
-            timeline.holdings.quantityAtStartOfDay(transaction.tradeDate) ===
-              "0" &&
-            timeline.holdings.quantityOn(transaction.tradeDate) !== "0"
-          ) {
-            addDate(instrumentId, transaction.tradeDate, true, "valuation");
-          }
+    }
+    intervals = intervals.sort(
+      (left, right) =>
+        (left.instrumentId ?? "").localeCompare(right.instrumentId ?? "") ||
+        left.startDate.localeCompare(right.startDate) ||
+        left.endDate.localeCompare(right.endDate),
+    );
+    const cursor = parseHistoryCursor(input.cursor, input.phase);
+    const exchanges = await this.loadExchanges(instruments);
+    const values: HistoryDate[] = [];
+    const seen = new Set<string>();
+    const seenCalendar = new Set<string>();
+    let skipped = 0;
+    for (const interval of intervals) {
+      const instrumentId = interval.instrumentId;
+      if (!instrumentId) continue;
+      if (cursor && instrumentId < cursor.instrumentId) continue;
+      let start = interval.startDate;
+      if (cursor && instrumentId === cursor.instrumentId) {
+        if (interval.endDate <= cursor.date) continue;
+        if (start <= cursor.date) start = nextDate(cursor.date);
+      }
+      const isValuationFallback = valuationOnly.has(`${instrumentId}|${start}`);
+      if (
+        !isValuationFallback &&
+        input.job.requestedStartDate &&
+        start < input.job.requestedStartDate
+      ) {
+        start = input.job.requestedStartDate;
+      }
+      const requestedEnd = input.job.requestedEndDate ?? input.latestCompleted;
+      const end = [
+        interval.endDate,
+        input.latestCompleted,
+        requestedEnd,
+      ].sort()[0] as string;
+      for (let date = start; date <= end; date = nextDate(date)) {
+        const key = `${instrumentId}|${date}`;
+        if (seenCalendar.has(key)) continue;
+        seenCalendar.add(key);
+        if (
+          !isMarketTradingDayForExchange(
+            date,
+            exchanges.get(instrumentId) ?? "",
+          )
+        ) {
+          skipped += 1;
+          continue;
+        }
+        if (seen.has(key)) continue;
+        seen.add(key);
+        values.push({
+          instrumentId,
+          date,
+          ...(valuationOnly.has(key) ? { valuationOnly: true } : {}),
+        });
+        if (values.length > input.pageSize) {
+          return {
+            page: values.slice(0, input.pageSize),
+            hasMore: true,
+            skipped,
+          };
         }
       }
     }
+    return { page: values, hasMore: false, skipped };
+  }
+
+  private async factsForDates(
+    dates: readonly HistoryDate[],
+  ): Promise<Map<string, FactRow>> {
+    if (dates.length === 0) return new Map();
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT fact.id, fact.instrument_id, fact.trading_date,
+                fact.previous_trading_date, fact.current_raw_close_decimal,
+                fact.crossing_split_numerator, fact.crossing_split_denominator,
+                fact.movement_percent_decimal, fact.movement_basis,
+                fact.provider_revision, fact.status, fact.updated_at
+           FROM daily_market_facts fact
+           JOIN json_each(?1) requested
+             ON fact.instrument_id = json_extract(requested.value, '$.instrumentId')
+            AND fact.trading_date = json_extract(requested.value, '$.date')`,
+      )
+      .bind(JSON.stringify(dates))
+      .all<FactRow>();
+    return new Map(
+      rows.results.map((row) => [
+        `${row.instrument_id}|${row.trading_date}`,
+        row,
+      ]),
+    );
+  }
+
+  private async analysesForFacts(
+    facts: readonly FactRow[],
+  ): Promise<Map<string, AnalysisRow>> {
+    if (facts.length === 0) return new Map();
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT daily_market_fact_id, status, updated_at
+           FROM movement_analyses
+          WHERE daily_market_fact_id IN (
+            SELECT CAST(value AS TEXT) FROM json_each(?1)
+          )`,
+      )
+      .bind(JSON.stringify(facts.map((fact) => fact.id)))
+      .all<AnalysisRow>();
+    return new Map(rows.results.map((row) => [row.daily_market_fact_id, row]));
+  }
+
+  private async statesForCandidates(
+    candidates: readonly PlannerCandidate[],
+  ): Promise<Map<string, WorkItemRecord["state"]>> {
+    if (candidates.length === 0) return new Map();
+    const keys = candidates.map((candidate) =>
+      WorkItemRepository.globalFactKey(candidate),
+    );
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT deterministic_key, state FROM work_items
+          WHERE deterministic_key IN (
+            SELECT CAST(value AS TEXT) FROM json_each(?1)
+          )`,
+      )
+      .bind(JSON.stringify(keys))
+      .all<WorkStateRow>();
+    return new Map(
+      rows.results.map((row) => [row.deterministic_key, row.state]),
+    );
+  }
+
+  private async historyDividendPage(input: {
+    job: PipelineJobRecord;
+    cursor?: string | null;
+    pageSize: number;
+  }): Promise<{
+    page: PlannedDividendRecalculation[];
+    hasMore: boolean;
+    last: HistoryDate | null;
+  }> {
+    const instruments = parseAffectedInstruments(input.job);
+    const requestedStart = input.job.requestedStartDate;
+    const requestedEnd = input.job.requestedEndDate;
+    const intervals = parseIntervals(input.job, instruments)
+      .map((interval) => ({
+        ...interval,
+        startDate:
+          requestedStart && interval.startDate < requestedStart
+            ? requestedStart
+            : interval.startDate,
+        endDate:
+          requestedEnd && interval.endDate > requestedEnd
+            ? requestedEnd
+            : interval.endDate,
+      }))
+      .filter((interval) => interval.startDate <= interval.endDate);
+    const cursor = parseHistoryCursor(input.cursor, "dividends");
+    if (intervals.length === 0) {
+      return { page: [], hasMore: false, last: null };
+    }
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT DISTINCT event.instrument_id, event.ex_date
+           FROM json_each(?1) interval
+           JOIN dividend_events event
+             ON event.instrument_id =
+                  json_extract(interval.value, '$.instrumentId')
+            AND event.ex_date >= json_extract(interval.value, '$.startDate')
+            AND event.ex_date <= json_extract(interval.value, '$.endDate')
+          WHERE event.status = 'active'
+            AND (
+              ?2 IS NULL
+              OR event.instrument_id > ?2
+              OR (event.instrument_id = ?2 AND event.ex_date > ?3)
+            )
+          ORDER BY event.instrument_id, event.ex_date
+          LIMIT ?4`,
+      )
+      .bind(
+        JSON.stringify(intervals),
+        cursor?.instrumentId ?? null,
+        cursor?.date ?? null,
+        input.pageSize + 1,
+      )
+      .all<DividendDateRow>();
+    const selected = rows.results.slice(0, input.pageSize);
+    const lastEvent = selected.at(-1);
+    return {
+      page: selected.map((event) => ({
+        instrumentId: event.instrument_id,
+        exDate: event.ex_date,
+      })),
+      hasMore: rows.results.length > input.pageSize,
+      last: lastEvent
+        ? { instrumentId: lastEvent.instrument_id, date: lastEvent.ex_date }
+        : null,
+    };
+  }
+
+  private async planHistoryPage(input: {
+    job: PipelineJobRecord;
+    planner: WorkItemRecord;
+    leaseUntil: string;
+    timestamp: string;
+    pageSize: number;
+    input: PlanReconciliationPageInput;
+    planningStatus: PipelineJobRecord["status"];
+  }): Promise<ReconciliationPlanPage> {
+    const phase =
+      input.job.planningPhase === "complete"
+        ? "dividends"
+        : (input.job.planningPhase ?? "market");
+    const latestCompleted = latestWeekday(
+      input.input.latestCompletedTradingDate ?? easternMarketDate(this.now()),
+    );
+    if (
+      phase === "analysis" &&
+      (await this.unsettledForPhase(input.job.id, MARKET_FACT_WORK_TYPE)) > 0
+    ) {
+      return {
+        pipelineJobId: input.job.id,
+        plannerWorkItemId: input.planner.id,
+        plannerLeaseUntil: input.leaseUntil,
+        complete: false,
+        nextCursor: null,
+        nextDividendCursor: null,
+        createdCount: 0,
+        reusedCount: 0,
+        attachedCount: 0,
+        skippedCount: 0,
+        globalWork: [],
+        dividendRecalculations: [],
+        priority: input.job.priority,
+        nextPlanningPhase: phase,
+        pausePlanning: true,
+      };
+    }
+    if (
+      phase === "dividends" &&
+      (await this.unsettledForPhase(input.job.id, ANALYSIS_WORK_TYPE)) > 0
+    ) {
+      return {
+        pipelineJobId: input.job.id,
+        plannerWorkItemId: input.planner.id,
+        plannerLeaseUntil: input.leaseUntil,
+        complete: false,
+        nextCursor: null,
+        nextDividendCursor: null,
+        createdCount: 0,
+        reusedCount: 0,
+        attachedCount: 0,
+        skippedCount: 0,
+        globalWork: [],
+        dividendRecalculations: [],
+        priority: input.job.priority,
+        nextPlanningPhase: phase,
+        pausePlanning: true,
+      };
+    }
+
+    if (phase === "dividends") {
+      const dividendPage = await this.historyDividendPage({
+        job: input.job,
+        ...(input.input.cursor === undefined
+          ? {}
+          : { cursor: input.input.cursor }),
+        pageSize: input.pageSize,
+      });
+      const nextCursor =
+        dividendPage.hasMore && dividendPage.last
+          ? historyCursorFor("dividends", dividendPage.last)
+          : null;
+      if (!dividendPage.hasMore) {
+        const completed = await this.workItems.completePlanning({
+          id: input.planner.id,
+          pipelineJobId: input.job.id,
+          now: input.timestamp,
+          expectedLeaseUntil: input.leaseUntil,
+        });
+        if (!completed) throw new Error("planner_completion_conflict");
+        if (input.planningStatus === "planning") {
+          await this.jobs.transition({
+            id: input.job.id,
+            from: "planning",
+            to: "running",
+            now: input.timestamp,
+          });
+        }
+      }
+      return {
+        pipelineJobId: input.job.id,
+        plannerWorkItemId: input.planner.id,
+        plannerLeaseUntil: dividendPage.hasMore ? input.leaseUntil : null,
+        complete: !dividendPage.hasMore,
+        nextCursor,
+        nextDividendCursor: null,
+        createdCount: 0,
+        reusedCount: 0,
+        attachedCount: 0,
+        skippedCount: 0,
+        globalWork: [],
+        dividendRecalculations: dividendPage.page,
+        priority: input.job.priority,
+        nextPlanningPhase: dividendPage.hasMore ? "dividends" : "complete",
+      };
+    }
+
+    const domain = await this.historyDatePage({
+      job: input.job,
+      phase,
+      ...(input.input.cursor === undefined
+        ? {}
+        : { cursor: input.input.cursor }),
+      pageSize: input.pageSize,
+      latestCompleted,
+    });
+    const facts = await this.factsForDates(domain.page);
     const forcedGeneration =
-      input.forcedRefreshGeneration ??
-      (input.forceRefresh || input.reprocessExisting ? 1 : null);
+      input.input.forcedRefreshGeneration ??
+      input.job.backfillForcedRefreshGeneration ??
+      (input.input.forceRefresh || input.input.reprocessExisting ? 1 : null);
     const candidates: PlannerCandidate[] = [];
-    let skippedCount = calendarSkipped.size;
-    for (const [instrumentId, dates] of requestedDates) {
-      const timeline = timelines.get(instrumentId);
-      if (!timeline) continue;
-      const instrumentFacts = facts.get(instrumentId) ?? new Map();
-      const instrumentAnalyses = analyses.get(instrumentId) ?? new Map();
-      const instrumentWork = workStates.get(instrumentId) ?? new Map();
-      for (const date of [...dates].sort()) {
-        const fact = instrumentFacts.get(date);
-        const splitRatio = fact ? ratio(timeline.actions, fact) : null;
+    if (phase === "market") {
+      const instruments = [
+        ...new Set(domain.page.map((value) => value.instrumentId)),
+      ];
+      const actions = await this.loadActions(instruments);
+      for (const value of domain.page) {
+        const fact = facts.get(`${value.instrumentId}|${value.date}`);
+        const splitRatio = fact
+          ? ratio(actions.get(value.instrumentId) ?? [], fact)
+          : null;
         const splitChanged =
           fact !== undefined &&
           splitRatio !== null &&
           (fact.crossing_split_numerator !== splitRatio.numerator ||
             fact.crossing_split_denominator !== splitRatio.denominator);
-        const needsMarket =
+        if (
           forcedGeneration !== null ||
-          fact === undefined ||
+          !fact ||
           fact.status !== "valid" ||
           fact.movement_basis === "legacy_migration" ||
-          splitChanged;
-        const currentPriority = this.priorityFor(
-          job.triggerType,
-          date === latestCompleted,
-        );
-        if (needsMarket) {
+          splitChanged
+        ) {
           let dependencyRevision =
             fact?.provider_revision ?? this.marketDependencyRevision;
           if (splitChanged && fact) {
             dependencyRevision = `${dependencyRevision}:split:${splitFingerprint(
-              timeline.actions,
+              actions.get(value.instrumentId) ?? [],
               fact,
             )}`;
           }
-          const baseKey = WorkItemRepository.globalFactKey({
-            workType: MARKET_FACT_WORK_TYPE,
-            instrumentId,
-            effectiveDate: date,
-            dependencyRevision,
-            forcedRefreshGeneration: forcedGeneration,
-          });
-          const existing = instrumentWork.get(baseKey);
-          if (
-            existing &&
-            (existing === "complete" || existing === "terminal") &&
-            fact !== undefined
-          ) {
-            dependencyRevision = `${dependencyRevision}:refresh:${fact.updated_at}`;
-          }
           candidates.push({
             workType: MARKET_FACT_WORK_TYPE,
-            instrumentId,
-            effectiveDate: date,
+            instrumentId: value.instrumentId,
+            effectiveDate: value.date,
             dependencyRevision,
             forcedRefreshGeneration: forcedGeneration,
-            priority: currentPriority,
+            priority:
+              input.job.triggerType === "backfill"
+                ? BACKFILL_PRIORITY
+                : input.job.priority,
           });
-          continue;
-        }
-        if (valuationOnlyDates.has(`${instrumentId}:${date}`)) {
-          skippedCount += 1;
-          continue;
-        }
-        if (!fact || !isQualifiedMovement(fact)) {
-          skippedCount += 1;
-          continue;
-        }
-        const analysis = instrumentAnalyses.get(fact.id);
-        const analysisIsFresh =
-          analysis?.status === "complete" &&
-          analysis.updated_at >= fact.updated_at;
-        if (!analysisIsFresh) {
-          let dependencyRevision = fact.provider_revision;
-          const analysisKey = WorkItemRepository.globalFactKey({
-            workType: ANALYSIS_WORK_TYPE,
-            instrumentId,
-            effectiveDate: date,
-            dependencyRevision,
-            forcedRefreshGeneration: null,
-          });
-          const existing = instrumentWork.get(analysisKey);
-          if (
-            existing &&
-            (existing === "complete" || existing === "terminal")
-          ) {
-            dependencyRevision = `${dependencyRevision}:analysis:${analysis?.updated_at ?? fact.updated_at}`;
-          }
-          candidates.push({
-            workType: ANALYSIS_WORK_TYPE,
-            instrumentId,
-            effectiveDate: date,
-            dependencyRevision,
-            forcedRefreshGeneration: null,
-            priority: currentPriority,
-          });
-        } else {
-          skippedCount += 1;
         }
       }
+    } else {
+      const analyses = await this.analysesForFacts([...facts.values()]);
+      for (const value of domain.page) {
+        const fact = facts.get(`${value.instrumentId}|${value.date}`);
+        if (fact?.status !== "valid" || !isQualifiedMovement(fact)) continue;
+        const analysis = analyses.get(fact.id);
+        if (
+          analysis?.status === "complete" &&
+          analysis.updated_at >= fact.updated_at
+        ) {
+          continue;
+        }
+        candidates.push({
+          workType: ANALYSIS_WORK_TYPE,
+          instrumentId: value.instrumentId,
+          effectiveDate: value.date,
+          dependencyRevision: fact.provider_revision,
+          forcedRefreshGeneration: null,
+          priority:
+            input.job.triggerType === "backfill"
+              ? BACKFILL_PRIORITY
+              : input.job.priority,
+        });
+      }
     }
-    const dividendRecalculations = [
-      ...new Map(
-        dividends.flatMap((event) => {
-          const list = intervalsByInstrument.get(event.instrument_id) ?? [];
-          return list.some(
-            (interval) =>
-              interval.startDate <= event.ex_date &&
-              interval.endDate >= event.ex_date,
-          )
-            ? [
-                [
-                  `${event.instrument_id}:${event.ex_date}`,
-                  {
-                    instrumentId: event.instrument_id,
-                    exDate: event.ex_date,
-                  },
-                ] as const,
-              ]
-            : [];
-        }),
-      ).values(),
-    ];
-    candidates.sort((left, right) => {
-      if (left.priority !== right.priority)
-        return right.priority - left.priority;
-      return `${left.effectiveDate}|${left.instrumentId}|${left.workType}|${left.dependencyRevision}`.localeCompare(
-        `${right.effectiveDate}|${right.instrumentId}|${right.workType}|${right.dependencyRevision}`,
+    const states = await this.statesForCandidates(candidates);
+    for (const candidate of candidates) {
+      const key = WorkItemRepository.globalFactKey(candidate);
+      const state = states.get(key);
+      if (state !== "complete" && state !== "terminal") continue;
+      const fact = facts.get(
+        `${candidate.instrumentId}|${candidate.effectiveDate}`,
       );
+      candidate.dependencyRevision =
+        phase === "analysis"
+          ? `${candidate.dependencyRevision}:analysis:${fact?.updated_at ?? "retry"}`
+          : `${candidate.dependencyRevision}:refresh:${fact?.updated_at ?? "missing"}`;
+    }
+    const workRecords: GlobalFactWorkRecord[] = candidates.map((candidate) => ({
+      id: this.newId(),
+      ...candidate,
+      deterministicKey: WorkItemRepository.globalFactKey(candidate),
+      maxAttempts: candidate.workType === MARKET_FACT_WORK_TYPE ? 5 : 3,
+      availableAt: input.timestamp,
+      retentionUntil: null,
+      createdAt: input.timestamp,
+      updatedAt: input.timestamp,
+    }));
+    const materialized = await this.reconciliationWork.materializePage({
+      pipelineJobId: input.job.id,
+      work: workRecords,
+      now: input.timestamp,
+    });
+    const last = domain.page.at(-1) ?? null;
+    const nextCursor =
+      domain.hasMore && last ? historyCursorFor(phase, last) : null;
+    const nextPhase: PipelinePlanningPhase = domain.hasMore
+      ? phase
+      : phase === "market"
+        ? "analysis"
+        : "dividends";
+    const unsettled = domain.hasMore
+      ? 0
+      : await this.unsettledForPhase(
+          input.job.id,
+          phase === "market" ? MARKET_FACT_WORK_TYPE : ANALYSIS_WORK_TYPE,
+        );
+    await this.jobs.recordPlanningPage({
+      id: input.job.id,
+      phase,
+      cursorStart: input.input.cursor ?? "start",
+      cursorEnd: nextCursor,
+      skippedCount: domain.page.length - candidates.length,
+      now: input.timestamp,
     });
     return {
-      candidates,
-      dividendRecalculations,
-      skippedCount,
-      priority: Math.max(
-        ...candidates.map((candidate) => candidate.priority),
-        this.priorityFor(job.triggerType, false),
-      ),
+      pipelineJobId: input.job.id,
+      plannerWorkItemId: input.planner.id,
+      plannerLeaseUntil: input.leaseUntil,
+      complete: false,
+      nextCursor,
+      nextDividendCursor: null,
+      createdCount: materialized.createdCount,
+      reusedCount: materialized.reusedCount,
+      attachedCount: materialized.attachedCount,
+      skippedCount: domain.page.length - candidates.length + domain.skipped,
+      globalWork: materialized.globalWork,
+      dividendRecalculations: [],
+      priority: input.job.priority,
+      nextPlanningPhase: nextPhase,
+      pausePlanning: !domain.hasMore && unsettled > 0,
     };
   }
 
@@ -895,89 +1320,6 @@ export class ReconciliationPlannerService {
     return this.groupBy(rows.results, (row) => row.instrumentId);
   }
 
-  private async loadFacts(
-    instrumentIds: readonly string[],
-  ): Promise<Map<string, Map<string, FactRow>>> {
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT id, instrument_id, trading_date, previous_trading_date,
-                current_raw_close_decimal, crossing_split_numerator,
-                crossing_split_denominator, movement_percent_decimal,
-                movement_basis, provider_revision, status, updated_at
-         FROM daily_market_facts
-         WHERE instrument_id IN (${instrumentIds.map((_id, i) => `?${i + 1}`).join(",")})`,
-      )
-      .bind(...instrumentIds)
-      .all<FactRow>();
-    const result = new Map<string, Map<string, FactRow>>();
-    for (const row of rows.results) {
-      const facts = result.get(row.instrument_id) ?? new Map<string, FactRow>();
-      facts.set(row.trading_date, row);
-      result.set(row.instrument_id, facts);
-    }
-    return result;
-  }
-
-  private async loadAnalyses(
-    instrumentIds: readonly string[],
-  ): Promise<Map<string, Map<string, AnalysisRow>>> {
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT f.instrument_id, a.daily_market_fact_id,
-                a.status, a.updated_at
-         FROM movement_analyses a
-         JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-         WHERE f.instrument_id IN (${instrumentIds.map((_id, i) => `?${i + 1}`).join(",")})`,
-      )
-      .bind(...instrumentIds)
-      .all<AnalysisRow & { instrument_id: string }>();
-    const result = new Map<string, Map<string, AnalysisRow>>();
-    for (const row of rows.results) {
-      const analyses =
-        result.get(row.instrument_id) ?? new Map<string, AnalysisRow>();
-      analyses.set(row.daily_market_fact_id, row);
-      result.set(row.instrument_id, analyses);
-    }
-    return result;
-  }
-
-  private async loadDividends(
-    instrumentIds: readonly string[],
-  ): Promise<DividendDateRow[]> {
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT instrument_id, ex_date
-         FROM dividend_events
-         WHERE instrument_id IN (${instrumentIds.map((_id, i) => `?${i + 1}`).join(",")})
-           AND status = 'active'
-         ORDER BY instrument_id, ex_date`,
-      )
-      .bind(...instrumentIds)
-      .all<DividendDateRow>();
-    return rows.results;
-  }
-
-  private async loadWorkStates(
-    instrumentIds: readonly string[],
-  ): Promise<Map<string, Map<string, WorkItemRecord["state"]>>> {
-    const rows = await this.dependencies.db
-      .prepare(
-        `SELECT instrument_id, deterministic_key, state
-         FROM work_items
-         WHERE scope = 'global_fact'
-           AND instrument_id IN (${instrumentIds.map((_id, i) => `?${i + 1}`).join(",")})`,
-      )
-      .bind(...instrumentIds)
-      .all<WorkStateRow & { instrument_id: string }>();
-    const result = new Map<string, Map<string, WorkItemRecord["state"]>>();
-    for (const row of rows.results) {
-      const work = result.get(row.instrument_id) ?? new Map();
-      work.set(row.deterministic_key, row.state);
-      result.set(row.instrument_id, work);
-    }
-    return result;
-  }
-
   private groupBy<T>(
     rows: readonly T[],
     key: (row: T) => string,
@@ -989,56 +1331,6 @@ export class ReconciliationPlannerService {
       result.set(key(row), group);
     }
     return result;
-  }
-
-  private async updateProgress(
-    id: string,
-    now: string,
-    skippedCount: number,
-  ): Promise<void> {
-    const row = await this.dependencies.db
-      .prepare(
-        `SELECT
-           COUNT(*) AS workTotal,
-           SUM(CASE WHEN link.outcome = 'reused' THEN 1 ELSE 0 END) AS workReused,
-           SUM(CASE WHEN link.outcome = 'skipped' THEN 1 ELSE 0 END) AS workSkipped,
-           SUM(CASE WHEN link.outcome = 'failed' THEN 1 ELSE 0 END) AS workFailed,
-           SUM(CASE WHEN work.work_type = 'market_fact' AND work.state = 'complete'
-                         AND link.outcome = 'processed' THEN 1 ELSE 0 END) AS workFetched,
-           SUM(CASE WHEN work.work_type = 'analysis' AND work.state = 'complete'
-                         AND link.outcome = 'processed' THEN 1 ELSE 0 END) AS workAnalyzed,
-           SUM(CASE WHEN work.state = 'complete' THEN 1 ELSE 0 END)
-             + SUM(CASE WHEN link.outcome = 'skipped' THEN 1 ELSE 0 END) AS workProcessed
-         FROM job_work_items link
-         JOIN work_items work ON work.id = link.work_item_id
-         WHERE link.pipeline_job_id = ?1 AND work.scope = 'global_fact'`,
-      )
-      .bind(id)
-      .first<{
-        workTotal: number | null;
-        workReused: number | null;
-        workSkipped: number | null;
-        workFailed: number | null;
-        workFetched: number | null;
-        workAnalyzed: number | null;
-        workProcessed: number | null;
-      }>();
-    await this.jobs.updateProgress({
-      id,
-      now,
-      progress: {
-        workTotal:
-          (row?.workTotal ?? 0) + Math.max(row?.workSkipped ?? 0, skippedCount),
-        workReused: row?.workReused ?? 0,
-        workSkipped: Math.max(row?.workSkipped ?? 0, skippedCount),
-        workFetched: row?.workFetched ?? 0,
-        workAnalyzed: row?.workAnalyzed ?? 0,
-        // Skips are settled planner work and therefore belong in the
-        // processed counter even though no global work row is materialized.
-        workProcessed: row?.workProcessed ?? 0,
-        workFailed: row?.workFailed ?? 0,
-      },
-    });
   }
 }
 

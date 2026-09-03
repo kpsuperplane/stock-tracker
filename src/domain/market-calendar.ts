@@ -79,7 +79,13 @@ const victoriaDay = (year: number): string => {
     : fourthMonday;
 };
 
+// Exchange calendars have rare one-off closures that cannot be derived from
+// recurring holiday rules. Keep them versioned with the application so both
+// planning and read models agree that no provider bar should exist.
+const usExceptionalClosures = new Set(["2018-12-05", "2025-01-09"]);
+
 export const isUsMarketHoliday = (date: string): boolean => {
+  if (usExceptionalClosures.has(date)) return true;
   const year = dateAtNoonUtc(date).getUTCFullYear();
   return new Set([
     ...observedFixedHoliday(`${year}-01-01`),

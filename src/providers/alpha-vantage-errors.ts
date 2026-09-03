@@ -19,23 +19,24 @@ const classifyNotice = (
   ) {
     return "provider_invalid_api_key";
   }
-  if (/\b(?:daily|per day|requests? today)\b|25 requests/i.test(message)) {
-    return "provider_daily_limit";
-  }
   if (
-    /\b(?:premium|subscription|subscribe|entitlement|paid plan)\b/i.test(
-      message,
-    )
-  ) {
-    return "provider_entitlement";
-  }
-  if (
-    /\b(?:call frequency|per minute|too many requests|throttl(?:e|ed|ing)|rate limit)\b/i.test(
+    /\b(?:call frequency|per (?:second|minute)|too many requests|requests? more sparingly|higher api call volume|throttl(?:e|ed|ing))\b/i.test(
       message,
     )
   ) {
     return "provider_rate_limited";
   }
+  if (/\b(?:daily|per day|requests? today)\b|25 requests/i.test(message)) {
+    return "provider_daily_limit";
+  }
+  if (
+    /\b(?:premium endpoint|subscription|required subscription|entitlement|paid plan)\b/i.test(
+      message,
+    )
+  ) {
+    return "provider_entitlement";
+  }
+  if (/\brate limit\b/i.test(message)) return "provider_rate_limited";
   if (field === "Error Message") return "provider_invalid_request";
   if (field === "Note") return "provider_notice";
   return "provider_information";

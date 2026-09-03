@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelineJobRepository } from "../../src/db/pipeline-jobs";
 import { PositionBasisRepository } from "../../src/db/position-basis";
 import { TransactionRepository } from "../../src/db/transactions";
@@ -9,6 +9,13 @@ import { YahooCorporateActionProvider } from "../../src/providers/yahoo-corporat
 import { easternMarketDate } from "../../src/shared/dates";
 
 const now = "2026-07-10T12:00:00.000Z";
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(now));
+});
+
+afterEach(() => vi.useRealTimers());
 
 async function insertInstrument(id = "instrument-1") {
   await env.DB.prepare(

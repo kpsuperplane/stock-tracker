@@ -384,6 +384,13 @@ describe("backfill routes", () => {
            WHERE pipeline_job_id = ?3 AND work_item_id IN (?2, ?4)`,
         ).bind(now, failed.id, id, pending.id),
       ]);
+      const continued = await exports.default.fetch(
+        new Request(`http://local/api/backfills/${id}/continue`, {
+          method: "POST",
+          headers,
+        }),
+      );
+      expect(continued.status).toBe(202);
       const settled = await exports.default.fetch(
         new Request(`http://local/api/backfills/${id}`, { headers }),
       );

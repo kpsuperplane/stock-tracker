@@ -17,6 +17,7 @@ import type {
   JobReadModelDto,
   ReconciliationStatusDto,
   StatusReadModelDto,
+  SyncLaneCapacityDto,
 } from "../../shared/contracts";
 import { api, type ImportError } from "../api";
 import type { MessageKey } from "../i18n/catalog";
@@ -24,50 +25,32 @@ import { useI18n } from "../i18n/I18nProvider";
 import { formatDate, formatDateTime } from "../system/formatters";
 import { PortfolioImportsSection } from "./PortfolioImportsSection";
 
-export type SyncHealth = "healthy" | "syncing" | "attention" | "unknown";
-
-const activeJobStatuses = new Set(["pending", "planning", "running"]);
+export type SyncHealth =
+  | "healthy"
+  | "syncing"
+  | "waiting"
+  | "attention"
+  | "unknown";
 
 export const shouldPollStatus = (status: StatusReadModelDto | null): boolean =>
-  status?.jobs.some((job) => activeJobStatuses.has(job.status)) === true ||
-  status?.imports.some((entry) => activeJobStatuses.has(entry.status)) === true;
+  status?.imports.some((entry) => entry.active === true) === true ||
+  Object.values(status?.reconciliation ?? {}).some(
+    (entry) => entry.status === "syncing",
+  );
 
 export const syncHealthFor = (status: StatusReadModelDto): SyncHealth => {
-  const reconciliationStatuses = [
-    status.reconciliation?.stockValues?.status,
-    status.reconciliation?.dividends?.status,
-    status.reconciliation?.financialReports?.status,
-  ];
-  if (status.jobs.some((job) => activeJobStatuses.has(job.status))) {
-    return "syncing";
+  switch (status.reconciliation.stockValues.status) {
+    case "syncing":
+      return "syncing";
+    case "waiting":
+      return "waiting";
+    case "attention":
+      return "attention";
+    case "current":
+      return "healthy";
+    default:
+      return "unknown";
   }
-  if (status.imports.some((entry) => activeJobStatuses.has(entry.status))) {
-    return "syncing";
-  }
-  if (reconciliationStatuses.some((value) => value === "syncing")) {
-    return "syncing";
-  }
-  const latestJob = status.jobs[0];
-  if (
-    status.earningsCoverage?.status === "stale" ||
-    status.earningsCoverage?.status === "unavailable" ||
-    reconciliationStatuses.some((value) => value === "attention") ||
-    latestJob?.status === "complete_with_errors" ||
-    latestJob?.status === "terminal" ||
-    status.imports.some((entry) =>
-      ["complete_with_errors", "terminal", "expired"].includes(entry.status),
-    )
-  ) {
-    return "attention";
-  }
-  if (
-    status.earningsCoverage?.status === "current" ||
-    reconciliationStatuses.some((value) => value === "current") ||
-    latestJob?.status === "complete"
-  ) {
-    return "healthy";
-  }
-  return "unknown";
 };
 
 const healthCopy: Record<
@@ -79,6 +62,7 @@ const healthCopy: Record<
     label: "syncInProgress",
     description: "syncInProgressDescription",
   },
+  waiting: { label: "syncWaiting", description: "syncWaitingDescription" },
   attention: {
     label: "syncNeedsAttention",
     description: "syncNeedsAttentionDescription",
@@ -92,6 +76,8 @@ const healthVariant = (health: SyncHealth) => {
       return "success" as const;
     case "syncing":
       return "accent" as const;
+    case "waiting":
+      return "neutral" as const;
     case "attention":
       return "error" as const;
     default:
@@ -102,6 +88,7 @@ const healthVariant = (health: SyncHealth) => {
 const reconciliationCopy: Record<SyncHealth, MessageKey> = {
   healthy: "syncUpToDate",
   syncing: "syncInProgress",
+  waiting: "syncWaiting",
   attention: "syncNeedsAttention",
   unknown: "syncUnknown",
 };
@@ -114,6 +101,8 @@ const healthForReconciliation = (
       return "healthy";
     case "syncing":
       return "syncing";
+    case "waiting":
+      return "waiting";
     case "attention":
       return "attention";
     default:
@@ -180,6 +169,51 @@ const StatusReconciliationRow = ({
   );
 };
 
+const CapacityRow = ({
+  label,
+  capacity,
+  locale,
+  t,
+}: {
+  label: string;
+  capacity: SyncLaneCapacityDto;
+  locale: "en" | "cn";
+  t: (key: MessageKey) => string;
+}) => {
+  const format = new Intl.NumberFormat(locale === "cn" ? "zh-CN" : "en-US");
+  const hasCapacity =
+    capacity.rowsRead.remaining > 0 && capacity.rowsWritten.remaining > 0;
+  return (
+    <div className="status-source-row status-capacity-row">
+      <div className="status-source-row__identity">
+        <StatusDot
+          variant={hasCapacity ? "success" : "neutral"}
+          label={hasCapacity ? t("syncUpToDate") : t("syncWaiting")}
+        />
+        <div>
+          <strong>{label}</strong>
+          <span className="status-source-row__provider">
+            {format.format(capacity.rowsRead.remaining)}{" "}
+            {t("readRowsRemaining")}
+          </span>
+        </div>
+      </div>
+      <div className="status-source-row__details status-capacity-row__details">
+        <span>
+          {format.format(capacity.rowsWritten.remaining)}{" "}
+          {t("writeRowsRemaining")}
+        </span>
+        {capacity.queueHighWaterMark !== null && (
+          <span>
+            {capacity.queueDepth}/{capacity.queueHighWaterMark}{" "}
+            {t("queueOccupancy")}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const jobBadgeVariant = (status: string) => {
   switch (status) {
     case "complete":
@@ -230,7 +264,10 @@ const jobTriggerKey = (triggerType: string): MessageKey => {
 };
 
 const latestSuccessfulJob = (jobs: JobReadModelDto[]) =>
-  jobs.find((job) => job.status === "complete") ?? null;
+  jobs.find(
+    (job) =>
+      (job.syncLane ?? "current") === "current" && job.status === "complete",
+  ) ?? null;
 
 const jobRange = (job: JobReadModelDto, locale: "en" | "cn") => {
   if (!job.requestedStartDate && !job.requestedEndDate) return null;
@@ -353,6 +390,7 @@ export const StatusPage = ({
       status?.reconciliation?.stockValues?.updatedAt,
       status?.reconciliation?.dividends?.updatedAt,
       status?.reconciliation?.financialReports?.updatedAt,
+      status?.reconciliation?.history?.updatedAt,
     ]
       .filter((value): value is string => Boolean(value))
       .sort()
@@ -444,6 +482,15 @@ export const StatusPage = ({
           locale={locale}
           t={t}
         />
+        <StatusReconciliationRow
+          id="portfolio-history"
+          label={t("portfolioHistorySync")}
+          provider={t("normalizedMarketData")}
+          metricLabel={t("factsReconciled")}
+          status={status?.reconciliation?.history}
+          locale={locale}
+          t={t}
+        />
         <div className="status-source-row">
           <div className="status-source-row__identity">
             <StatusDot
@@ -495,6 +542,69 @@ export const StatusPage = ({
           )}
         </div>
       </section>
+
+      {status?.capacity && (
+        <section className="status-sources" aria-labelledby="capacity-title">
+          <div className="status-section-heading">
+            <div>
+              <Heading level={2} id="capacity-title">
+                {t("dailyCapacity")}
+              </Heading>
+              <p>{t("dailyCapacityDescription")}</p>
+            </div>
+            <time dateTime={status.capacity.resetAt}>
+              {t("resetsAt")} {formatDateTime(status.capacity.resetAt, locale)}
+            </time>
+          </div>
+          <CapacityRow
+            label={t("availabilityLane")}
+            capacity={status.capacity.lanes.availability}
+            locale={locale}
+            t={t}
+          />
+          <CapacityRow
+            label={t("foregroundLane")}
+            capacity={status.capacity.lanes.foreground}
+            locale={locale}
+            t={t}
+          />
+          <CapacityRow
+            label={t("historyLane")}
+            capacity={status.capacity.lanes.history}
+            locale={locale}
+            t={t}
+          />
+          {status.historyCoverage && (
+            <div className="status-source-row status-capacity-row">
+              <div className="status-source-row__identity">
+                <StatusDot variant="neutral" label={t("historyFrontier")} />
+                <div>
+                  <strong>{t("historyFrontier")}</strong>
+                  <span className="status-source-row__provider">
+                    {status.historyCoverage.completedIntents}/
+                    {status.historyCoverage.totalIntents} {t("factsReconciled")}
+                  </span>
+                </div>
+              </div>
+              <div className="status-source-row__details">
+                <span>
+                  {status.historyCoverage.oldestCompleteDate
+                    ? formatDate(
+                        status.historyCoverage.oldestCompleteDate,
+                        locale,
+                      )
+                    : t("coverageUnknown")}
+                </span>
+                <span>
+                  {status.historyCoverage.targetStartDate
+                    ? formatDate(status.historyCoverage.targetStartDate, locale)
+                    : t("notAvailable")}
+                </span>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       <PortfolioImportsSection
         imports={status?.imports ?? []}

@@ -26,6 +26,8 @@ export interface EarningsEventRange {
     provider: string;
     observedAt: string;
     providerRevision: string;
+    /** Number of provider rows before portfolio-symbol filtering. */
+    sourceEventCount?: number;
   };
   events: NormalizedEarningsEvent[];
 }
@@ -46,6 +48,8 @@ export interface EarningsHistoryRange {
     observedAt: string;
     providerRevision: string;
     secCik: string | null;
+    /** False when the provider returned useful events with known gaps. */
+    complete?: boolean;
   };
   events: NormalizedEarningsEvent[];
 }

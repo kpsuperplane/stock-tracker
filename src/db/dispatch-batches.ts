@@ -33,6 +33,7 @@ export interface DispatchBatchRecord {
   updatedAt: string;
   completedAt: string | null;
   retentionUntil: string | null;
+  settledAt?: string | null;
 }
 
 interface DispatchBatchRow {
@@ -59,6 +60,7 @@ interface DispatchBatchRow {
   updated_at: string;
   completed_at: string | null;
   retention_until: string | null;
+  settled_at: string | null;
 }
 
 const mapBatch = (row: DispatchBatchRow): DispatchBatchRecord => ({
@@ -85,6 +87,7 @@ const mapBatch = (row: DispatchBatchRow): DispatchBatchRecord => ({
   updatedAt: row.updated_at,
   completedAt: row.completed_at,
   retentionUntil: row.retention_until,
+  settledAt: row.settled_at ?? null,
 });
 
 interface DispatchableWorkRow {
@@ -237,6 +240,13 @@ export class DispatchBatchRepository {
            WHERE dispatch_batch_id = ?1 AND expires_at > ?2`,
         )
         .bind(input.batch.id, input.batch.createdAt),
+      this.db
+        .prepare(
+          `UPDATE dispatch_provider_reservations
+              SET expires_at = expires_at
+            WHERE dispatch_batch_id = ?1 AND expires_at > ?2`,
+        )
+        .bind(input.batch.id, input.batch.createdAt),
       ...claimStatements,
       guardedBatchStatement,
       ...input.work.map((item) =>
@@ -277,7 +287,10 @@ export class DispatchBatchRepository {
                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
          WHERE EXISTS (
            SELECT 1 FROM dispatch_daily_reservations
-           WHERE dispatch_batch_id = ?1 AND expires_at > ?20
+            WHERE dispatch_batch_id = ?1 AND expires_at > ?20
+           UNION ALL
+           SELECT 1 FROM dispatch_provider_reservations
+            WHERE dispatch_batch_id = ?1 AND expires_at > ?20
          )`,
       )
       .bind(
@@ -352,28 +365,99 @@ export class DispatchBatchRepository {
   }
 
   async releaseDailyCapacity(dispatchBatchId: string): Promise<boolean> {
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          "DELETE FROM dispatch_daily_reservations WHERE dispatch_batch_id = ?1",
+        )
+        .bind(dispatchBatchId),
+      this.db
+        .prepare(
+          "DELETE FROM dispatch_provider_reservations WHERE dispatch_batch_id = ?1",
+        )
+        .bind(dispatchBatchId),
+    ]);
+    return results.some((result) => Number(result.meta.changes ?? 0) > 0);
+  }
+
+  async reserveProviderCapacity(input: {
+    dispatchBatchId: string;
+    reservationDay: string;
+    budgetKind: "foreground_market" | "history_market" | "analysis";
+    dailyLimit: number;
+    createdAt: string;
+    expiresAt: string;
+  }): Promise<boolean> {
     const result = await this.db
       .prepare(
-        "DELETE FROM dispatch_daily_reservations WHERE dispatch_batch_id = ?1",
+        `INSERT INTO dispatch_provider_reservations
+         (dispatch_batch_id, reservation_day, budget_kind, units,
+          created_at, expires_at)
+         SELECT ?1, ?2, ?3, 1, ?4, ?5
+          WHERE COALESCE((
+            SELECT SUM(units) FROM dispatch_provider_reservations
+             WHERE reservation_day = ?2 AND budget_kind = ?3
+          ), 0) < ?6
+            AND NOT EXISTS (
+              SELECT 1 FROM dispatch_provider_reservations
+               WHERE dispatch_batch_id = ?1
+            )`,
       )
-      .bind(dispatchBatchId)
+      .bind(
+        input.dispatchBatchId,
+        input.reservationDay,
+        input.budgetKind,
+        input.createdAt,
+        input.expiresAt,
+        input.dailyLimit,
+      )
       .run();
     return result.meta.changes === 1;
   }
 
-  async recoverExpiredDailyReservations(now: string): Promise<number> {
-    const result = await this.db
-      .prepare(
-        `DELETE FROM dispatch_daily_reservations
-         WHERE expires_at <= ?1
-           AND NOT EXISTS (
-             SELECT 1 FROM dispatch_batches
-             WHERE dispatch_batches.id = dispatch_daily_reservations.dispatch_batch_id
+  async recoverExpiredDailyReservations(
+    now: string,
+    limit = 100,
+  ): Promise<number> {
+    const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `DELETE FROM dispatch_daily_reservations
+           WHERE rowid IN (
+             SELECT reservation.rowid
+               FROM dispatch_daily_reservations reservation
+              WHERE reservation.expires_at <= ?1
+                AND NOT EXISTS (
+                  SELECT 1 FROM dispatch_batches batch
+                   WHERE batch.id = reservation.dispatch_batch_id
+                )
+              ORDER BY reservation.expires_at, reservation.dispatch_batch_id
+              LIMIT ?2
            )`,
-      )
-      .bind(now)
-      .run();
-    return result.meta.changes;
+        )
+        .bind(now, boundedLimit),
+      this.db
+        .prepare(
+          `DELETE FROM dispatch_provider_reservations
+           WHERE rowid IN (
+             SELECT reservation.rowid
+               FROM dispatch_provider_reservations reservation
+              WHERE reservation.expires_at <= ?1
+                AND NOT EXISTS (
+                  SELECT 1 FROM dispatch_batches batch
+                   WHERE batch.id = reservation.dispatch_batch_id
+                )
+              ORDER BY reservation.expires_at, reservation.dispatch_batch_id
+              LIMIT ?2
+           )`,
+        )
+        .bind(now, boundedLimit),
+    ]);
+    return results.reduce(
+      (sum, result) => sum + Number(result.meta.changes ?? 0),
+      0,
+    );
   }
 
   async countReservedWork(reservationDay: string): Promise<number> {
@@ -447,6 +531,32 @@ export class DispatchBatchRepository {
       .bind(id)
       .first<DispatchBatchRow>();
     return row ? mapBatch(row) : null;
+  }
+
+  async listUnsettled(limit = 25): Promise<DispatchBatchRecord[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT * FROM dispatch_batches
+          WHERE state IN ('complete', 'terminal') AND settled_at IS NULL
+          ORDER BY completed_at, id
+          LIMIT ?1`,
+      )
+      .bind(Math.max(1, Math.min(100, Math.floor(limit))))
+      .all<DispatchBatchRow>();
+    return rows.results.map(mapBatch);
+  }
+
+  async markSettled(input: { id: string; now: string }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE dispatch_batches
+            SET settled_at = ?1
+          WHERE id = ?2 AND state IN ('complete', 'terminal')
+            AND settled_at IS NULL`,
+      )
+      .bind(input.now, input.id)
+      .run();
+    return result.meta.changes === 1;
   }
 
   async listWork(batchId: string): Promise<WorkItemRecord[]> {
@@ -567,8 +677,7 @@ export class DispatchBatchRepository {
              SET dispatch_attempt_count = dispatch_attempt_count + 1,
                  updated_at = ?1
              WHERE id = ?2 AND state = 'dispatching'
-               AND dispatch_lease_until IS ?3
-               AND dispatch_attempt_count < dispatch_max_attempts`,
+               AND dispatch_lease_until IS ?3`,
           )
           .bind(input.now, input.id, input.expectedDispatchLeaseUntil)
           .run()
@@ -577,8 +686,7 @@ export class DispatchBatchRepository {
             `UPDATE dispatch_batches
              SET dispatch_attempt_count = dispatch_attempt_count + 1,
                  updated_at = ?1
-             WHERE id = ?2 AND state = 'queued'
-               AND dispatch_attempt_count < dispatch_max_attempts`,
+             WHERE id = ?2 AND state = 'queued'`,
           )
           .bind(input.now, input.id)
           .run();

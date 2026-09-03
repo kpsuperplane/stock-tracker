@@ -16,3 +16,8 @@ export const safeErrorMessage = (error: unknown) =>
       "credential=[REDACTED]",
     )
     .slice(0, 500);
+
+export const isStorageUnavailableError = (error: unknown): boolean =>
+  /daily (?:read|write)|free tier|quota|limit.*exceeded|database.*unavailable|storage.*unavailable|internal error.*d1|d1.*(?:temporarily unavailable|timed out)/i.test(
+    error instanceof Error ? error.message : String(error),
+  );

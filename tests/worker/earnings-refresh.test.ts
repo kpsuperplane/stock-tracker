@@ -34,7 +34,7 @@ const snapshot = (
 ): EarningsEventRange => ({
   range: {
     requestedStartDate: "2026-07-13",
-    requestedEndDate: "2026-10-13",
+    requestedEndDate: "2026-09-11",
     provider: "alpha-vantage-earnings",
     observedAt: now,
     providerRevision: `${reportDate}|${estimate}`,

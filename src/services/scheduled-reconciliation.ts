@@ -118,6 +118,7 @@ import {
   WorkItemRepository,
 } from "../db/work-items";
 import { deriveHoldings } from "../domain/holdings";
+import { PipelineJobSettlementService } from "./pipeline-job-settlement";
 import { ReconciliationPlannerService } from "./reconciliation-planner";
 
 export interface ScheduledReconciliationDependencies {
@@ -156,6 +157,14 @@ export interface AutomaticPlanningResult {
   errors: AutomaticPlanningError[];
 }
 
+export interface PlanningContinuationResult {
+  pipelineJobId: string;
+  pages: number;
+  workItems: number;
+  active: boolean;
+  paused: boolean;
+}
+
 const planningErrorMessage = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).slice(0, 500);
 
@@ -185,7 +194,7 @@ interface HeldInstrument {
   exchange: string;
 }
 
-const listHeldInstruments = async (
+export const listHeldInstruments = async (
   db: D1Database,
   tradingDate: string,
 ): Promise<HeldInstrument[]> => {
@@ -251,6 +260,7 @@ const listHeldInstruments = async (
 export class ScheduledReconciliationService {
   private readonly jobs: PipelineJobRepository;
   private readonly workItems: WorkItemRepository;
+  private readonly settlement: PipelineJobSettlementService;
   private readonly now: () => Date;
   private readonly newId: () => string;
   private readonly isMarketHoliday: (
@@ -264,6 +274,7 @@ export class ScheduledReconciliationService {
   ) {
     this.jobs = new PipelineJobRepository(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
+    this.settlement = new PipelineJobSettlementService(dependencies.db);
     this.now = dependencies.now ?? (() => new Date());
     this.newId = dependencies.newId ?? (() => crypto.randomUUID());
     this.isMarketHoliday =
@@ -283,6 +294,26 @@ export class ScheduledReconciliationService {
     if (!isTorontoWeekday(triggerTime)) {
       return { kind: "skipped", reason: "weekend" };
     }
+    return this.planTradingDate(tradingDate, triggerTime);
+  }
+
+  async recoverLatestCompletedTradingDate(
+    at: Date = this.now(),
+  ): Promise<ScheduledPlannerResult> {
+    const parts = torontoLocalParts(at);
+    const afterClose =
+      parts.hour > "16" || (parts.hour === "16" && parts.minute >= "30");
+    const localDate = torontoTradingDate(at);
+    const tradingDate = afterClose
+      ? latestTorontoWeekday(localDate)
+      : previousTorontoWeekday(localDate);
+    return this.planTradingDate(tradingDate, at);
+  }
+
+  private async planTradingDate(
+    tradingDate: string,
+    triggerTime: Date,
+  ): Promise<ScheduledPlannerResult> {
     const pipelineJobId = scheduledPlannerJobId(tradingDate);
     const existing = await this.jobs.findById(pipelineJobId);
     // Both UTC cron candidates are expected to hit this same deterministic
@@ -425,6 +456,46 @@ export class ScheduledReconciliationService {
     return { jobs: rows.results.length, pages, workItems, errors };
   }
 
+  async continueJob(
+    pipelineJobId: string,
+    at: Date = this.now(),
+    maxPages = 5,
+  ): Promise<PlanningContinuationResult> {
+    const job = await this.jobs.findById(pipelineJobId);
+    if (!job || !["pending", "planning", "running"].includes(job.status)) {
+      return {
+        pipelineJobId,
+        pages: 0,
+        workItems: 0,
+        active: false,
+        paused: false,
+      };
+    }
+    const timestamp = at.toISOString();
+    const result = await this.planPages(
+      pipelineJobId,
+      job.requestedEndDate ?? torontoTradingDate(at),
+      timestamp,
+      Math.max(1, Math.min(20, Math.floor(maxPages))),
+    );
+    await this.completeIfSettled(pipelineJobId, timestamp);
+    const [latest, planner] = await Promise.all([
+      this.jobs.findById(pipelineJobId),
+      this.workItems.findPlanningForJob(pipelineJobId),
+    ]);
+    return {
+      pipelineJobId,
+      pages: result.pages,
+      workItems: result.workItems,
+      active:
+        latest !== null &&
+        ["pending", "planning", "running"].includes(latest.status) &&
+        planner?.state !== "complete" &&
+        planner?.state !== "terminal",
+      paused: planner?.state === "pending" && (planner.attemptCount ?? 0) > 0,
+    };
+  }
+
   private async terminalizeExhaustedPlanner(
     pipelineJobId: string,
     timestamp: string,
@@ -527,12 +598,26 @@ export class ScheduledReconciliationService {
           cursor: page.nextCursor,
           dividendCursor: page.nextDividendCursor,
           leaseUntil: page.plannerLeaseUntil,
+          ...(page.nextPlanningPhase === undefined
+            ? {}
+            : { planningPhase: page.nextPlanningPhase }),
           now: timestamp,
         }))
       ) {
         throw new Error("pipeline_planner_cursor_conflict");
       }
       if (page.complete) {
+        pages += 1;
+        break;
+      }
+      if (page.pausePlanning && page.plannerLeaseUntil) {
+        const paused = await this.workItems.pausePlanning({
+          id: planner.id,
+          pipelineJobId,
+          now: timestamp,
+          expectedLeaseUntil: page.plannerLeaseUntil,
+        });
+        if (!paused) throw new Error("planner_pause_conflict");
         pages += 1;
         break;
       }
@@ -544,54 +629,6 @@ export class ScheduledReconciliationService {
     pipelineJobId: string,
     timestamp: string,
   ): Promise<void> {
-    const row = await this.dependencies.db
-      .prepare(
-        `SELECT pipeline.status AS pipelineStatus,
-                pipeline.planner_cursor AS plannerCursor,
-                pipeline.planner_dividend_cursor AS plannerDividendCursor,
-                planner.state AS plannerState,
-                SUM(CASE WHEN link.outcome = 'pending'
-                           AND work.scope = 'global_fact'
-                           AND work.state IN ('pending', 'dispatching', 'queued', 'processing')
-                         THEN 1 ELSE 0 END) AS unsettled,
-                SUM(CASE WHEN work.scope = 'global_fact'
-                           AND (work.state = 'terminal' OR link.outcome = 'failed')
-                         THEN 1 ELSE 0 END) AS terminal
-           FROM pipeline_jobs pipeline
-           LEFT JOIN work_items planner
-             ON planner.pipeline_job_id = pipeline.id
-            AND planner.scope = 'job_planning'
-           LEFT JOIN job_work_items link
-             ON link.pipeline_job_id = pipeline.id
-           LEFT JOIN work_items work
-             ON work.id = link.work_item_id
-          WHERE pipeline.id = ?1
-          GROUP BY pipeline.id, planner.id`,
-      )
-      .bind(pipelineJobId)
-      .first<{
-        pipelineStatus: PipelineJobRecord["status"];
-        plannerCursor: string | null;
-        plannerDividendCursor: string | null;
-        plannerState: string | null;
-        unsettled: number | null;
-        terminal: number | null;
-      }>();
-    if (
-      !row ||
-      !["pending", "planning", "running"].includes(row.pipelineStatus) ||
-      row.plannerState !== "complete" ||
-      row.plannerCursor !== null ||
-      row.plannerDividendCursor !== null ||
-      Number(row.unsettled ?? 0) > 0
-    ) {
-      return;
-    }
-    await this.jobs.transition({
-      id: pipelineJobId,
-      from: row.pipelineStatus,
-      to: Number(row.terminal ?? 0) > 0 ? "complete_with_errors" : "complete",
-      now: timestamp,
-    });
+    await this.settlement.settle(pipelineJobId, timestamp);
   }
 }

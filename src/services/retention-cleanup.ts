@@ -141,53 +141,76 @@ export class RetentionCleanupService {
     ).toISOString();
     const limit = this.batchSize;
 
-    // Remove links before their work/job parents. Each statement is bounded;
-    // a retry after a D1 interruption simply selects the next old rows.
+    // Drive cleanup from indexed timestamps and keep each state separate. An
+    // OR across state-specific retention rules made SQLite scan the retained
+    // tables even when no row was old enough to delete.
     const results = await this.dependencies.db.batch([
       this.dependencies.db
         .prepare(
           `DELETE FROM job_work_items
            WHERE rowid IN (
              SELECT link.rowid
-               FROM job_work_items link
-               JOIN work_items work ON work.id = link.work_item_id
-               JOIN pipeline_jobs job ON job.id = link.pipeline_job_id
-              WHERE (
-                (work.state = 'complete' AND work.completed_at <= ?1)
-                OR (work.state = 'terminal' AND work.completed_at <= ?2)
-              )
-                AND job.status IN ('complete', 'complete_with_errors', 'terminal')
-              LIMIT ?3
+               FROM pipeline_jobs job
+               JOIN job_work_items link ON link.pipeline_job_id = job.id
+              WHERE job.status IN ('complete', 'complete_with_errors')
+                AND job.completed_at <= ?1
+              ORDER BY job.completed_at, link.pipeline_job_id,
+                       link.work_item_id
+              LIMIT ?2
            )`,
         )
-        .bind(completedCutoff, terminalCutoff, limit),
+        .bind(completedCutoff, limit),
+      this.dependencies.db
+        .prepare(
+          `DELETE FROM job_work_items
+           WHERE rowid IN (
+             SELECT link.rowid
+               FROM pipeline_jobs job
+               JOIN job_work_items link ON link.pipeline_job_id = job.id
+              WHERE job.status = 'terminal' AND job.completed_at <= ?1
+              ORDER BY job.completed_at, link.pipeline_job_id,
+                       link.work_item_id
+              LIMIT ?2
+           )`,
+        )
+        .bind(terminalCutoff, limit),
       this.dependencies.db
         .prepare(
           `DELETE FROM dispatch_batch_items
            WHERE rowid IN (
              SELECT item.rowid
-               FROM dispatch_batch_items item
-               JOIN dispatch_batches batch
-                 ON batch.id = item.dispatch_batch_id
-              WHERE (
-                (batch.state = 'complete' AND batch.completed_at <= ?1)
-                OR (batch.state = 'terminal' AND batch.completed_at <= ?2)
-              )
-              LIMIT ?3
+               FROM dispatch_batches batch
+               JOIN dispatch_batch_items item
+                 ON item.dispatch_batch_id = batch.id
+              WHERE batch.state = 'complete' AND batch.completed_at <= ?1
+              ORDER BY batch.completed_at, item.dispatch_batch_id,
+                       item.work_item_id
+              LIMIT ?2
            )`,
         )
-        .bind(completedCutoff, terminalCutoff, limit),
+        .bind(completedCutoff, limit),
+      this.dependencies.db
+        .prepare(
+          `DELETE FROM dispatch_batch_items
+           WHERE rowid IN (
+             SELECT item.rowid
+               FROM dispatch_batches batch
+               JOIN dispatch_batch_items item
+                 ON item.dispatch_batch_id = batch.id
+              WHERE batch.state = 'terminal' AND batch.completed_at <= ?1
+                AND batch.dlq_state IN ('none', 'delivered')
+              ORDER BY batch.completed_at, item.dispatch_batch_id,
+                       item.work_item_id
+              LIMIT ?2
+           )`,
+        )
+        .bind(terminalCutoff, limit),
       this.dependencies.db
         .prepare(
           `DELETE FROM work_items
            WHERE rowid IN (
-             SELECT work.rowid
-               FROM work_items work
-              WHERE (
-                (work.state = 'complete' AND work.completed_at <= ?1)
-                OR (work.state = 'terminal' AND work.completed_at <= ?2)
-                OR (work.retention_until IS NOT NULL AND work.retention_until <= ?3)
-              )
+             SELECT work.rowid FROM work_items work
+              WHERE work.state = 'complete' AND work.completed_at <= ?1
                 AND NOT EXISTS (
                   SELECT 1 FROM job_work_items link
                    WHERE link.work_item_id = work.id
@@ -196,25 +219,84 @@ export class RetentionCleanupService {
                   SELECT 1 FROM dispatch_batch_items item
                    WHERE item.work_item_id = work.id
                 )
-              LIMIT ?4
+              ORDER BY work.completed_at, work.id
+              LIMIT ?2
            )`,
         )
-        .bind(completedCutoff, terminalCutoff, now, limit),
+        .bind(completedCutoff, limit),
+      this.dependencies.db
+        .prepare(
+          `DELETE FROM work_items
+           WHERE rowid IN (
+             SELECT work.rowid FROM work_items work
+              WHERE work.state = 'terminal' AND work.completed_at <= ?1
+                AND NOT EXISTS (
+                  SELECT 1 FROM job_work_items link
+                   WHERE link.work_item_id = work.id
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM dispatch_batch_items item
+                   WHERE item.work_item_id = work.id
+                )
+              ORDER BY work.completed_at, work.id
+              LIMIT ?2
+           )`,
+        )
+        .bind(terminalCutoff, limit),
+      this.dependencies.db
+        .prepare(
+          `DELETE FROM work_items
+           WHERE rowid IN (
+             SELECT work.rowid FROM work_items work
+              WHERE work.retention_until IS NOT NULL
+                AND work.retention_until <= ?1
+                AND NOT EXISTS (
+                  SELECT 1 FROM job_work_items link
+                   WHERE link.work_item_id = work.id
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM dispatch_batch_items item
+                   WHERE item.work_item_id = work.id
+                )
+              ORDER BY work.retention_until, work.id
+              LIMIT ?2
+           )`,
+        )
+        .bind(now, limit),
       this.dependencies.db
         .prepare(
           `DELETE FROM dispatch_batches
            WHERE rowid IN (
              SELECT rowid FROM dispatch_batches
-              WHERE (
-                (state = 'complete' AND completed_at <= ?1)
-                OR (state = 'terminal' AND completed_at <= ?2
-                    AND dlq_state IN ('none', 'delivered'))
-                OR (retention_until IS NOT NULL AND retention_until <= ?3)
-              )
-              LIMIT ?4
+              WHERE state = 'complete' AND completed_at <= ?1
+              ORDER BY completed_at, id
+              LIMIT ?2
            )`,
         )
-        .bind(completedCutoff, terminalCutoff, now, limit),
+        .bind(completedCutoff, limit),
+      this.dependencies.db
+        .prepare(
+          `DELETE FROM dispatch_batches
+           WHERE rowid IN (
+             SELECT rowid FROM dispatch_batches
+              WHERE state = 'terminal' AND completed_at <= ?1
+                AND dlq_state IN ('none', 'delivered')
+              ORDER BY completed_at, id
+              LIMIT ?2
+           )`,
+        )
+        .bind(terminalCutoff, limit),
+      this.dependencies.db
+        .prepare(
+          `DELETE FROM dispatch_batches
+           WHERE rowid IN (
+             SELECT rowid FROM dispatch_batches
+              WHERE retention_until IS NOT NULL AND retention_until <= ?1
+              ORDER BY retention_until, id
+              LIMIT ?2
+           )`,
+        )
+        .bind(now, limit),
       this.dependencies.db
         .prepare(
           `DELETE FROM pipeline_jobs
@@ -222,6 +304,7 @@ export class RetentionCleanupService {
              SELECT rowid FROM pipeline_jobs
               WHERE status IN ('complete', 'complete_with_errors', 'terminal')
                 AND completed_at IS NOT NULL AND completed_at <= ?1
+              ORDER BY completed_at, id
               LIMIT ?2
            )`,
         )
@@ -232,6 +315,7 @@ export class RetentionCleanupService {
            WHERE rowid IN (
              SELECT rowid FROM legacy_dual_write_repairs
               WHERE state = 'resolved' AND updated_at <= ?1
+              ORDER BY updated_at, id
               LIMIT ?2
            )`,
         )
@@ -240,12 +324,14 @@ export class RetentionCleanupService {
 
     return {
       ...importStaging,
-      deletedJobLinks: changed(results[0]),
-      deletedDispatchLinks: changed(results[1]),
-      deletedWorkItems: changed(results[2]),
-      deletedDispatchBatches: changed(results[3]),
-      deletedPipelineJobs: changed(results[4]),
-      deletedRepairMarkers: changed(results[5]),
+      deletedJobLinks: changed(results[0]) + changed(results[1]),
+      deletedDispatchLinks: changed(results[2]) + changed(results[3]),
+      deletedWorkItems:
+        changed(results[4]) + changed(results[5]) + changed(results[6]),
+      deletedDispatchBatches:
+        changed(results[7]) + changed(results[8]) + changed(results[9]),
+      deletedPipelineJobs: changed(results[10]),
+      deletedRepairMarkers: changed(results[11]),
     };
   }
 }

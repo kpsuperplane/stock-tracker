@@ -63,9 +63,132 @@ describe("backfill pipeline residual guards", () => {
       {
         instrumentId: "HOLIDAY-instrument",
         startDate: "2026-07-02",
-        endDate: "2026-07-02",
+        endDate: "2026-07-03",
       },
     ]);
+  });
+
+  it("repairs and starts a bootstrapped history job with missing intervals", async () => {
+    const now = "2026-07-10T21:00:00.000Z";
+    await insertHolding("REPAIR", now);
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO pipeline_jobs
+         (id, trigger_type, requested_start_date, requested_end_date,
+          affected_instruments_json, eligibility_intervals_json, priority,
+          status, created_at, updated_at, sync_lane, job_group_id,
+          planning_phase)
+         VALUES ('repair-history', 'backfill', '2026-07-01', '2026-07-03',
+                 '["REPAIR-instrument"]', '[]', 20, 'pending', ?1, ?1,
+                 'history', 'repair-history', 'market')`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO work_items
+         (id, scope, pipeline_job_id, work_type, deterministic_key, state,
+          priority, attempt_count, max_attempts, created_at, updated_at)
+         VALUES ('repair-history-planner', 'job_planning', 'repair-history',
+                 'ledger_reconciliation_plan',
+                 'job:repair-history:ledger_reconciliation_plan', 'pending',
+                 20, 0, 10, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+         (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+         VALUES ('repair-history', 'repair-history-planner', 'required',
+                 'pending', ?1)`,
+      ).bind(now),
+    ]);
+    const adapter = new BackfillPipelineAdapter({
+      db: env.DB,
+      listActiveSymbols: async () => [],
+    });
+
+    const result = await adapter.continuePlanning("repair-history", now, 1);
+
+    expect(result).toMatchObject({ pages: 1, active: true });
+    const repaired = await env.DB.prepare(
+      `SELECT eligibility_intervals_json
+         FROM pipeline_jobs WHERE id = 'repair-history'`,
+    ).first<{ eligibility_intervals_json: string }>();
+    expect(JSON.parse(repaired?.eligibility_intervals_json ?? "[]")).toEqual([
+      {
+        instrumentId: "REPAIR-instrument",
+        startDate: "2026-07-01",
+        endDate: "2026-07-03",
+      },
+    ]);
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM work_items
+          WHERE scope = 'global_fact' AND work_type = 'market_fact'`,
+      ).first(),
+    ).toEqual({ count: 2 });
+  });
+
+  it("retries transient terminal work only for the deterministic history repair", async () => {
+    const now = "2026-07-10T21:00:00.000Z";
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO pipeline_jobs
+         (id, trigger_type, requested_start_date, requested_end_date,
+          affected_instruments_json, eligibility_intervals_json, priority,
+          status, created_at, updated_at, sync_lane, job_group_id,
+          planning_phase)
+         VALUES ('repair:0024:history', 'backfill', '2026-07-01', '2026-07-01',
+                 '[]', '[]', 20, 'planning', ?1, ?1, 'history',
+                 'repair:0024', 'analysis')`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO work_items
+         (id, scope, pipeline_job_id, work_type, deterministic_key, state,
+          priority, attempt_count, max_attempts, terminal_error_code,
+          terminal_error_message, created_at, updated_at, completed_at)
+         VALUES ('repair-transient', 'global_fact', NULL, 'market_fact',
+                 'repair-transient-key', 'terminal', 20, 3, 3,
+                 'dispatch_attempts_exhausted', 'dispatch failed', ?1, ?1, ?1),
+                ('repair-permanent', 'global_fact', NULL, 'market_fact',
+                 'repair-permanent-key', 'terminal', 20, 3, 3,
+                 'invalid_price', 'invalid price', ?1, ?1, ?1),
+                ('repair:0024:history:planner', 'job_planning',
+                 'repair:0024:history', 'ledger_reconciliation_plan',
+                 'job:repair:0024:history:plan', 'pending', 20, 0, 10,
+                 NULL, NULL, ?1, ?1, NULL)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+         (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+         VALUES ('repair:0024:history', 'repair-transient', 'required',
+                 'failed', ?1),
+                ('repair:0024:history', 'repair-permanent', 'required',
+                 'failed', ?1),
+                ('repair:0024:history', 'repair:0024:history:planner',
+                 'required', 'pending', ?1)`,
+      ).bind(now),
+    ]);
+
+    await new BackfillPipelineAdapter({
+      db: env.DB,
+      listActiveSymbols: async () => [],
+    }).continuePlanning("repair:0024:history", now, 1);
+
+    expect(
+      (
+        await env.DB.prepare(
+          `SELECT id, state FROM work_items
+            WHERE id IN ('repair-transient', 'repair-permanent') ORDER BY id`,
+        ).all()
+      ).results,
+    ).toEqual([
+      { id: "repair-permanent", state: "terminal" },
+      { id: "repair-transient", state: "pending" },
+    ]);
+    expect(
+      await env.DB.prepare(
+        `SELECT outcome FROM job_work_items
+          WHERE pipeline_job_id = 'repair:0024:history'
+            AND work_item_id = 'repair-transient'`,
+      ).first(),
+    ).toEqual({ outcome: "pending" });
   });
 
   it("allocates distinct generations for concurrent no-work reprocesses", async () => {
@@ -222,7 +345,24 @@ describe("backfill pipeline residual guards", () => {
           `UPDATE job_work_items SET outcome = 'failed', updated_at = ?1
               WHERE pipeline_job_id = ?2 AND work_item_id = ?3`,
         ).bind(now, id, work.id),
+        env.DB.prepare(
+          `UPDATE pipeline_jobs
+              SET status = 'terminal', completed_at = ?1, updated_at = ?1
+            WHERE id = ?2`,
+        ).bind(now, id),
       ]);
+      expect(
+        await env.DB.prepare(
+          `SELECT status, work_failed, market_work_pending
+             FROM pipeline_jobs WHERE id = ?1`,
+        )
+          .bind(id)
+          .first(),
+      ).toEqual({
+        status: "terminal",
+        work_failed: 1,
+        market_work_pending: 0,
+      });
       expect(
         await env.DB.prepare(
           "SELECT COUNT(*) AS count FROM dispatch_batch_items WHERE work_item_id = ?1",
@@ -256,6 +396,18 @@ describe("backfill pipeline residual guards", () => {
           .bind(work.id)
           .first(),
       ).toEqual({ state: "pending" });
+      expect(
+        await env.DB.prepare(
+          `SELECT status, work_failed, market_work_pending
+             FROM pipeline_jobs WHERE id = ?1`,
+        )
+          .bind(id)
+          .first(),
+      ).toEqual({
+        status: "running",
+        work_failed: 0,
+        market_work_pending: 1,
+      });
 
       // A concurrent link mutation must prevent a second reset from being
       // reported as queued and must leave the terminal work untouched.
@@ -311,6 +463,13 @@ describe("backfill pipeline residual guards", () => {
               WHERE pipeline_job_id = ?2 AND work_item_id = ?3`,
         ).bind(`${now}-shared`, id, work.id),
       ]);
+      const continued = await exports.default.fetch(
+        new Request(`http://local/api/backfills/${id}/continue`, {
+          method: "POST",
+          headers,
+        }),
+      );
+      expect(continued.status).toBe(202);
       const sharedStatus = await exports.default.fetch(
         new Request(`http://local/api/backfills/${id}`, { headers }),
       );

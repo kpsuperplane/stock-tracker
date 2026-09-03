@@ -9,7 +9,11 @@ const sanitizeProviderMessage = (value: string): string =>
   value
     .replace(/(?:Bearer|Basic)\s+[^\s,;]+/gi, "credential=[REDACTED]")
     .replace(
-      /(?:authorization|api[_-]?key|apikey|token|password|secret)\s*[=:]\s*[^\s,;&]+/gi,
+      /(?:authorization|api[\s_-]?key|apikey|token|password|secret)\s*[=:]\s*[^\s,;&]+/gi,
+      "credential=[REDACTED]",
+    )
+    .replace(
+      /(?:api[\s_-]?key|apikey|token|password|secret)\s+(?:as|is)\s+[^\s,;&]+/gi,
       "credential=[REDACTED]",
     )
     .replace(/\s+/g, " ")

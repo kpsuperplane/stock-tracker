@@ -185,6 +185,94 @@ describe("EarningsHistoryBackfillService", () => {
     expect(summary.secCompleted).toBe(1);
   });
 
+  it("keeps partial SEC events and uses Alpha to complete coverage", async () => {
+    await seed();
+    let nextId = 0;
+    const partial = range("sec-edgar-earnings");
+    partial.range.complete = false;
+    const summary = await new EarningsHistoryBackfillService({
+      db: env.DB,
+      secProvider: { getEarningsHistory: async () => partial },
+      alphaProvider: {
+        getEarningsHistory: async (_instrument, startDate, endDate) => {
+          const result = range("alpha-vantage-earnings");
+          return {
+            ...result,
+            range: {
+              ...result.range,
+              requestedStartDate: startDate,
+              requestedEndDate: endDate,
+            },
+          };
+        },
+      },
+      now: () => new Date(firstRun),
+      newId: () => `partial-history-${++nextId}`,
+    }).refreshDue();
+
+    expect(summary).toMatchObject({
+      alphaCompleted: 1,
+      retried: 0,
+      secFailures: { provider_history_incomplete: 1 },
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT provider, status FROM earnings_history_coverage WHERE instrument_id = 'history-ibm'",
+      ).first(),
+    ).toEqual({ provider: "alpha-vantage-earnings", status: "current" });
+    expect(
+      await env.DB.prepare(
+        "SELECT provider, status FROM earnings_events ORDER BY provider",
+      ).all(),
+    ).toEqual(
+      expect.objectContaining({
+        results: [
+          { provider: "alpha-vantage-earnings", status: "active" },
+          { provider: "sec-edgar-earnings", status: "superseded" },
+        ],
+      }),
+    );
+  });
+
+  it("stops spending fallback calls after the provider rate-limits a run", async () => {
+    await seed("aaa");
+    await seed("bbb");
+    const alphaProvider: EarningsHistoryProvider = {
+      getEarningsHistory: vi.fn(async () => {
+        throw new ProviderResponseError(
+          "provider_rate_limited",
+          "Use one request per second.",
+        );
+      }),
+    };
+    const summary = await new EarningsHistoryBackfillService({
+      db: env.DB,
+      secProvider: {
+        getEarningsHistory: async () => {
+          throw new Error("provider_history_unavailable");
+        },
+      },
+      alphaProvider,
+      now: () => new Date(firstRun),
+      batchSize: 2,
+    }).refreshDue();
+
+    expect(alphaProvider.getEarningsHistory).toHaveBeenCalledOnce();
+    expect(summary).toMatchObject({
+      attempted: 2,
+      retried: 2,
+      fallbackDeferred: 1,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT attempt_count, last_error_code FROM earnings_history_coverage WHERE instrument_id = 'history-bbb'",
+      ).first(),
+    ).toEqual({
+      attempt_count: 0,
+      last_error_code: "provider_fallback_budget_deferred",
+    });
+  });
+
   it("persists the classified Alpha failure and sanitized provider message", async () => {
     await seed();
     const summary = await new EarningsHistoryBackfillService({

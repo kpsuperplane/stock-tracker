@@ -99,9 +99,15 @@ export class AlphaVantageEarningsProvider implements EarningsProvider {
     if (!rows || !first || !sameHeader(first)) {
       throw new Error("provider_schema");
     }
+    const sourceRows = rows
+      .slice(1)
+      .filter((row) => row.some((field) => field.trim() !== ""));
+    if (instruments.length > 0 && sourceRows.length === 0) {
+      throw new Error("provider_empty_snapshot");
+    }
 
     const byIdentity = new Map<string, NormalizedEarningsEvent>();
-    for (const rawRow of rows.slice(1)) {
+    for (const rawRow of sourceRows) {
       const rawSymbol = rawRow[0]?.trim().toUpperCase();
       const instrument = rawSymbol
         ? byProviderSymbol.get(rawSymbol)
@@ -168,6 +174,7 @@ export class AlphaVantageEarningsProvider implements EarningsProvider {
           endDate,
           ...events.map((event) => event.providerRevision),
         ].join("|"),
+        sourceEventCount: sourceRows.length,
       },
       events,
     };

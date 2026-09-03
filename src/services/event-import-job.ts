@@ -31,7 +31,7 @@ const BACKOFF_SECONDS = [30, 120, 300, 900, 1_800] as const;
 
 interface ImportQueue {
   send(
-    message: { importBatchId: string },
+    message: { importBatchId: string } | { planningPipelineJobId: string },
     options?: { delaySeconds?: number },
   ): Promise<unknown>;
 }
@@ -746,5 +746,20 @@ export class EventImportJobProcessor {
       now: this.now,
       newId: this.newId,
     }).finalize(batchId);
+    const jobs = await this.dependencies.db
+      .prepare(
+        `SELECT result_pipeline_job_id AS currentJobId,
+                history_pipeline_job_id AS historyJobId
+           FROM import_batches WHERE id = ?1 AND status = 'committed'`,
+      )
+      .bind(batchId)
+      .first<{ currentJobId: string | null; historyJobId: string | null }>();
+    await Promise.allSettled(
+      [jobs?.currentJobId, jobs?.historyJobId]
+        .filter((id): id is string => Boolean(id))
+        .map((planningPipelineJobId) =>
+          this.dependencies.queue.send({ planningPipelineJobId }),
+        ),
+    );
   }
 }

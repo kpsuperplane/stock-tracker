@@ -9,6 +9,12 @@ export type PipelineJobStatus =
   | "complete"
   | "complete_with_errors"
   | "terminal";
+export type PipelineSyncLane = "current" | "history";
+export type PipelinePlanningPhase =
+  | "market"
+  | "analysis"
+  | "dividends"
+  | "complete";
 
 export interface PipelineJobRecord {
   id: string;
@@ -28,6 +34,18 @@ export interface PipelineJobRecord {
   plannerLeaseUntil?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
+  syncLane?: PipelineSyncLane;
+  jobGroupId?: string | null;
+  planningPhase?: PipelinePlanningPhase;
+  workTotal?: number;
+  workReused?: number;
+  workSkipped?: number;
+  workFetched?: number;
+  workAnalyzed?: number;
+  workProcessed?: number;
+  workFailed?: number;
+  marketWorkPending?: number;
+  analysisWorkPending?: number;
 }
 
 export interface PipelineJobProgress {
@@ -58,6 +76,18 @@ interface PipelineJobRow {
   planner_lease_until: string | null;
   started_at: string | null;
   completed_at: string | null;
+  sync_lane: PipelineSyncLane;
+  job_group_id: string | null;
+  planning_phase: PipelinePlanningPhase;
+  work_total: number;
+  work_reused: number;
+  work_skipped: number;
+  work_fetched: number;
+  work_analyzed: number;
+  work_processed: number;
+  work_failed: number;
+  market_work_pending: number;
+  analysis_work_pending: number;
 }
 
 const mapPipelineJob = (row: PipelineJobRow): PipelineJobRecord => ({
@@ -78,6 +108,18 @@ const mapPipelineJob = (row: PipelineJobRow): PipelineJobRecord => ({
   plannerLeaseUntil: row.planner_lease_until,
   startedAt: row.started_at,
   completedAt: row.completed_at,
+  syncLane: row.sync_lane,
+  jobGroupId: row.job_group_id,
+  planningPhase: row.planning_phase,
+  workTotal: row.work_total,
+  workReused: row.work_reused,
+  workSkipped: row.work_skipped,
+  workFetched: row.work_fetched,
+  workAnalyzed: row.work_analyzed,
+  workProcessed: row.work_processed,
+  workFailed: row.work_failed,
+  marketWorkPending: row.market_work_pending,
+  analysisWorkPending: row.analysis_work_pending,
 });
 
 const allowedTransitions: Readonly<
@@ -106,7 +148,10 @@ export class PipelineJobRepository {
                 created_at, updated_at, backfill_reprocess_existing,
                 backfill_forced_refresh_generation, planner_cursor,
                 planner_dividend_cursor, planner_lease_until, started_at,
-                completed_at
+                completed_at, sync_lane, job_group_id, planning_phase
+                , work_total, work_reused, work_skipped, work_fetched,
+                work_analyzed, work_processed, work_failed,
+                market_work_pending, analysis_work_pending
          FROM pipeline_jobs WHERE id = ?1`,
       )
       .bind(id)
@@ -122,9 +167,10 @@ export class PipelineJobRepository {
           affected_instruments_json, eligibility_intervals_json, priority,
           status, created_at, updated_at, backfill_reprocess_existing,
           backfill_forced_refresh_generation, planner_cursor,
-          planner_dividend_cursor, planner_lease_until)
+          planner_dividend_cursor, planner_lease_until, sync_lane,
+          job_group_id, planning_phase)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                 ?14, ?15)`,
+                 ?14, ?15, ?16, ?17, ?18)`,
       )
       .bind(
         job.id,
@@ -142,6 +188,10 @@ export class PipelineJobRepository {
         job.plannerCursor ?? null,
         job.plannerDividendCursor ?? null,
         job.plannerLeaseUntil ?? null,
+        job.syncLane ??
+          (job.triggerType === "backfill" ? "history" : "current"),
+        job.jobGroupId ?? null,
+        job.planningPhase ?? "market",
       );
   }
 
@@ -151,6 +201,7 @@ export class PipelineJobRepository {
     dividendCursor: string | null;
     leaseUntil: string | null;
     now: string;
+    planningPhase?: PipelinePlanningPhase;
   }): Promise<boolean> {
     const result = await this.db
       .prepare(
@@ -158,13 +209,15 @@ export class PipelineJobRepository {
             SET planner_cursor = ?1,
                 planner_dividend_cursor = ?2,
                 planner_lease_until = ?3,
-                updated_at = ?4
-          WHERE id = ?5 AND status IN ('pending', 'planning', 'running')`,
+                planning_phase = COALESCE(?4, planning_phase),
+                updated_at = ?5
+          WHERE id = ?6 AND status IN ('pending', 'planning', 'running')`,
       )
       .bind(
         input.cursor,
         input.dividendCursor,
         input.leaseUntil,
+        input.planningPhase ?? null,
         input.now,
         input.id,
       )
@@ -251,5 +304,39 @@ export class PipelineJobRepository {
       )
       .run();
     return result.meta.changes === 1;
+  }
+
+  /**
+   * Record a planned page exactly once. Global work is counted by
+   * job_work_items triggers; this ledger accounts only dates that produced no
+   * work row, so a queue redelivery cannot double-count planner skips.
+   */
+  async recordPlanningPage(input: {
+    id: string;
+    phase: string;
+    cursorStart: string;
+    cursorEnd: string | null;
+    skippedCount: number;
+    now: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `INSERT INTO pipeline_planning_pages
+           (pipeline_job_id, phase, cursor_start, cursor_end, skipped_count,
+            created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(pipeline_job_id, phase, cursor_start) DO NOTHING
+         RETURNING pipeline_job_id`,
+      )
+      .bind(
+        input.id,
+        input.phase,
+        input.cursorStart,
+        input.cursorEnd,
+        Math.max(0, Math.floor(input.skippedCount)),
+        input.now,
+      )
+      .all<{ pipeline_job_id: string }>();
+    return result.results.length === 1;
   }
 }

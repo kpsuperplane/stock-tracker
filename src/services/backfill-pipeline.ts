@@ -6,8 +6,11 @@ import {
   RESUMABLE_PLANNING_MAX_ATTEMPTS,
   WorkItemRepository,
 } from "../db/work-items";
-import { isMarketTradingDayForExchange } from "../domain/market-calendar";
-import { ReconciliationPlannerService } from "./reconciliation-planner";
+import {
+  freezeBackfillEligibilityIntervals,
+  repairMissingBackfillEligibilityIntervals,
+} from "./backfill-eligibility";
+import { ScheduledReconciliationService } from "./scheduled-reconciliation";
 
 export interface BackfillPipelineStartInput {
   startDate: string;
@@ -59,6 +62,7 @@ interface BackfillInstrument {
 const MAX_START_PLANNER_PAGES = 10;
 const MAX_CONTINUATION_PAGES = 25;
 const MAX_GENERATION_RESERVATION_ATTEMPTS = 5;
+const REPAIR_TERMINAL_RETRY_PAGE_SIZE = 10;
 
 const isGenerationReservationConflict = (error: unknown): boolean =>
   /unique constraint|pipeline_jobs_backfill_generation|constraint failed/i.test(
@@ -71,11 +75,6 @@ const isRetryableTerminalError = (errorCode: string | null): boolean => {
     errorCode,
   );
 };
-
-const isContinuationRace = (error: unknown): boolean =>
-  /planner_(?:claim|lease|work_item).*conflict|planner_lease_(?:required|unexpected)|pipeline_planner_cursor_conflict|planner_(?:work_item_not_active|work_not_active|completion_conflict)/i.test(
-    String(error),
-  );
 
 /**
  * Backfill's compatibility adapter for the normalized reconciliation pipeline.
@@ -99,6 +98,14 @@ export class BackfillPipelineAdapter {
     const symbols = await this.dependencies.listActiveSymbols();
     const instruments = await this.findInstruments(symbols);
     const instrumentIds = instruments.map((instrument) => instrument.id);
+    const eligibilityIntervals = await freezeBackfillEligibilityIntervals(
+      this.dependencies.db,
+      {
+        instrumentIds,
+        startDate: input.startDate,
+        endDate: input.endDate,
+      },
+    );
     const plannerWorkItemId = crypto.randomUUID();
     const now = input.now;
     const plannerWorkItem = {
@@ -133,21 +140,7 @@ export class BackfillPipelineAdapter {
         requestedStartDate: input.startDate,
         requestedEndDate: input.endDate,
         affectedInstrumentsJson: JSON.stringify(instrumentIds),
-        eligibilityIntervalsJson: JSON.stringify(
-          instruments.flatMap((instrument) =>
-            weekdaysInRange(input.startDate, input.endDate).flatMap((date) =>
-              isMarketTradingDayForExchange(date, instrument.exchange)
-                ? [
-                    {
-                      instrumentId: instrument.id,
-                      startDate: date,
-                      endDate: date,
-                    },
-                  ]
-                : [],
-            ),
-          ),
-        ),
+        eligibilityIntervalsJson: JSON.stringify(eligibilityIntervals),
         priority: 200,
         status: "pending",
         createdAt: now,
@@ -182,7 +175,6 @@ export class BackfillPipelineAdapter {
       }
     }
 
-    await this.planNextPage(id, now);
     // Complete a bounded amount of planning in the creating worker.  Larger
     // ranges retain their cursor and are advanced by the explicit continuation
     // path below; status polling never performs this work.
@@ -317,62 +309,6 @@ export class BackfillPipelineAdapter {
     return result.results;
   }
 
-  private async planNextPage(
-    pipelineJobId: string,
-    now: string,
-  ): Promise<void> {
-    const job = await this.pipelineJobs.findById(pipelineJobId);
-    if (!job) throw new Error("pipeline_job_not_found");
-    const plannerWork = await this.workItems.findPlanningForJob(pipelineJobId);
-    if (!plannerWork) throw new Error("planner_work_item_missing");
-    if (plannerWork.state === "complete" || plannerWork.state === "terminal") {
-      return;
-    }
-    const planner = new ReconciliationPlannerService({
-      db: this.dependencies.db,
-      now: () => new Date(now),
-    });
-    const plannerLeaseUntil =
-      job.plannerLeaseUntil ?? plannerWork.processingLeaseUntil;
-    const page = await planner.planPage({
-      pipelineJobId,
-      plannerWorkItemId: plannerWork.id,
-      ...(job.plannerCursor === undefined ? {} : { cursor: job.plannerCursor }),
-      ...(job.plannerDividendCursor === undefined
-        ? {}
-        : { dividendCursor: job.plannerDividendCursor }),
-      ...(plannerLeaseUntil ? { plannerLeaseUntil } : {}),
-      ...(job.backfillReprocessExisting
-        ? {
-            forceRefresh: true,
-            reprocessExisting: true,
-            forcedRefreshGeneration: job.backfillForcedRefreshGeneration ?? 1,
-          }
-        : {}),
-    });
-    if (page.dividendRecalculations.length > 0) {
-      await this.dependencies.db.batch(
-        page.dividendRecalculations.map((event) =>
-          this.dependencies.db
-            .prepare(
-              `INSERT OR IGNORE INTO pipeline_job_dividend_recalculations
-               (pipeline_job_id, instrument_id, ex_date, created_at)
-               VALUES (?1, ?2, ?3, ?4)`,
-            )
-            .bind(pipelineJobId, event.instrumentId, event.exDate, now),
-        ),
-      );
-    }
-    const updated = await this.pipelineJobs.updatePlannerCursor({
-      id: pipelineJobId,
-      cursor: page.nextCursor,
-      dividendCursor: page.nextDividendCursor,
-      leaseUntil: page.plannerLeaseUntil,
-      now,
-    });
-    if (!updated) throw new Error("pipeline_planner_cursor_conflict");
-  }
-
   /**
    * Explicit, browser-independent planner continuation.  A bounded number of
    * pages is processed per invocation; the persisted cursor remains the
@@ -382,54 +318,86 @@ export class BackfillPipelineAdapter {
     pipelineJobId: string,
     now = new Date().toISOString(),
     maxPages = MAX_CONTINUATION_PAGES,
-  ): Promise<{ pages: number; complete: boolean }> {
+  ): Promise<{
+    pages: number;
+    complete: boolean;
+    active: boolean;
+    paused: boolean;
+  }> {
     const pageLimit = Math.max(1, Math.min(MAX_CONTINUATION_PAGES, maxPages));
-    let pages = 0;
-    while (pages < pageLimit) {
-      const job = await this.pipelineJobs.findById(pipelineJobId);
+    const found = await this.pipelineJobs.findById(pipelineJobId);
+    if (found?.triggerType !== "backfill") {
+      return { pages: 0, complete: true, active: false, paused: false };
+    }
+    await repairMissingBackfillEligibilityIntervals(
+      this.dependencies.db,
+      found,
+      now,
+    );
+    await this.retryRepairTerminalWork(found, now);
+    const result = await new ScheduledReconciliationService({
+      db: this.dependencies.db,
+      now: () => new Date(now),
+      plannerPageSize: 1_000,
+    }).continueJob(pipelineJobId, new Date(now), pageLimit);
+    return {
+      pages: result.pages,
+      complete: !result.active,
+      active: result.active,
+      paused: result.paused,
+    };
+  }
+
+  private async retryRepairTerminalWork(
+    job: PipelineJobRecord,
+    now: string,
+  ): Promise<number> {
+    if (job.syncLane !== "history" || job.jobGroupId !== "repair:0024") {
+      return 0;
+    }
+    const rows = await this.dependencies.db
+      .prepare(
+        `SELECT work.id, work.updated_at AS updatedAt
+           FROM job_work_items link
+           JOIN work_items work ON work.id = link.work_item_id
+          WHERE link.pipeline_job_id = ?1
+            AND link.outcome IN ('pending', 'failed')
+            AND work.scope = 'global_fact' AND work.state = 'terminal'
+            AND (
+              work.terminal_error_code IN (
+                'dispatch_attempts_exhausted',
+                'pipeline_attempts_exhausted',
+                'pipeline_failed',
+                'provider_partial_range'
+              )
+              OR work.terminal_error_code LIKE '%timeout%'
+              OR work.terminal_error_code LIKE '%timed_out%'
+              OR work.terminal_error_code LIKE '%network%'
+              OR work.terminal_error_code LIKE '%abort%'
+              OR work.terminal_error_code LIKE 'provider_429%'
+              OR work.terminal_error_code LIKE 'provider_5%'
+              OR work.terminal_error_code LIKE 'http_429%'
+              OR work.terminal_error_code LIKE 'http_5%'
+            )
+          ORDER BY work.updated_at, work.id
+          LIMIT ?2`,
+      )
+      .bind(job.id, REPAIR_TERMINAL_RETRY_PAGE_SIZE)
+      .all<{ id: string; updatedAt: string }>();
+    let reset = 0;
+    for (const row of rows.results) {
       if (
-        job?.triggerType !== "backfill" ||
-        job.status === "complete" ||
-        job.status === "complete_with_errors" ||
-        job.status === "terminal"
+        await this.workItems.resetForRetry({
+          id: row.id,
+          pipelineJobId: job.id,
+          expectedUpdatedAt: row.updatedAt,
+          now,
+        })
       ) {
-        return { pages, complete: true };
-      }
-      const plannerWork =
-        await this.workItems.findPlanningForJob(pipelineJobId);
-      if (
-        !plannerWork ||
-        plannerWork.state === "complete" ||
-        plannerWork.state === "terminal"
-      ) {
-        await this.completeIfSettled(pipelineJobId, now);
-        return { pages, complete: true };
-      }
-      try {
-        await this.planNextPage(pipelineJobId, now);
-      } catch (error) {
-        // Another worker may have claimed the planner between the read above
-        // and this page.  Its lease/cursor is the authoritative continuation;
-        // an explicit worker invocation should be idempotent in that case.
-        if (isContinuationRace(error)) {
-          await this.completeIfSettled(pipelineJobId, now);
-          return { pages, complete: false };
-        }
-        throw error;
-      }
-      pages += 1;
-      const advanced = await this.pipelineJobs.findById(pipelineJobId);
-      if (
-        !advanced ||
-        (advanced.plannerCursor === null &&
-          advanced.plannerDividendCursor === null)
-      ) {
-        await this.completeIfSettled(pipelineJobId, now);
-        return { pages, complete: true };
+        reset += 1;
       }
     }
-    await this.completeIfSettled(pipelineJobId, now);
-    return { pages, complete: false };
+    return reset;
   }
 
   async retry(input: {
@@ -468,16 +436,6 @@ export class BackfillPipelineAdapter {
       now: input.now,
     });
     if (!reset) return { kind: "not_retryable" };
-    if (
-      job.status === "complete" ||
-      job.status === "complete_with_errors" ||
-      job.status === "terminal"
-    ) {
-      await this.pipelineJobs.reopenForRetry({
-        id: input.pipelineJobId,
-        now: input.now,
-      });
-    }
     return { kind: "queued", workItemId: input.workItemId };
   }
 

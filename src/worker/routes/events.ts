@@ -1,5 +1,6 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
+import { readPortfolioFeatureFlags } from "../../config/features";
 import { YahooMarketDataProvider } from "../../providers/yahoo";
 import { YahooCorporateActionProvider } from "../../providers/yahoo-corporate-actions";
 import {
@@ -15,6 +16,7 @@ import type {
   TransactionEventDto,
 } from "../../shared/contracts";
 import type { Env } from "../env";
+import { syncSchedulerFor } from "../sync";
 
 type EventContext = Context<{ Bindings: Env }>;
 
@@ -393,12 +395,36 @@ const mutationResponse = async (
   );
   if (transaction)
     context.header("X-Event-Revision", String(transaction.revision));
+  const syncFlags = readPortfolioFeatureFlags(context.env);
+  if (
+    syncFlags.syncCurrent ||
+    syncFlags.syncFuture ||
+    syncFlags.syncRecent ||
+    syncFlags.syncHistory
+  ) {
+    const scheduler = syncSchedulerFor(context.env);
+    await Promise.allSettled([
+      scheduler.createForPipelineJob(result.pipelineJobId),
+      scheduler.createForPipelineJob(result.historyPipelineJobId),
+    ]);
+    await scheduler.dispatch(2).catch(() => undefined);
+  } else if (syncFlags.legacySync) {
+    await Promise.allSettled([
+      context.env.NORMALIZED_WORK_QUEUE.send({
+        planningPipelineJobId: result.pipelineJobId,
+      }),
+      context.env.NORMALIZED_WORK_QUEUE.send({
+        planningPipelineJobId: result.historyPipelineJobId,
+      }),
+    ]);
+  }
   return context.json(
     {
       transaction,
       ...(options.deleted ? { deleted: true } : {}),
       positionBasisRevision: result.positionBasisRevision,
       pipelineJobId: result.pipelineJobId,
+      historyPipelineJobId: result.historyPipelineJobId,
       ...(result.warningCode ? { warningCode: result.warningCode } : {}),
     },
     status,

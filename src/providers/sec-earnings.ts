@@ -34,6 +34,8 @@ const recentFilingsSchema = z.object({
   reportDate: z.array(z.string()),
   form: z.array(z.string().min(1)),
   items: z.array(z.string()),
+  primaryDocument: z.array(z.string()).optional(),
+  primaryDocDescription: z.array(z.string()).optional(),
 });
 const submissionsSchema = z.object({
   cik: z.string().regex(/^\d{10}$/),
@@ -56,6 +58,8 @@ interface FilingRow {
   reportDate: string;
   form: string;
   items: string;
+  primaryDocument: string;
+  primaryDocDescription: string;
 }
 
 const normalizedTicker = (value: string): string =>
@@ -78,20 +82,96 @@ const rowsFrom = (recent: z.infer<typeof recentFilingsSchema>): FilingRow[] => {
   if (columns.some((column) => column.length !== length)) {
     throw new Error("provider_schema");
   }
+  if (
+    (recent.primaryDocument !== undefined &&
+      recent.primaryDocument.length !== length) ||
+    (recent.primaryDocDescription !== undefined &&
+      recent.primaryDocDescription.length !== length)
+  ) {
+    throw new Error("provider_schema");
+  }
   return Array.from({ length }, (_, index) => ({
     accessionNumber: recent.accessionNumber[index] ?? "",
     filingDate: recent.filingDate[index] ?? "",
     reportDate: recent.reportDate[index] ?? "",
     form: recent.form[index] ?? "",
     items: recent.items[index] ?? "",
+    primaryDocument: recent.primaryDocument?.[index] ?? "",
+    primaryDocDescription: recent.primaryDocDescription?.[index] ?? "",
   }));
 };
 
 const hasItem202 = (items: string): boolean =>
   items.split(",").some((item) => item.trim() === "2.02");
 
-const periodicForm = (form: string): boolean =>
+const domesticPeriodicForm = (form: string): boolean =>
   form === "10-Q" || form === "10-K";
+
+const foreignAnnualForm = (form: string): boolean =>
+  form === "20-F" || form === "40-F";
+
+const quarterEndReportDate = (date: string): boolean => {
+  if (!isIsoCalendarDate(date)) return false;
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+  return [3, 6, 9, 12].includes(month) && day >= 20;
+};
+
+const foreignInterimScore = (row: FilingRow): number | null => {
+  if (
+    (row.form !== "6-K" && row.form !== "6-K/A") ||
+    !quarterEndReportDate(row.reportDate) ||
+    row.reportDate >= row.filingDate ||
+    addDays(row.reportDate, 100) < row.filingDate
+  ) {
+    return null;
+  }
+  const document = `${row.primaryDocument} ${row.primaryDocDescription}`;
+  if (
+    /(?:monthend|month-end|revenue|dividend|board|annualgeneralmeeting|agm|voting|notice)/i.test(
+      document,
+    )
+  ) {
+    return null;
+  }
+  return /(?:quarter|q[1-4]|financial|results?|earnings?|fsx|wrapper)/i.test(
+    document,
+  )
+    ? 2
+    : 1;
+};
+
+const foreignInterimRows = (rows: readonly FilingRow[]): FilingRow[] => {
+  const byFiscalDate = new Map<string, { row: FilingRow; score: number }>();
+  for (const row of rows) {
+    const score = foreignInterimScore(row);
+    if (score === null) continue;
+    const existing = byFiscalDate.get(row.reportDate);
+    if (
+      !existing ||
+      score > existing.score ||
+      (score === existing.score && row.filingDate < existing.row.filingDate)
+    ) {
+      byFiscalDate.set(row.reportDate, { row, score });
+    }
+  }
+  return [...byFiscalDate.values()].map(({ row }) => row);
+};
+
+const directoryCandidates = (
+  instrument: EarningsInstrumentReference,
+): string[] => {
+  const primary = normalizedTicker(instrument.providerSymbol);
+  const candidates = new Set([primary, normalizedTicker(instrument.symbol)]);
+  const crossListAliases: Readonly<Record<string, string>> = {
+    "BB-TO": "BB",
+  };
+  if (/(?:TSX|TOR|VENTURE|TSXV|CDNX|CVE|NEO|CSE)/i.test(instrument.exchange)) {
+    const alias = crossListAliases[primary];
+    if (alias) candidates.add(alias);
+  }
+  return [...candidates];
+};
 
 const matchFiscalDate = (
   earnings: FilingRow,
@@ -188,9 +268,11 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
     ) {
       throw new Error("provider_invalid_range");
     }
-    const cik = (await this.cikDirectory()).get(
-      normalizedTicker(instrument.providerSymbol),
-    );
+    const tickerCandidates = directoryCandidates(instrument);
+    const directory = await this.cikDirectory();
+    const cik = tickerCandidates
+      .map((candidate) => directory.get(candidate))
+      .find((candidate): candidate is string => candidate !== undefined);
     if (!cik) throw new Error("provider_symbol_unavailable");
 
     let payload: z.infer<typeof submissionsSchema>;
@@ -206,10 +288,8 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
     }
     if (
       payload.cik !== cik ||
-      !payload.tickers.some(
-        (ticker) =>
-          normalizedTicker(ticker) ===
-          normalizedTicker(instrument.providerSymbol),
+      !payload.tickers.some((ticker) =>
+        tickerCandidates.includes(normalizedTicker(ticker)),
       )
     ) {
       throw new Error("provider_symbol_mismatch");
@@ -236,7 +316,12 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
     const uniqueRows = [
       ...new Map(rows.map((row) => [row.accessionNumber, row])).values(),
     ];
-    const periodic = uniqueRows.filter((row) => periodicForm(row.form));
+    const periodic = [
+      ...uniqueRows.filter(
+        (row) => domesticPeriodicForm(row.form) || foreignAnnualForm(row.form),
+      ),
+      ...foreignInterimRows(uniqueRows),
+    ];
     const earningsRows = uniqueRows.filter(
       (row) =>
         (row.form === "8-K" || row.form === "8-K/A") &&
@@ -246,7 +331,11 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
     const byFiscalDate = new Map<string, NormalizedEarningsEvent>();
     for (const row of earningsRows) {
       const fiscalDateEnding = matchFiscalDate(row, periodic);
-      if (!fiscalDateEnding) throw new Error("provider_history_unavailable");
+      // Item 2.02 is also used for disclosures that are not quarterly or
+      // annual earnings releases. Treat the periodic filings as the coverage
+      // checklist below instead of rejecting the entire instrument because
+      // one unrelated 8-K cannot be paired with a 10-Q or 10-K.
+      if (!fiscalDateEnding) continue;
       const providerEventId = `${secEarningsProvider}:${cik}:earnings:${fiscalDateEnding}`;
       const event: NormalizedEarningsEvent = {
         type: "earnings",
@@ -266,23 +355,49 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
         byFiscalDate.set(fiscalDateEnding, event);
       }
     }
-    const missingFiscalPeriod = periodic.some(
-      (row) =>
-        row.filingDate >= startDate &&
-        row.filingDate <= endDate &&
-        isIsoCalendarDate(row.reportDate) &&
-        row.reportDate < endDate &&
-        !byFiscalDate.has(row.reportDate),
-    );
-    if (missingFiscalPeriod) {
-      throw new Error("provider_history_unavailable");
+    // Some issuers publish a 10-Q/10-K without a separate Item 2.02 8-K.
+    // The filing date is still an authoritative public-report date, so use it
+    // as the event date instead of declaring the entire SEC snapshot partial
+    // and spending a scarce Alpha fallback request forever.
+    for (const row of [...periodic].sort((left, right) =>
+      left.filingDate.localeCompare(right.filingDate),
+    )) {
+      const existing = byFiscalDate.get(row.reportDate);
+      if (
+        row.filingDate < startDate ||
+        row.filingDate > endDate ||
+        !isIsoCalendarDate(row.reportDate) ||
+        (existing !== undefined &&
+          existing.reportDate >= startDate &&
+          existing.reportDate <= row.filingDate)
+      ) {
+        continue;
+      }
+      byFiscalDate.set(row.reportDate, {
+        type: "earnings",
+        instrumentId: instrument.instrumentId,
+        symbol: instrument.symbol.toUpperCase(),
+        reportDate: row.filingDate,
+        fiscalDateEnding: row.reportDate,
+        epsEstimate: null,
+        currency: instrument.currency,
+        timeOfDay: null,
+        provider: secEarningsProvider,
+        providerEventId: `${secEarningsProvider}:${cik}:earnings:${row.reportDate}`,
+        providerRevision: `${row.accessionNumber}|${row.filingDate}|${row.reportDate}`,
+      });
     }
-
     const events = [...byFiscalDate.values()]
       .filter(
         (event) => event.reportDate >= startDate && event.reportDate <= endDate,
       )
       .sort((left, right) => left.reportDate.localeCompare(right.reportDate));
+    const hasForeignAnnual = periodic.some((row) =>
+      foreignAnnualForm(row.form),
+    );
+    const hasForeignInterim = periodic.some(
+      (row) => row.form === "6-K" || row.form === "6-K/A",
+    );
     const observedAt = this.now().toISOString();
     return {
       range: {
@@ -298,6 +413,7 @@ export class SecEarningsHistoryProvider implements EarningsHistoryProvider {
           ...events.map((event) => event.providerRevision),
         ].join("|"),
         secCik: cik,
+        complete: events.length > 0 && (!hasForeignAnnual || hasForeignInterim),
       },
       events,
     };

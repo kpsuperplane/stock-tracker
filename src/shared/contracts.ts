@@ -14,9 +14,36 @@ export interface ImportDispatchMessage {
   importBatchId: string;
 }
 
+/** One leased dividend refresh owned by D1. */
+export interface DividendRefreshMessage {
+  dividendRefreshInstrumentId: string;
+  dispatchToken: string;
+}
+
+/** Continue one durable reconciliation planner without waiting for cron. */
+export interface PlanningContinuationMessage {
+  planningPipelineJobId: string;
+}
+
+/** Execute one already-reserved compact sync slice. */
+export interface SyncSliceMessage {
+  syncSliceId: string;
+  leaseToken: string;
+}
+
+/** Publish the canonical read models represented by one leased outbox row. */
+export interface ReadModelRefreshMessage {
+  readModelRefreshId: string;
+  leaseToken: string;
+}
+
 export type NormalizedQueueMessage =
   | PipelineDispatchMessage
-  | ImportDispatchMessage;
+  | ImportDispatchMessage
+  | DividendRefreshMessage
+  | PlanningContinuationMessage
+  | SyncSliceMessage
+  | ReadModelRefreshMessage;
 export type QueueMessage = ScreeningJobMessage | NormalizedQueueMessage;
 
 /**
@@ -45,6 +72,58 @@ export const isImportDispatchMessage = (
     Object.keys(candidate).length === 1 &&
     typeof candidate.importBatchId === "string" &&
     candidate.importBatchId.length > 0
+  );
+};
+
+export const isDividendRefreshMessage = (
+  body: unknown,
+): body is DividendRefreshMessage => {
+  if (typeof body !== "object" || body === null) return false;
+  const candidate = body as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 2 &&
+    typeof candidate.dividendRefreshInstrumentId === "string" &&
+    candidate.dividendRefreshInstrumentId.length > 0 &&
+    typeof candidate.dispatchToken === "string" &&
+    candidate.dispatchToken.length > 0
+  );
+};
+
+export const isPlanningContinuationMessage = (
+  body: unknown,
+): body is PlanningContinuationMessage => {
+  if (typeof body !== "object" || body === null) return false;
+  const candidate = body as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 1 &&
+    typeof candidate.planningPipelineJobId === "string" &&
+    candidate.planningPipelineJobId.length > 0
+  );
+};
+
+export const isSyncSliceMessage = (body: unknown): body is SyncSliceMessage => {
+  if (typeof body !== "object" || body === null) return false;
+  const candidate = body as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 2 &&
+    typeof candidate.syncSliceId === "string" &&
+    candidate.syncSliceId.length > 0 &&
+    typeof candidate.leaseToken === "string" &&
+    candidate.leaseToken.length > 0
+  );
+};
+
+export const isReadModelRefreshMessage = (
+  body: unknown,
+): body is ReadModelRefreshMessage => {
+  if (typeof body !== "object" || body === null) return false;
+  const candidate = body as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 2 &&
+    typeof candidate.readModelRefreshId === "string" &&
+    candidate.readModelRefreshId.length > 0 &&
+    typeof candidate.leaseToken === "string" &&
+    candidate.leaseToken.length > 0
   );
 };
 
@@ -416,6 +495,7 @@ export interface CalendarReadModelDto {
 export interface JobReadModelDto {
   id: string;
   triggerType: string;
+  syncLane?: "current" | "history";
   requestedStartDate: string | null;
   requestedEndDate: string | null;
   priority: number;
@@ -464,6 +544,7 @@ export interface EarningsSyncStatusDto {
 export type ReconciliationStatus =
   | "current"
   | "syncing"
+  | "waiting"
   | "attention"
   | "unknown";
 
@@ -471,11 +552,60 @@ export interface ReconciliationStatusDto {
   status: ReconciliationStatus;
   total: number;
   completed: number;
+  active?: number;
+  waiting?: number;
+  /** Compatibility total: active + waiting. */
   pending: number;
   failed: number;
   updatedAt: string | null;
+  nextAttemptAt?: string | null;
   errorCode: string | null;
   errorMessage: string | null;
+}
+
+export interface ReadModelFreshnessDto {
+  state: "fresh" | "stale";
+  asOf: string;
+  sourceRevision: string;
+  nextRefreshAt: string;
+  reason?: "refresh_delayed" | "storage_unavailable" | "daily_budget";
+}
+
+export interface ResourceCapacityDto {
+  allocation: number;
+  reservable: number;
+  reserved: number;
+  actual: number;
+  remaining: number;
+}
+
+export interface SyncLaneCapacityDto {
+  rowsRead: ResourceCapacityDto;
+  rowsWritten: ResourceCapacityDto;
+  providerCalls?: Record<string, ResourceCapacityDto>;
+  queueSends?: ResourceCapacityDto;
+  kvWrites?: ResourceCapacityDto;
+  queueDepth: number;
+  queueHighWaterMark: number | null;
+}
+
+export interface SyncCapacityDto {
+  usageDate: string;
+  resetAt: string;
+  lanes: {
+    availability: SyncLaneCapacityDto;
+    foreground: SyncLaneCapacityDto;
+    history: SyncLaneCapacityDto;
+  };
+}
+
+export interface HistoryCoverageDto {
+  targetStartDate: string | null;
+  newestCompleteDate: string | null;
+  oldestCompleteDate: string | null;
+  completedIntents: number;
+  totalIntents: number;
+  nextAttemptAt: string | null;
 }
 
 export type PortfolioImportState =
@@ -494,6 +624,8 @@ export interface PortfolioImportStatusDto {
   totalSymbols: number;
   failedRows: number;
   resultPipelineJobId: string | null;
+  historyPipelineJobId?: string | null;
+  active?: boolean;
   terminalErrorCode: string | null;
   terminalErrorMessage: string | null;
   createdAt: string;
@@ -507,7 +639,10 @@ export interface StatusReadModelDto {
     stockValues: ReconciliationStatusDto;
     dividends: ReconciliationStatusDto;
     financialReports: ReconciliationStatusDto;
+    history: ReconciliationStatusDto;
   };
+  capacity?: SyncCapacityDto;
+  historyCoverage?: HistoryCoverageDto;
   imports: PortfolioImportStatusDto[];
   jobs: JobReadModelDto[];
   nextCursor: string | null;

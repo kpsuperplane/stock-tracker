@@ -5,6 +5,7 @@ import type {
   EventsTimelineDto,
   JobReadModelDto,
   PortfolioReadModelDto,
+  ReadModelFreshnessDto,
   ReportDto,
   ReportSummaryDto,
   StatusReadModelDto,
@@ -47,6 +48,33 @@ export interface ApiResponse<T> {
 export interface RequestMetaOptions {
   allowNotModified?: boolean;
 }
+
+export const READ_MODEL_FRESHNESS_EVENT = "stock-tracker:read-model-freshness";
+
+const reportFreshness = (payload: unknown): void => {
+  if (
+    typeof window === "undefined" ||
+    typeof payload !== "object" ||
+    payload === null
+  ) {
+    return;
+  }
+  const freshness = (payload as { freshness?: unknown }).freshness;
+  if (
+    typeof freshness !== "object" ||
+    freshness === null ||
+    !["fresh", "stale"].includes(
+      String((freshness as { state?: unknown }).state),
+    )
+  ) {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent<ReadModelFreshnessDto>(READ_MODEL_FRESHNESS_EVENT, {
+      detail: freshness as ReadModelFreshnessDto,
+    }),
+  );
+};
 
 const isFormDataBody = (body: BodyInit | null | undefined): boolean =>
   typeof FormData !== "undefined" && body instanceof FormData;
@@ -93,7 +121,9 @@ export const requestWithMeta = async <T>(
   if (response.status === 204) {
     return { data: undefined as T, headers: response.headers };
   }
-  return { data: await response.json<T>(), headers: response.headers };
+  const data = await response.json<T>();
+  reportFreshness(data);
+  return { data, headers: response.headers };
 };
 
 const request = async <T>(path: string, init?: RequestInit): Promise<T> =>

@@ -39,6 +39,14 @@ const transientCode = (value: string): boolean =>
     value,
   );
 
+const marketSnapshotAnomaly = (value: string): boolean =>
+  value === "invalid_price" || value === "market_bar_missing";
+
+const marketSnapshotRetryDelaySeconds = (attempt: number): number => {
+  const delays = [15 * 60, 60 * 60, 6 * 60 * 60, 12 * 60 * 60];
+  return delays[Math.min(Math.max(attempt - 1, 0), delays.length - 1)] ?? 900;
+};
+
 const errorCode = (error: unknown, fallback: string): string => {
   const value = error instanceof Error ? error.message : String(error);
   return value.trim().slice(0, 120) || fallback;
@@ -73,6 +81,7 @@ const outcomeForItems = (
   errors: ReadonlyMap<string, { code: string }>,
   rangeError?: { code: string },
   missingErrorCode: (date: string) => string = () => "provider_partial_range",
+  snapshotRetryDelaySeconds = 900,
 ): PipelineWorkOutcome[] =>
   work.map((item) => {
     const date = item.effectiveDate ?? "";
@@ -86,26 +95,32 @@ const outcomeForItems = (
     }
     const error = errors.get(date) ?? rangeError;
     if (error) {
+      const retry =
+        transientCode(error.code) || marketSnapshotAnomaly(error.code);
       return {
         workItemId: item.id,
-        kind: transientCode(error.code)
-          ? ("retry" as const)
-          : ("terminal" as const),
+        kind: retry ? ("retry" as const) : ("terminal" as const),
         errorCode: error.code,
         errorMessage: `Market data processing failed for ${date}.`,
+        ...(retry && marketSnapshotAnomaly(error.code)
+          ? { retryDelaySeconds: snapshotRetryDelaySeconds }
+          : {}),
       };
     }
     const missingCode = missingErrorCode(date);
+    const retry =
+      missingCode === "provider_partial_range" ||
+      missingCode === "market_bar_pending" ||
+      transientCode(missingCode) ||
+      marketSnapshotAnomaly(missingCode);
     return {
       workItemId: item.id,
-      kind:
-        missingCode === "provider_partial_range" ||
-        missingCode === "market_bar_pending" ||
-        transientCode(missingCode)
-          ? ("retry" as const)
-          : ("terminal" as const),
+      kind: retry ? ("retry" as const) : ("terminal" as const),
       errorCode: missingCode,
       errorMessage: `No market bar was returned for ${date}.`,
+      ...(retry && marketSnapshotAnomaly(missingCode)
+        ? { retryDelaySeconds: snapshotRetryDelaySeconds }
+        : {}),
     };
   });
 
@@ -280,6 +295,7 @@ export class PortfolioPipelineProcessor implements PipelineWorkProcessor {
         date === input.batch.requestedEndDate && date === currentDate
           ? "market_bar_pending"
           : "market_bar_missing",
+      marketSnapshotRetryDelaySeconds(input.batch.attemptCount),
     );
   }
 

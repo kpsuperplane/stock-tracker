@@ -3,11 +3,12 @@ import {
   DispatchBatchRepository,
 } from "../db/dispatch-batches";
 import { type WorkItemRecord, WorkItemRepository } from "../db/work-items";
-import { PipelineJobSettlementService } from "../services/pipeline-job-settlement";
+import { PipelineBatchSettlementService } from "../services/pipeline-batch-settlement";
 import { isWithinDelayedBarHorizon } from "../services/scheduled-reconciliation";
 import {
   isPipelineDispatchMessage,
   type PipelineDispatchMessage,
+  type PlanningContinuationMessage,
 } from "../shared/contracts";
 
 const DEFAULT_PROCESSING_LEASE_MS = 10 * 60_000;
@@ -21,6 +22,7 @@ export interface PipelineWorkOutcome {
   resultRevision?: string | null;
   errorCode?: string;
   errorMessage?: string;
+  retryDelaySeconds?: number;
 }
 
 const delayedBarError = (code: string | undefined): boolean =>
@@ -48,6 +50,7 @@ export interface PipelineQueueConsumerDependencies {
   db: D1Database;
   processor?: PipelineWorkProcessor;
   dlq?: Queue<PipelineDispatchMessage>;
+  continuationQueue?: Queue<PlanningContinuationMessage>;
   now?: () => Date;
   processingLeaseMs?: number;
   retryDelaySeconds?: number;
@@ -79,7 +82,7 @@ const missingOutcomes = (
 
 export class PipelineQueueConsumer {
   private readonly batches: DispatchBatchRepository;
-  private readonly jobSettlement: PipelineJobSettlementService;
+  private readonly batchSettlement: PipelineBatchSettlementService;
   private readonly workItems: WorkItemRepository;
   private readonly now: () => Date;
   private readonly processingLeaseMs: number;
@@ -90,7 +93,7 @@ export class PipelineQueueConsumer {
     private readonly dependencies: PipelineQueueConsumerDependencies,
   ) {
     this.batches = new DispatchBatchRepository(dependencies.db);
-    this.jobSettlement = new PipelineJobSettlementService(dependencies.db);
+    this.batchSettlement = new PipelineBatchSettlementService(dependencies.db);
     this.workItems = new WorkItemRepository(dependencies.db);
     this.now = dependencies.now ?? (() => new Date());
     this.processingLeaseMs = Math.max(
@@ -317,6 +320,7 @@ export class PipelineQueueConsumer {
     let hasDelayedRetry = false;
     let hasTerminal = false;
     let lostLease = false;
+    let retryDelaySeconds = this.retryDelaySeconds;
     for (const item of input.work) {
       const outcome = outcomeById.get(item.id);
       if (!outcome || outcome.kind === "retry") {
@@ -347,6 +351,10 @@ export class PipelineQueueConsumer {
         } else {
           hasRetry = true;
           hasDelayedRetry = hasDelayedRetry || delayed;
+          retryDelaySeconds = Math.max(
+            retryDelaySeconds,
+            outcome?.retryDelaySeconds ?? 0,
+          );
         }
         continue;
       }
@@ -376,7 +384,7 @@ export class PipelineQueueConsumer {
       }
     }
     if (lostLease) {
-      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      input.message.retry({ delaySeconds: retryDelaySeconds });
       return;
     }
     if (hasRetry) {
@@ -395,7 +403,7 @@ export class PipelineQueueConsumer {
         input.message.retry({ delaySeconds: this.retryDelaySeconds });
         return;
       }
-      input.message.retry({ delaySeconds: this.retryDelaySeconds });
+      input.message.retry({ delaySeconds: retryDelaySeconds });
       return;
     }
     const settled = await this.batches.listWork(input.batch.id);
@@ -480,11 +488,11 @@ export class PipelineQueueConsumer {
     batchId: string,
     timestamp: string,
   ): Promise<void> {
-    await this.workItems.reconcileJobLinksForBatch({
-      dispatchBatchId: batchId,
-      now: timestamp,
-    });
-    await this.jobSettlement.settleForBatch(batchId, timestamp);
+    const settlement = await this.batchSettlement.settle(batchId, timestamp);
+    if (!this.dependencies.continuationQueue) return;
+    for (const planningPipelineJobId of settlement.planningPipelineJobIds) {
+      await this.dependencies.continuationQueue.send({ planningPipelineJobId });
+    }
   }
 
   private async handleFailure(input: {

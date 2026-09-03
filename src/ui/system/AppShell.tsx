@@ -1,3 +1,4 @@
+import { Banner } from "@astryxdesign/core";
 import { AppShell as AstryxAppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -18,11 +19,13 @@ import {
   TopNavHeading,
   useTopNavRenderMode,
 } from "@astryxdesign/core/TopNav";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useState } from "react";
+import type { ReadModelFreshnessDto } from "../../shared/contracts";
 import {
   AccountScopeBar,
   AccountScopeProvider,
 } from "../accounts/AccountScopeContext";
+import { READ_MODEL_FRESHNESS_EVENT } from "../api";
 import {
   AccountsIcon,
   CalendarIcon,
@@ -302,6 +305,34 @@ export interface ProductAppProps {
   children?: ReactNode;
 }
 
+const ReadModelFreshnessBanner = () => {
+  const { locale, t } = useI18n();
+  const [freshness, setFreshness] = useState<ReadModelFreshnessDto | null>(
+    null,
+  );
+  useEffect(() => {
+    const onFreshness = (event: Event) => {
+      const detail = (event as CustomEvent<ReadModelFreshnessDto>).detail;
+      setFreshness(detail.state === "stale" ? detail : null);
+    };
+    window.addEventListener(READ_MODEL_FRESHNESS_EVENT, onFreshness);
+    return () =>
+      window.removeEventListener(READ_MODEL_FRESHNESS_EVENT, onFreshness);
+  }, []);
+  if (!freshness) return null;
+  const asOf = new Intl.DateTimeFormat(locale === "cn" ? "zh-CN" : "en-CA", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(freshness.asOf));
+  return (
+    <Banner
+      status="warning"
+      title={t("cachedDataTitle")}
+      description={`${t("cachedDataDescription")} ${t("cachedDataAsOf")} ${asOf}.`}
+    />
+  );
+};
+
 export const ProductApp = ({
   initialPath,
   initialLocale,
@@ -344,6 +375,7 @@ export const ProductApp = ({
             height="auto"
             contentPadding={3}
           >
+            <ReadModelFreshnessBanner />
             {children ??
               (router.route === "today" ? (
                 <TodayPage />

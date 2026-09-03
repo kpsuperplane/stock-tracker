@@ -121,6 +121,7 @@ export class AlphaVantageEarningsHistoryProvider
           ...events.map((event) => event.providerRevision),
         ].join("|"),
         secCik: null,
+        complete: true,
       },
       events,
     };

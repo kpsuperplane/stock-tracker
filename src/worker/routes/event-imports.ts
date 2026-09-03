@@ -1,5 +1,6 @@
 import { type Context, Hono } from "hono";
 import { z } from "zod";
+import { readPortfolioFeatureFlags } from "../../config/features";
 import { EventImportIntakeService } from "../../services/event-import-intake";
 import type { Env } from "../env";
 
@@ -31,9 +32,19 @@ const start = async (context: ImportContext) => {
   ) {
     return error(context, 415, "content_type", "Use a CSV file.");
   }
+  const flags = readPortfolioFeatureFlags(context.env);
+  const disabledQueue = {
+    send: async () => {
+      throw new Error("sync_producer_disabled");
+    },
+  } as unknown as typeof context.env.NORMALIZED_WORK_QUEUE;
   const result = await new EventImportIntakeService({
     db: context.env.DB,
-    queue: context.env.NORMALIZED_WORK_QUEUE,
+    queue: flags.syncCurrent
+      ? context.env.SYNC_FOREGROUND_QUEUE
+      : flags.legacySync
+        ? context.env.NORMALIZED_WORK_QUEUE
+        : disabledQueue,
   }).start({
     originalFilename: file.name,
     file: new Uint8Array(await file.arrayBuffer()),

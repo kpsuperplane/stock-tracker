@@ -300,7 +300,9 @@ export class WorkItemRepository {
           .prepare(
             `UPDATE work_items
              SET state = 'processing', processing_lease_until = ?1,
-                 attempt_count = attempt_count + 1, updated_at = ?2
+                 attempt_count = CASE WHEN attempt_count = 0 THEN 1
+                                      ELSE attempt_count END,
+                 updated_at = ?2
              WHERE id = ?3 AND pipeline_job_id = ?4
                AND scope = 'job_planning' AND state = 'pending'
                AND attempt_count < max_attempts
@@ -354,6 +356,26 @@ export class WorkItemRepository {
          WHERE id = ?2 AND pipeline_job_id = ?3
            AND scope = 'job_planning' AND state = 'processing'
            AND processing_lease_until IS ?4`,
+      )
+      .bind(input.now, input.id, input.pipelineJobId, input.expectedLeaseUntil)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async pausePlanning(input: {
+    id: string;
+    pipelineJobId: string;
+    now: string;
+    expectedLeaseUntil: string;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE work_items
+            SET state = 'pending', processing_lease_until = NULL,
+                available_at = ?1, updated_at = ?1
+          WHERE id = ?2 AND pipeline_job_id = ?3
+            AND scope = 'job_planning' AND state = 'processing'
+            AND processing_lease_until IS ?4`,
       )
       .bind(input.now, input.id, input.pipelineJobId, input.expectedLeaseUntil)
       .run();
@@ -415,7 +437,8 @@ export class WorkItemRepository {
         `INSERT INTO job_work_items
          (pipeline_job_id, work_item_id, relationship, outcome, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-         ON CONFLICT(pipeline_job_id, work_item_id) DO NOTHING`,
+         ON CONFLICT(pipeline_job_id, work_item_id) DO NOTHING
+         RETURNING work_item_id`,
       )
       .bind(
         input.pipelineJobId,
@@ -424,8 +447,8 @@ export class WorkItemRepository {
         input.outcome ?? "pending",
         input.now,
       )
-      .run();
-    return result.meta.changes === 1;
+      .all<{ work_item_id: string }>();
+    return result.results.length === 1;
   }
 
   async transition(input: {
@@ -544,6 +567,26 @@ export class WorkItemRepository {
       this.db.prepare("SELECT changes() AS changes"),
       this.db
         .prepare(
+          `UPDATE pipeline_jobs
+              SET status = 'running', completed_at = NULL, updated_at = ?1
+            WHERE id = ?2
+              AND status IN ('complete', 'complete_with_errors', 'terminal')
+              AND EXISTS (
+                SELECT 1
+                  FROM work_items work
+                  JOIN job_work_items link
+                    ON link.work_item_id = work.id
+                 WHERE work.id = ?3
+                   AND work.scope = 'global_fact'
+                   AND work.state = 'pending'
+                   AND work.updated_at = ?1
+                   AND link.pipeline_job_id = ?2
+                   AND link.outcome IN ('pending', 'failed')
+              )`,
+        )
+        .bind(input.now, input.pipelineJobId, input.id),
+      this.db
+        .prepare(
           `UPDATE job_work_items
               SET outcome = 'pending', updated_at = ?1
             WHERE pipeline_job_id = ?2 AND work_item_id = ?3
@@ -567,7 +610,7 @@ export class WorkItemRepository {
       (results[1] as D1Result<{ changes: number }>).results?.[0]?.changes ?? 0,
     );
     const linkChanged = Number(
-      (results[3] as D1Result<{ changes: number }>).results?.[0]?.changes ?? 0,
+      (results[4] as D1Result<{ changes: number }>).results?.[0]?.changes ?? 0,
     );
     return changed === 1 && linkChanged === 1;
   }
@@ -622,62 +665,59 @@ export class WorkItemRepository {
     return results[0]?.meta.changes === 1;
   }
 
-  async recoverOrphanedDispatches(now: string): Promise<number> {
-    const terminalize = this.db
+  async recoverOrphanedDispatches(now: string, limit = 100): Promise<number> {
+    const rows = await this.db
       .prepare(
-        `UPDATE work_items
-         SET state = 'terminal', dispatch_lease_until = NULL,
-             terminal_error_code = 'dispatch_attempts_exhausted',
-             terminal_error_message = 'Orphaned dispatch attempt ceiling exhausted.',
-             completed_at = ?1, updated_at = ?1
-         WHERE scope = 'global_fact' AND state = 'dispatching'
-           AND dispatch_lease_until IS NOT NULL
-           AND dispatch_lease_until <= ?1
-           AND attempt_count >= max_attempts
-           AND NOT EXISTS (
-             SELECT 1 FROM dispatch_batch_items item
-             WHERE item.work_item_id = work_items.id
-           )`,
+        `SELECT work.id, work.dispatch_lease_until AS leaseUntil,
+                work.attempt_count AS attemptCount,
+                work.max_attempts AS maxAttempts
+           FROM work_items work
+          WHERE work.scope = 'global_fact' AND work.state = 'dispatching'
+            AND work.dispatch_lease_until IS NOT NULL
+            AND work.dispatch_lease_until <= ?1
+            AND NOT EXISTS (
+              SELECT 1 FROM dispatch_batch_items item
+               WHERE item.work_item_id = work.id
+            )
+          ORDER BY work.dispatch_lease_until, work.id
+          LIMIT ?2`,
       )
-      .bind(now);
-    const failLinks = this.db
-      .prepare(
-        `UPDATE job_work_items
-         SET outcome = 'failed', updated_at = ?1
-         WHERE outcome = 'pending'
-           AND work_item_id IN (
-             SELECT id FROM work_items
-             WHERE state = 'terminal'
-               AND terminal_error_code = 'dispatch_attempts_exhausted'
-               AND completed_at = ?1
-           )`,
-      )
-      .bind(now);
-    const reclaim = this.db
-      .prepare(
-        `UPDATE work_items
-         SET state = 'pending', dispatch_lease_until = NULL, updated_at = ?1
-         WHERE scope = 'global_fact' AND state = 'dispatching'
-           AND dispatch_lease_until IS NOT NULL
-           AND dispatch_lease_until <= ?1
-           AND attempt_count < max_attempts
-           AND NOT EXISTS (
-             SELECT 1 FROM dispatch_batch_items item
-             WHERE item.work_item_id = work_items.id
-           )`,
-      )
-      .bind(now);
-    const results = await this.db.batch([
-      terminalize,
-      failLinks,
-      reclaim,
-      this.revisions.bumpWorkItemsUpdatedAtStatement(now),
-      this.revisions.bumpLatestForWorkItemsUpdatedAtStatement(
-        now,
-        easternMarketDate(now),
-      ),
-    ]);
-    return (results[0]?.meta.changes ?? 0) + (results[2]?.meta.changes ?? 0);
+      .bind(now, Math.max(1, Math.min(500, Math.floor(limit))))
+      .all<{
+        id: string;
+        leaseUntil: string;
+        attemptCount: number;
+        maxAttempts: number;
+      }>();
+    let recovered = 0;
+    for (const row of rows.results) {
+      const changed =
+        row.attemptCount >= row.maxAttempts
+          ? await this.transition({
+              id: row.id,
+              from: "dispatching",
+              to: "terminal",
+              now,
+              expectedDispatchLeaseUntil: row.leaseUntil,
+              errorCode: "dispatch_attempts_exhausted",
+              errorMessage: "Orphaned dispatch attempt ceiling exhausted.",
+            })
+          : await this.recoverExpiredDispatch({
+              id: row.id,
+              expectedLeaseUntil: row.leaseUntil,
+              now,
+            });
+      if (!changed) continue;
+      recovered += 1;
+      if (row.attemptCount >= row.maxAttempts) {
+        await this.markJobLinkForItem({
+          workItemId: row.id,
+          outcome: "failed",
+          now,
+        });
+      }
+    }
+    return recovered;
   }
 
   async releaseDispatchClaim(input: {
@@ -795,31 +835,6 @@ export class WorkItemRepository {
       ),
       this.revisions.bumpLatestForWorkItemsForBatchStatement(
         input.dispatchBatchId,
-        input.now,
-        easternMarketDate(input.now),
-      ),
-    ]);
-    return results[0]?.meta.changes ?? 0;
-  }
-
-  async recoverExpiredProcessing(input: {
-    now: string;
-    expectedLeaseUntil?: string;
-  }): Promise<number> {
-    const results = await this.db.batch([
-      this.db
-        .prepare(
-          `UPDATE work_items
-           SET state = 'queued', processing_lease_until = NULL,
-               updated_at = ?1
-           WHERE scope = 'global_fact' AND state = 'processing'
-             AND processing_lease_until IS NOT NULL
-             AND processing_lease_until <= ?1
-             AND (?2 IS NULL OR processing_lease_until IS ?2)`,
-        )
-        .bind(input.now, input.expectedLeaseUntil ?? null),
-      this.revisions.bumpWorkItemsUpdatedAtStatement(input.now),
-      this.revisions.bumpLatestForWorkItemsUpdatedAtStatement(
         input.now,
         easternMarketDate(input.now),
       ),

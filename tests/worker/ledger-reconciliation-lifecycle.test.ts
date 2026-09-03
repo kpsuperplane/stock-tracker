@@ -192,9 +192,8 @@ describe("ledger reconciliation lifecycle", () => {
       .bind(globalWork.results[0]?.id)
       .first<{ count: number }>();
 
-    expect(result).toEqual({ jobs: 2, pages: 2, workItems: 4, errors: [] });
+    expect(result).toEqual({ jobs: 2, pages: 2, workItems: 2, errors: [] });
     expect(globalWork.results).toEqual([
-      expect.objectContaining({ effectiveDate: "2026-07-01" }),
       expect.objectContaining({ effectiveDate: requestedDate }),
     ]);
     expect(linkedJobs).toEqual({ count: 2 });
@@ -250,7 +249,7 @@ describe("ledger reconciliation lifecycle", () => {
     expect(result).toEqual({
       jobs: 2,
       pages: 1,
-      workItems: 2,
+      workItems: 1,
       errors: [
         {
           pipelineJobId: "ledger-malformed",
@@ -286,7 +285,7 @@ describe("ledger reconciliation lifecycle", () => {
       new Date(recoveredAt),
     );
 
-    expect(result).toEqual({ jobs: 1, pages: 1, workItems: 2, errors: [] });
+    expect(result).toEqual({ jobs: 1, pages: 1, workItems: 1, errors: [] });
     expect(
       await env.DB.prepare(
         `SELECT state, processing_lease_until AS leaseUntil
@@ -316,7 +315,7 @@ describe("ledger reconciliation lifecycle", () => {
       await env.DB.prepare(
         "SELECT planner_cursor AS cursor FROM pipeline_jobs WHERE id = 'ledger-bounded'",
       ).first(),
-    ).toEqual({ cursor: "1" });
+    ).toEqual({ cursor: null });
   });
 
   it("terminalizes a planner after its retry budget is exhausted", async () => {

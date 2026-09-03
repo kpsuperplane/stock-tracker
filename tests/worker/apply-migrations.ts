@@ -12,7 +12,21 @@ declare global {
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+  const cached = await env.READ_MODEL_CACHE.list();
+  await Promise.all(
+    cached.keys.map((key) => env.READ_MODEL_CACHE.delete(key.name)),
+  );
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM sync_slices"),
+    env.DB.prepare("DELETE FROM sync_intents"),
+    env.DB.prepare("DELETE FROM coverage_intervals"),
+    env.DB.prepare("DELETE FROM read_model_refresh_outbox"),
+    env.DB.prepare("DELETE FROM read_model_publications"),
+    env.DB.prepare("DELETE FROM resource_reservation_items"),
+    env.DB.prepare("DELETE FROM resource_reservations"),
+    env.DB.prepare("DELETE FROM resource_operation_observations"),
+    env.DB.prepare("DELETE FROM resource_budget_days"),
+    env.DB.prepare("DELETE FROM dispatch_provider_reservations"),
     env.DB.prepare("DELETE FROM dispatch_daily_reservations"),
     env.DB.prepare("DELETE FROM dispatch_batch_items"),
     env.DB.prepare("DELETE FROM dispatch_batches"),

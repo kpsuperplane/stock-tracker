@@ -11,7 +11,10 @@ import {
   type WorkDispatcherDependencies,
   WorkDispatcherService,
 } from "../../src/services/work-dispatcher";
-import type { PipelineDispatchMessage } from "../../src/shared/contracts";
+import type {
+  PipelineDispatchMessage,
+  PlanningContinuationMessage,
+} from "../../src/shared/contracts";
 import { PipelineQueueConsumer } from "../../src/worker/pipeline-queue";
 import { handleQueue } from "../../src/worker/queue";
 
@@ -104,7 +107,7 @@ const message = (body: PipelineDispatchMessage) => ({
 });
 
 describe("normalized work dispatcher and queue consumer", () => {
-  it("range-batches contiguous market work into at most 90 calendar days", async () => {
+  it("range-batches contiguous historical market work into at most 90 calendar days", async () => {
     await insertInstrument();
     for (let index = 0; index < 95; index += 1) {
       await insertWork({
@@ -134,6 +137,131 @@ describe("normalized work dispatcher and queue consumer", () => {
           89 * 86_400_000,
       ),
     ).toBe(true);
+  });
+
+  it("bounds newly queued batches per dispatch invocation", async () => {
+    for (let index = 0; index < 9; index += 1) {
+      const instrumentId = `instrument-${index}`;
+      await insertInstrument(instrumentId);
+      await insertWork({
+        id: `bounded-${index}`,
+        instrumentId,
+        date: "2026-01-02",
+      });
+    }
+    const { service, sent } = dispatcher({ dailyCeiling: 20 });
+
+    const first = await service.dispatch();
+
+    expect(first.dispatchedBatches).toBe(8);
+    expect(first.dispatchedWorkItems).toBe(8);
+    expect(sent).toHaveLength(8);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM work_items WHERE state = 'pending'",
+      ).first<{ count: number }>(),
+    ).toEqual({ count: 1 });
+  });
+
+  it("bounds group scans when the history provider budget is exhausted", async () => {
+    const reservations: D1PreparedStatement[] = [];
+    for (let index = 0; index < 250; index += 1) {
+      reservations.push(
+        env.DB.prepare(
+          `INSERT INTO dispatch_provider_reservations
+           (dispatch_batch_id, reservation_day, budget_kind, units,
+            created_at, expires_at)
+           VALUES (?1, '2026-07-10', 'history_market', 1, ?2, ?3)`,
+        ).bind(`used-history-${index}`, now, "2026-07-11T04:00:00.000Z"),
+      );
+    }
+    await env.DB.batch(reservations);
+    for (let index = 0; index < 20; index += 1) {
+      const instrumentId = `history-budget-${index}`;
+      await insertInstrument(instrumentId);
+      await insertWork({
+        id: `history-budget-work-${index}`,
+        instrumentId,
+        date: "2026-01-02",
+      });
+    }
+    let generatedIds = 0;
+    const { queue } = dispatcher();
+    const service = new WorkDispatcherService({
+      db: env.DB,
+      queue,
+      now: () => new Date(now),
+      newId: () => `exhausted-budget-${++generatedIds}`,
+    });
+
+    const result = await service.dispatch();
+
+    expect(result.dispatchedBatches).toBe(0);
+    expect(generatedIds).toBe(8);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM work_items WHERE state = 'pending'",
+      ).first<{ count: number }>(),
+    ).toEqual({ count: 20 });
+  });
+
+  it("does not charge history retries to an old current-job link", async () => {
+    await insertInstrument();
+    await insertWork({ id: "history-retry", date: "2026-01-02" });
+    const jobs = new PipelineJobRepository(env.DB);
+    await env.DB.batch([
+      jobs.createStatement({
+        id: "old-current-job",
+        triggerType: "ledger_reconciliation",
+        requestedStartDate: "2026-01-02",
+        requestedEndDate: "2026-01-02",
+        affectedInstrumentsJson: '["instrument-1"]',
+        eligibilityIntervalsJson: "[]",
+        priority: 100,
+        status: "terminal",
+        createdAt: now,
+        updatedAt: now,
+        syncLane: "current",
+      }),
+      jobs.createStatement({
+        id: "active-history-job",
+        triggerType: "backfill",
+        requestedStartDate: "2026-01-02",
+        requestedEndDate: "2026-01-02",
+        affectedInstrumentsJson: '["instrument-1"]',
+        eligibilityIntervalsJson: "[]",
+        priority: 20,
+        status: "planning",
+        createdAt: now,
+        updatedAt: now,
+        syncLane: "history",
+      }),
+      env.DB.prepare(
+        `INSERT INTO job_work_items
+         (pipeline_job_id, work_item_id, relationship, outcome, created_at)
+         VALUES ('old-current-job', 'history-retry', 'required', 'failed', ?1),
+                ('active-history-job', 'history-retry', 'required', 'pending', ?1)`,
+      ).bind(now),
+      ...Array.from({ length: 250 }, (_value, index) =>
+        env.DB.prepare(
+          `INSERT INTO dispatch_provider_reservations
+           (dispatch_batch_id, reservation_day, budget_kind, units,
+            created_at, expires_at)
+           VALUES (?1, '2026-07-10', 'history_market', 1, ?2, ?3)`,
+        ).bind(`used-shared-history-${index}`, now, "2026-07-11T04:00:00.000Z"),
+      ),
+    ]);
+    const { service } = dispatcher();
+
+    expect(await service.dispatch()).toMatchObject({
+      dispatchedBatches: 0,
+      dispatchedWorkItems: 0,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT state FROM work_items WHERE id = 'history-retry'",
+      ).first(),
+    ).toEqual({ state: "pending" });
   });
 
   it("respects priority fairness and the daily work ceiling", async () => {
@@ -348,9 +476,9 @@ describe("normalized work dispatcher and queue consumer", () => {
     expect(firstMessage.retry).not.toHaveBeenCalled();
     expect(
       await env.DB.prepare(
-        "SELECT state FROM dispatch_batches WHERE id = 'batch-1'",
+        "SELECT state, settled_at FROM dispatch_batches WHERE id = 'batch-1'",
       ).first(),
-    ).toEqual({ state: "complete" });
+    ).toEqual({ state: "complete", settled_at: now });
     const duplicate = message(sent[0] as PipelineDispatchMessage);
     await consumer.handle({ messages: [duplicate] } as never);
     expect(duplicate.ack).toHaveBeenCalledOnce();
@@ -431,6 +559,91 @@ describe("normalized work dispatcher and queue consumer", () => {
     });
   });
 
+  it("enqueues the next history phase when its last market batch settles", async () => {
+    await insertInstrument();
+    const jobs = new PipelineJobRepository(env.DB);
+    const workItems = new WorkItemRepository(env.DB);
+    await env.DB.batch([
+      jobs.createStatement({
+        id: "history-phase-job",
+        triggerType: "ledger_reconciliation",
+        requestedStartDate: "2026-01-01",
+        requestedEndDate: "2026-01-01",
+        affectedInstrumentsJson: '["instrument-1"]',
+        eligibilityIntervalsJson: "[]",
+        priority: 20,
+        status: "running",
+        syncLane: "history",
+        planningPhase: "analysis",
+        createdAt: now,
+        updatedAt: now,
+      }),
+      workItems.createPlanningStatement({
+        id: "history-phase-planner",
+        pipelineJobId: "history-phase-job",
+        workType: "ledger_reconciliation_plan",
+        deterministicKey: WorkItemRepository.planningKey(
+          "history-phase-job",
+          "ledger_reconciliation_plan",
+        ),
+        priority: 20,
+        maxAttempts: 3,
+        createdAt: now,
+        updatedAt: now,
+      }),
+      workItems.linkToJobStatement({
+        pipelineJobId: "history-phase-job",
+        workItemId: "history-phase-planner",
+        relationship: "required",
+        createdAt: now,
+      }),
+    ]);
+    await insertWork({ id: "history-phase-market", date: "2026-01-01" });
+    await workItems.attachToJob({
+      pipelineJobId: "history-phase-job",
+      workItemId: "history-phase-market",
+      relationship: "required",
+      now,
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT market_work_pending, analysis_work_pending
+           FROM pipeline_jobs WHERE id = 'history-phase-job'`,
+      ).first(),
+    ).toEqual({ market_work_pending: 1, analysis_work_pending: 0 });
+
+    const continuations: PlanningContinuationMessage[] = [];
+    const continuationQueue = {
+      send: vi.fn(async (body: PlanningContinuationMessage) => {
+        continuations.push(body);
+      }),
+    } as unknown as Queue<PlanningContinuationMessage>;
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const queueMessage = message(sent[0] as PipelineDispatchMessage);
+
+    await new PipelineQueueConsumer({
+      db: env.DB,
+      continuationQueue,
+      now: () => new Date(now),
+    }).handle({ messages: [queueMessage] } as never);
+
+    expect(queueMessage.ack).toHaveBeenCalledOnce();
+    expect(continuations).toEqual([
+      { planningPipelineJobId: "history-phase-job" },
+    ]);
+    expect(
+      await env.DB.prepare(
+        `SELECT status, market_work_pending, work_processed
+           FROM pipeline_jobs WHERE id = 'history-phase-job'`,
+      ).first(),
+    ).toEqual({
+      status: "running",
+      market_work_pending: 0,
+      work_processed: 1,
+    });
+  });
+
   it("retries partial provider ranges and terminalizes after an exhausted retry", async () => {
     await insertInstrument();
     await insertWork({ id: "partial-a", date: "2026-01-01" });
@@ -483,6 +696,40 @@ describe("normalized work dispatcher and queue consumer", () => {
       state: "terminal",
       terminal_error_code: "pipeline_attempts_exhausted",
     });
+  });
+
+  it("honors a provider-anomaly retry delay without consuming transport retries", async () => {
+    await insertInstrument();
+    await insertWork({
+      id: "provider-anomaly",
+      date: "2026-01-02",
+      maxAttempts: 5,
+    });
+    const { service, sent } = dispatcher();
+    await service.dispatch();
+    const retryMessage = message(sent[0] as PipelineDispatchMessage);
+    await new PipelineQueueConsumer({
+      db: env.DB,
+      processor: {
+        process: async ({ work }) =>
+          work.map((item) => ({
+            workItemId: item.id,
+            kind: "retry" as const,
+            errorCode: "market_bar_missing",
+            errorMessage: "The provider omitted a completed market bar.",
+            retryDelaySeconds: 900,
+          })),
+      },
+      now: () => new Date(now),
+    }).handle({ messages: [retryMessage] } as never);
+
+    expect(retryMessage.retry).toHaveBeenCalledWith({ delaySeconds: 900 });
+    expect(retryMessage.ack).not.toHaveBeenCalled();
+    expect(
+      await env.DB.prepare(
+        "SELECT state, attempt_count, max_attempts FROM dispatch_batches WHERE id = 'batch-1'",
+      ).first(),
+    ).toEqual({ state: "queued", attempt_count: 1, max_attempts: 5 });
   });
 
   it("does not let a stale dispatch acknowledgement overwrite consumer processing", async () => {
@@ -570,7 +817,7 @@ describe("normalized work dispatcher and queue consumer", () => {
     });
   });
 
-  it("terminalizes exhausted queue sends and records durable DLQ delivery", async () => {
+  it("keeps queue transport failures retryable without involving the DLQ", async () => {
     await insertInstrument();
     await insertWork({ id: "send-exhausted", date: "2026-01-01" });
     const first = dispatcher({
@@ -590,7 +837,7 @@ describe("normalized work dispatcher and queue consumer", () => {
     });
     const result = await first.service.dispatch();
     expect(result.sendFailures).toBe(1);
-    expect(dlq.sent).toEqual([{ dispatchBatchId: "batch-1" }]);
+    expect(dlq.sent).toEqual([]);
     expect(
       await env.DB.prepare(
         `SELECT batch.state, batch.dlq_state, work.state AS work_state
@@ -600,51 +847,24 @@ describe("normalized work dispatcher and queue consumer", () => {
          WHERE batch.id = 'batch-1'`,
       ).first(),
     ).toEqual({
-      state: "terminal",
-      dlq_state: "delivered",
-      work_state: "terminal",
+      state: "dispatching",
+      dlq_state: "none",
+      work_state: "dispatching",
     });
-  });
-
-  it("retries a failed DLQ send from durable terminal state", async () => {
-    await insertInstrument();
-    await insertWork({ id: "dlq-retry", date: "2026-01-01" });
-    const first = dispatcher({ dispatchMaxAttempts: 1 });
-    first.queue.send = vi.fn(async () => {
-      throw new Error("queue_unavailable");
-    });
-    const failedDlq = fakeQueue();
-    failedDlq.queue.send = vi.fn(async () => {
-      throw new Error("dlq_unavailable");
-    });
-    first.service = new WorkDispatcherService({
-      db: env.DB,
-      queue: first.queue,
-      dlq: failedDlq.queue,
-      dispatchMaxAttempts: 1,
-      now: () => new Date(now),
-      newId: () => "batch-1",
-    });
-    await first.service.dispatch();
-    expect(
-      await env.DB.prepare(
-        "SELECT state, dlq_state FROM dispatch_batches WHERE id = 'batch-1'",
-      ).first(),
-    ).toEqual({ state: "terminal", dlq_state: "pending" });
-    const recoveredDlq = fakeQueue();
+    const recoveredQueue = fakeQueue();
     const recovered = new WorkDispatcherService({
       db: env.DB,
-      queue: fakeQueue().queue,
-      dlq: recoveredDlq.queue,
+      queue: recoveredQueue.queue,
+      dlq: dlq.queue,
       now: () => new Date("2026-07-10T21:06:00.000Z"),
     });
     await recovered.dispatch();
-    expect(recoveredDlq.sent).toEqual([{ dispatchBatchId: "batch-1" }]);
+    expect(recoveredQueue.sent).toEqual([{ dispatchBatchId: "batch-1" }]);
     expect(
       await env.DB.prepare(
-        "SELECT dlq_state FROM dispatch_batches WHERE id = 'batch-1'",
+        "SELECT state, dispatch_attempt_count FROM dispatch_batches WHERE id = 'batch-1'",
       ).first(),
-    ).toEqual({ dlq_state: "delivered" });
+    ).toEqual({ state: "queued", dispatch_attempt_count: 2 });
   });
 
   it("does not let a stale processing consumer acknowledge after lease loss", async () => {

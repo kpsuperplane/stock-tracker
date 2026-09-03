@@ -149,6 +149,7 @@ export class ReconciliationWorkRepository {
            ON CONFLICT(pipeline_job_id, work_item_id) DO NOTHING`,
         )
         .bind(payload, input.pipelineJobId, input.now),
+      this.db.prepare("SELECT changes() AS changes"),
     ]);
 
     const rows = await this.db
@@ -172,7 +173,13 @@ export class ReconciliationWorkRepository {
         .length,
       reusedCount: globalWork.filter((work) => work.state === "complete")
         .length,
-      attachedCount: Number(writes[4]?.meta.changes ?? 0),
+      attachedCount: Number(
+        (
+          writes[5] as D1Result<{
+            changes: number;
+          }>
+        ).results?.[0]?.changes ?? 0,
+      ),
       globalWork,
     };
   }

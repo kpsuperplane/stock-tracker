@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { YahooMarketDataProvider } from "../../src/providers/yahoo";
 
 const headers = {
@@ -8,6 +8,13 @@ const headers = {
   Origin: "http://local",
   "X-Stock-Tracker-Request": "1",
 };
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
+});
+
+afterEach(() => vi.useRealTimers());
 
 describe("ticker routes", () => {
   it("allows access without application credentials", async () => {

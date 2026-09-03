@@ -46,6 +46,87 @@ const status: StatusReadModelDto = {
       errorCode: null,
       errorMessage: null,
     },
+    history: {
+      status: "current",
+      total: 20,
+      completed: 20,
+      active: 0,
+      waiting: 0,
+      pending: 0,
+      failed: 0,
+      updatedAt: "2026-07-13T12:00:00.000Z",
+      nextAttemptAt: null,
+      errorCode: null,
+      errorMessage: null,
+    },
+  },
+  capacity: {
+    usageDate: "2026-07-13",
+    resetAt: "2026-07-14T00:00:00.000Z",
+    lanes: {
+      availability: {
+        rowsRead: {
+          allocation: 2_000_000,
+          reservable: 1_000_000,
+          reserved: 100_000,
+          actual: 50_000,
+          remaining: 900_000,
+        },
+        rowsWritten: {
+          allocation: 40_000,
+          reservable: 20_000,
+          reserved: 25,
+          actual: 20,
+          remaining: 19_975,
+        },
+        queueDepth: 0,
+        queueHighWaterMark: null,
+      },
+      foreground: {
+        rowsRead: {
+          allocation: 2_000_000,
+          reservable: 2_000_000,
+          reserved: 20_000,
+          actual: 10_000,
+          remaining: 1_980_000,
+        },
+        rowsWritten: {
+          allocation: 40_000,
+          reservable: 40_000,
+          reserved: 3_000,
+          actual: 1_500,
+          remaining: 37_000,
+        },
+        queueDepth: 2,
+        queueHighWaterMark: 12,
+      },
+      history: {
+        rowsRead: {
+          allocation: 1_000_000,
+          reservable: 1_000_000,
+          reserved: 10_000,
+          actual: 8_000,
+          remaining: 990_000,
+        },
+        rowsWritten: {
+          allocation: 20_000,
+          reservable: 20_000,
+          reserved: 3_000,
+          actual: 2_000,
+          remaining: 17_000,
+        },
+        queueDepth: 1,
+        queueHighWaterMark: 4,
+      },
+    },
+  },
+  historyCoverage: {
+    targetStartDate: "2020-01-01",
+    newestCompleteDate: "2026-07-13",
+    oldestCompleteDate: "2026-04-15",
+    completedIntents: 2,
+    totalIntents: 8,
+    nextAttemptAt: null,
   },
   imports: [
     {
@@ -104,6 +185,11 @@ describe("StatusPage", () => {
     expect(markup).toContain("Stock values");
     expect(markup).toContain("Dividends");
     expect(markup).toContain("Financial reports");
+    expect(markup).toContain("Portfolio history");
+    expect(markup).toContain("Daily capacity");
+    expect(markup).toContain("1,980,000 read rows remaining");
+    expect(markup).toContain("2/12 queue slots");
+    expect(markup).toContain("History frontier");
     expect(markup).toContain("Portfolio imports");
     expect(markup).toContain("portfolio.csv");
     expect(markup).toContain('href="/events"');
@@ -162,7 +248,7 @@ describe("StatusPage", () => {
       </I18nProvider>,
     );
 
-    expect(syncHealthFor(failing)).toBe("attention");
+    expect(syncHealthFor(failing)).toBe("healthy");
     expect(markup).toContain("Needs attention");
     expect(markup).toContain("Alpha Vantage rate limit reached.");
     expect(markup).toContain("Price provider unavailable.");
@@ -172,7 +258,7 @@ describe("StatusPage", () => {
     expect(markup).toContain('colSpan="9"');
   });
 
-  it("gives active jobs precedence while a sync is running", () => {
+  it("keeps an unleased old job out of current portfolio health", () => {
     const job = status.jobs[0];
     if (!job) throw new Error("status fixture incomplete");
     expect(
@@ -180,7 +266,7 @@ describe("StatusPage", () => {
         ...status,
         jobs: [{ ...job, status: "running" }],
       }),
-    ).toBe("syncing");
+    ).toBe("healthy");
   });
 
   it("polls and highlights an active localized import", () => {
@@ -193,6 +279,7 @@ describe("StatusPage", () => {
           ...imported,
           id: "active-import",
           status: "running",
+          active: true,
           processedSymbols: 2,
           totalSymbols: 5,
           resultPipelineJobId: null,
@@ -214,7 +301,7 @@ describe("StatusPage", () => {
     expect(markup).toContain('data-import-highlighted="true"');
   });
 
-  it("surfaces domain reconciliation work in the overall health", () => {
+  it("keeps non-valuation failures visible without downgrading portfolio health", () => {
     expect(
       syncHealthFor({
         ...status,
@@ -228,6 +315,52 @@ describe("StatusPage", () => {
           },
         },
       }),
-    ).toBe("attention");
+    ).toBe("healthy");
+  });
+
+  it("reports deferred work as waiting without pretending it is active", () => {
+    const waiting: StatusReadModelDto = {
+      ...status,
+      reconciliation: {
+        ...status.reconciliation,
+        stockValues: {
+          ...status.reconciliation.stockValues,
+          status: "waiting",
+          completed: 1,
+          active: 0,
+          waiting: 1,
+          pending: 1,
+          nextAttemptAt: "2026-07-14T12:00:00.000Z",
+        },
+      },
+    };
+    expect(syncHealthFor(waiting)).toBe("waiting");
+    expect(shouldPollStatus(waiting)).toBe(false);
+  });
+
+  it("keeps background history and old failed imports out of global health", () => {
+    const job = status.jobs[0];
+    const imported = status.imports[0];
+    const history = status.reconciliation.history;
+    if (!job || !imported || !history)
+      throw new Error("status fixture incomplete");
+    const background: StatusReadModelDto = {
+      ...status,
+      jobs: [
+        { ...job, id: "history-job", syncLane: "history", status: "running" },
+      ],
+      imports: [{ ...imported, status: "expired" }],
+      reconciliation: {
+        ...status.reconciliation,
+        history: {
+          ...history,
+          status: "syncing",
+          active: 1,
+          completed: 10,
+        },
+      },
+    };
+    expect(syncHealthFor(background)).toBe("healthy");
+    expect(shouldPollStatus(background)).toBe(true);
   });
 });

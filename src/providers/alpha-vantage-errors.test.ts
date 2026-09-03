@@ -15,6 +15,17 @@ describe("Alpha Vantage provider notices", () => {
       "provider_rate_limited",
     ],
     [
+      {
+        Information:
+          "Please spread requests to 1 request per second; the limit is 25 requests per day.",
+      },
+      "provider_rate_limited",
+    ],
+    [
+      { Information: "Contact premium if targeting a higher API call volume." },
+      "provider_rate_limited",
+    ],
+    [
       { Information: "This premium endpoint requires a subscription." },
       "provider_entitlement",
     ],
@@ -47,6 +58,18 @@ describe("Alpha Vantage provider notices", () => {
         message: "provider_daily_limit",
         providerMessage:
           "Daily limit reached for credential=[REDACTED] Try tomorrow.",
+      }),
+    );
+  });
+
+  it("redacts credentials embedded in provider prose", () => {
+    expect(() =>
+      throwIfAlphaVantageError({
+        Information: "We detected your API key as secret-value.",
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        providerMessage: "We detected your credential=[REDACTED]",
       }),
     );
   });

@@ -84,6 +84,7 @@ export type LedgerMutationResult =
       kind: "committed";
       positionBasisRevision: number;
       pipelineJobId: string;
+      historyPipelineJobId: string;
       transactionId: string | null;
       warningCode?: LedgerWarningCode;
     }
@@ -499,6 +500,8 @@ export class LedgerService {
   }): Promise<LedgerMutationResult> {
     const jobId = this.newId();
     const workId = this.newId();
+    const historyJobId = this.newId();
+    const historyWorkId = this.newId();
     const mutationId = this.newId();
     const intervals = this.changedEligibilityIntervals(
       input.beforeHoldings,
@@ -519,6 +522,8 @@ export class LedgerService {
       ...this.reconciliationStatements({
         jobId,
         workId,
+        historyJobId,
+        historyWorkId,
         instrumentId: input.resolved.instrumentId,
         startDate: input.resolved.changedStartDate,
         endDate: input.today,
@@ -547,6 +552,7 @@ export class LedgerService {
       kind: "committed",
       positionBasisRevision: input.input.expectedPositionBasisRevision + 1,
       pipelineJobId: jobId,
+      historyPipelineJobId: historyJobId,
       transactionId: input.resolved.transactionToWrite?.id ?? null,
       ...(input.warningCode ? { warningCode: input.warningCode } : {}),
     };
@@ -654,6 +660,8 @@ export class LedgerService {
 
     const jobId = this.newId();
     const workId = this.newId();
+    const historyJobId = this.newId();
+    const historyWorkId = this.newId();
     const mutationId = this.newId();
     const intervals = this.splitPromotionIntervals({
       beforeHoldings,
@@ -703,6 +711,8 @@ export class LedgerService {
       ...this.reconciliationStatements({
         jobId,
         workId,
+        historyJobId,
+        historyWorkId,
         instrumentId: input.instrumentId,
         startDate: snapshot.range.requestedStartDate,
         endDate: snapshot.range.requestedEndDate,
@@ -730,6 +740,7 @@ export class LedgerService {
       kind: "committed",
       positionBasisRevision: input.expectedPositionBasisRevision + 1,
       pipelineJobId: jobId,
+      historyPipelineJobId: historyJobId,
       transactionId: null,
     };
   }
@@ -1233,21 +1244,30 @@ export class LedgerService {
   private reconciliationStatements(input: {
     jobId: string;
     workId: string;
+    historyJobId: string;
+    historyWorkId: string;
     instrumentId: string;
     startDate: string;
     endDate: string;
     intervals: readonly { startDate: string; endDate: string }[];
     timestamp: string;
   }): D1PreparedStatement[] {
+    const currentIntervals = input.intervals.filter(
+      (interval) =>
+        interval.startDate <= input.endDate &&
+        interval.endDate >= input.endDate,
+    );
     return [
       this.jobs.createStatement({
         id: input.jobId,
         triggerType: "ledger_reconciliation",
-        requestedStartDate: input.startDate,
+        requestedStartDate: input.endDate,
         requestedEndDate: input.endDate,
         affectedInstrumentsJson: JSON.stringify([input.instrumentId]),
-        eligibilityIntervalsJson: JSON.stringify(input.intervals),
+        eligibilityIntervalsJson: JSON.stringify(currentIntervals),
         priority: 100,
+        syncLane: "current",
+        jobGroupId: input.jobId,
         status: "pending",
         createdAt: input.timestamp,
         updatedAt: input.timestamp,
@@ -1265,6 +1285,36 @@ export class LedgerService {
       this.workItems.linkToJobStatement({
         pipelineJobId: input.jobId,
         workItemId: input.workId,
+        relationship: "required",
+        createdAt: input.timestamp,
+      }),
+      this.jobs.createStatement({
+        id: input.historyJobId,
+        triggerType: "ledger_reconciliation",
+        requestedStartDate: input.startDate,
+        requestedEndDate: input.endDate,
+        affectedInstrumentsJson: JSON.stringify([input.instrumentId]),
+        eligibilityIntervalsJson: JSON.stringify(input.intervals),
+        priority: 20,
+        syncLane: "history",
+        jobGroupId: input.jobId,
+        status: "pending",
+        createdAt: input.timestamp,
+        updatedAt: input.timestamp,
+      }),
+      this.workItems.createPlanningStatement({
+        id: input.historyWorkId,
+        pipelineJobId: input.historyJobId,
+        workType: PLANNING_WORK_TYPE,
+        deterministicKey: `job:${input.historyJobId}:ledger-reconciliation-plan`,
+        priority: 20,
+        maxAttempts: RESUMABLE_PLANNING_MAX_ATTEMPTS,
+        createdAt: input.timestamp,
+        updatedAt: input.timestamp,
+      }),
+      this.workItems.linkToJobStatement({
+        pipelineJobId: input.historyJobId,
+        workItemId: input.historyWorkId,
         relationship: "required",
         createdAt: input.timestamp,
       }),

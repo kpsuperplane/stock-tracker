@@ -278,41 +278,4 @@ export class FactRevisionBucketRepository {
       )
       .bind(dispatchBatchId, updatedAt, marketDate);
   }
-
-  bumpWorkItemsUpdatedAtStatement(updatedAt: string): D1PreparedStatement {
-    return this.db
-      .prepare(
-        `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
-         SELECT DISTINCT substr(effective_date, 1, 7), 1, ?1
-         FROM work_items
-         WHERE scope = 'global_fact' AND effective_date IS NOT NULL
-           AND updated_at = ?1
-         ON CONFLICT(bucket_key) DO UPDATE SET
-           revision = fact_revision_buckets.revision + 1,
-           updated_at = excluded.updated_at`,
-      )
-      .bind(updatedAt);
-  }
-
-  bumpLatestForWorkItemsUpdatedAtStatement(
-    updatedAt: string,
-    marketDate: string,
-  ): D1PreparedStatement {
-    return this.db
-      .prepare(
-        `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
-         SELECT 'latest', 1, ?1
-         WHERE EXISTS (
-           SELECT 1 FROM work_items
-           WHERE scope = 'global_fact' AND updated_at = ?1
-             AND effective_date = (SELECT MAX(trading_date)
-                                   FROM daily_market_facts
-                                   WHERE trading_date <= ?2)
-         )
-         ON CONFLICT(bucket_key) DO UPDATE SET
-           revision = fact_revision_buckets.revision + 1,
-           updated_at = excluded.updated_at`,
-      )
-      .bind(updatedAt, marketDate);
-  }
 }

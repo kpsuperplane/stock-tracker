@@ -101,7 +101,13 @@ backfillRoutes.post("/", async (context) => {
   );
   const now = new Date().toISOString();
   const id = await service.createBackfill(body, now);
-  if (!pipelineEnabled) await service.dispatch(now);
+  if (pipelineEnabled) {
+    await Promise.allSettled([
+      context.env.NORMALIZED_WORK_QUEUE.send({ planningPipelineJobId: id }),
+    ]);
+  } else {
+    await service.dispatch(now);
+  }
   return context.json({ id }, 202);
 });
 
@@ -136,17 +142,6 @@ backfillRoutes.get("/:id", async (context) => {
 // Planner continuation is an explicit worker path. Browser status polling is
 // deliberately read-only and never advances cursors.
 backfillRoutes.post("/:id/continue", async (context) => {
-  if (!backfillPipelineFlagEnabled(context.env)) {
-    return context.json(
-      {
-        error: {
-          code: "pipeline_disabled",
-          message: "Pipeline continuation is not enabled.",
-        },
-      },
-      409,
-    );
-  }
   const pipeline = new BackfillPipelineAdapter({
     db: context.env.DB,
     listActiveSymbols: async () =>
@@ -168,7 +163,13 @@ backfillRoutes.post("/:id/continue", async (context) => {
   const result = await pipeline.continuePlanning(
     context.req.param("id"),
     new Date().toISOString(),
+    5,
   );
+  if (result.active) {
+    await context.env.NORMALIZED_WORK_QUEUE.send({
+      planningPipelineJobId: context.req.param("id"),
+    });
+  }
   return context.json(result, 202);
 });
 

@@ -2,12 +2,16 @@ import type {
   NormalizedQueueMessage,
   PipelineDispatchMessage,
   ScreeningJobMessage,
+  SyncSliceMessage,
 } from "../shared/contracts";
 
-export interface Env extends Cloudflare.Env {
+export type Env = Cloudflare.Env & {
   SCREENING_QUEUE: Queue<ScreeningJobMessage>;
   NORMALIZED_WORK_QUEUE: Queue<NormalizedQueueMessage>;
   NORMALIZED_WORK_DLQ: Queue<PipelineDispatchMessage>;
+  SYNC_FOREGROUND_QUEUE: Queue<NormalizedQueueMessage>;
+  SYNC_HISTORY_QUEUE: Queue<SyncSliceMessage>;
+  READ_MODEL_CACHE: KVNamespace;
   EXA_API_KEY?: string;
   MARKETAUX_API_TOKEN?: string;
   ALPHA_VANTAGE_API_KEY: string;
@@ -25,4 +29,4 @@ export interface Env extends Cloudflare.Env {
   BACKFILL_PIPELINE_ENABLED?: string;
   ENABLE_BACKFILL_PIPELINE?: string;
   ENABLE_BACKFILL_RECONCILIATION_PIPELINE?: string;
-}
+};
