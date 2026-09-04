@@ -277,43 +277,54 @@ export class CalendarReadModelService {
       const completeRows = (
         await this.db
           .prepare(
-            `SELECT f.instrument_id, f.trading_date, a.id, a.daily_market_fact_id,
-                    a.summary_zh_cn, a.status, a.error_code, a.error_message
-             FROM movement_analyses a
-             JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-             WHERE a.status = 'complete'
-               AND f.instrument_id IN (SELECT value FROM json_each(?1))
-               AND f.movement_basis <> 'legacy_migration'
-               AND f.trading_date <= ?3
-               AND (
-                 f.trading_date >= ?2
-                 OR f.trading_date = (
-                   SELECT MAX(previous_fact.trading_date)
-                   FROM daily_market_facts previous_fact
-                   JOIN movement_analyses previous_analysis
-                     ON previous_analysis.daily_market_fact_id = previous_fact.id
-                   WHERE previous_fact.instrument_id = f.instrument_id
-                     AND previous_fact.movement_basis <> 'legacy_migration'
-                     AND previous_fact.trading_date < ?2
-                     AND previous_analysis.status = 'complete'
-                     AND previous_analysis.summary_zh_cn IS NOT NULL
-                 )
-                 OR f.trading_date = (
-                   SELECT MAX(previous_fact.trading_date)
-                   FROM daily_market_facts previous_fact
-                   JOIN movement_analyses previous_analysis
-                     ON previous_analysis.daily_market_fact_id = previous_fact.id
-                   WHERE previous_fact.instrument_id = f.instrument_id
-                     AND previous_fact.movement_basis <> 'legacy_migration'
-                     AND previous_fact.trading_date < ?2
-                     AND previous_analysis.status = 'complete'
-                     AND EXISTS (
-                       SELECT 1 FROM news_sources previous_source
-                       WHERE previous_source.movement_analysis_id = previous_analysis.id
-                     )
-                 )
-               )
-             ORDER BY f.instrument_id, f.trading_date`,
+            `WITH complete AS MATERIALIZED (
+               SELECT f.instrument_id, f.trading_date, a.id,
+                      a.daily_market_fact_id, a.summary_zh_cn, a.status,
+                      a.error_code, a.error_message
+                 FROM movement_analyses a
+                   INDEXED BY movement_analyses_status_updated_idx
+                 CROSS JOIN daily_market_facts f
+                   ON f.id = a.daily_market_fact_id
+                 JOIN json_each(?1) scoped
+                   ON scoped.value = f.instrument_id
+                WHERE a.status = 'complete'
+                  AND f.movement_basis <> 'legacy_migration'
+                  AND f.trading_date <= ?3
+             ),
+             prior_summary AS (
+               SELECT complete.*,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY instrument_id
+                        ORDER BY trading_date DESC, id DESC
+                      ) AS row_number
+                 FROM complete
+                WHERE trading_date < ?2 AND summary_zh_cn IS NOT NULL
+             ),
+             prior_source AS (
+               SELECT complete.*,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY instrument_id
+                        ORDER BY trading_date DESC, id DESC
+                      ) AS row_number
+                 FROM complete
+                WHERE trading_date < ?2
+                  AND EXISTS (
+                    SELECT 1 FROM news_sources source
+                     WHERE source.movement_analysis_id = complete.id
+                  )
+             )
+             SELECT instrument_id, trading_date, id, daily_market_fact_id,
+                    summary_zh_cn, status, error_code, error_message
+               FROM complete WHERE trading_date >= ?2
+             UNION
+             SELECT instrument_id, trading_date, id, daily_market_fact_id,
+                    summary_zh_cn, status, error_code, error_message
+               FROM prior_summary WHERE row_number = 1
+             UNION
+             SELECT instrument_id, trading_date, id, daily_market_fact_id,
+                    summary_zh_cn, status, error_code, error_message
+               FROM prior_source WHERE row_number = 1
+             ORDER BY instrument_id, trading_date`,
           )
           .bind(
             JSON.stringify(instrumentIdsWithFacts),

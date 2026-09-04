@@ -247,6 +247,29 @@ const insertFixture = async (): Promise<void> => {
   ]);
   await env.DB.batch([
     env.DB.prepare(
+      `INSERT INTO movement_analyses
+         (id, daily_market_fact_id, dependency_fingerprint, summary_zh_cn,
+          model, status, created_at, updated_at)
+         SELECT 'perf-analysis:' || fact.id, fact.id, 'perf-r1',
+                'Performance fixture analysis', 'fixture', 'complete', ?1, ?1
+           FROM daily_market_facts fact
+          WHERE fact.instrument_id LIKE 'perf-instrument-%'
+            AND fact.trading_date IN ('2025-11-28', '2025-12-01')`,
+    ).bind(fixtureNow),
+    env.DB.prepare(
+      `INSERT INTO news_sources
+         (id, movement_analysis_id, source_order, title, publisher,
+          published_at, source_url, cited, created_at)
+         SELECT 'perf-source:' || analysis.id, analysis.id, 0,
+                'Performance fixture source', 'Fixture', ?1,
+                'https://example.com/performance', 1, ?1
+           FROM movement_analyses analysis
+           JOIN daily_market_facts fact
+             ON fact.id = analysis.daily_market_fact_id
+          WHERE fact.instrument_id LIKE 'perf-instrument-%'
+            AND fact.trading_date = '2025-11-28'`,
+    ).bind(fixtureNow),
+    env.DB.prepare(
       `INSERT INTO fact_revision_buckets (bucket_key, revision, updated_at)
          VALUES ('latest', 1, ?1), ('2025-11', 1, ?1), ('2025-12', 1, ?1)`,
     ).bind(fixtureNow),
@@ -422,9 +445,9 @@ describe("portfolio performance budgets", () => {
     );
     expect(calendarMonth.value.calendar.events.length).toBe(500);
     expect(calendarMonth.metrics.queries).toBeLessThanOrEqual(35);
-    expect(calendarMonth.metrics.rowsRead).toBeLessThanOrEqual(250_000);
+    expect(calendarMonth.metrics.rowsRead).toBeLessThanOrEqual(175_000);
     expect(calendarMonth.metrics.durationMs).toBeLessThanOrEqual(1_000);
-    expect(calendarMonth.bytes).toBeLessThanOrEqual(1_000_000);
+    expect(calendarMonth.bytes).toBeLessThanOrEqual(1_100_000);
     expect(calendarMonth.wallMs).toBeLessThan(10_000);
 
     const calendarWeek = await probeRequest<{
