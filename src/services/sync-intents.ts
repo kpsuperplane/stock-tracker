@@ -152,6 +152,9 @@ const envelopeFor = (intent: SyncIntentRow): ResourceEnvelope => {
       ? RESOURCE_ENVELOPES.historyAnalysis
       : RESOURCE_ENVELOPES.foregroundAnalysis;
   }
+  if (intent.priorityClass === "current") {
+    return RESOURCE_ENVELOPES.foregroundCurrentMarket;
+  }
   return intent.priorityClass === "history"
     ? RESOURCE_ENVELOPES.historyMarket
     : RESOURCE_ENVELOPES.foregroundMarket;

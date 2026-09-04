@@ -99,6 +99,16 @@ export const RESOURCE_ENVELOPES = {
       { resourceType: "kv_write", units: 1 },
     ],
   },
+  foregroundCurrentMarket: {
+    lane: "foreground",
+    operationType: "foreground_current_market_slice",
+    items: [
+      { resourceType: "d1_rows_read", units: 10_000 },
+      { resourceType: "d1_rows_written", units: 500 },
+      { resourceType: "provider_call", resourceKey: "yahoo-market", units: 1 },
+      { resourceType: "queue_send", resourceKey: "foreground", units: 1 },
+    ],
+  },
   customReadModel: {
     lane: "availability",
     operationType: "custom_read_model",
@@ -355,30 +365,16 @@ export class ResourceGovernor {
         operationType: string;
       }>();
     if (!row) return false;
-    const normalized =
-      actual.length > 0
-        ? actual
-            .filter((item) => item.units >= 0)
-            .map((item) => ({
-              resourceType: item.resourceType,
-              resourceKey: item.resourceKey ?? "",
-              units: Math.floor(item.units),
-            }))
-        : (
-            await this.db
-              .prepare(
-                `SELECT resource_type AS resourceType,
-                      resource_key AS resourceKey,
-                      reserved_units AS units
-                 FROM resource_reservation_items WHERE reservation_id = ?1`,
-              )
-              .bind(reservationId)
-              .all<{
-                resourceType: ResourceType;
-                resourceKey: string;
-                units: number;
-              }>()
-          ).results;
+    // A reservation is an upper bound, not a measurement. Callers that can
+    // observe D1/provider metadata pass it explicitly; callers that cannot do
+    // so still consume the reservation without poisoning the adaptive p99.
+    const normalized = actual
+      .filter((item) => item.units >= 0)
+      .map((item) => ({
+        resourceType: item.resourceType,
+        resourceKey: item.resourceKey ?? "",
+        units: Math.floor(item.units),
+      }));
     const statements: D1PreparedStatement[] = [];
     for (const item of normalized) {
       statements.push(

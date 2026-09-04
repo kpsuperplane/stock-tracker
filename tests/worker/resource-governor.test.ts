@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
+  RESOURCE_ENVELOPES,
   type ResourceEnvelope,
   ResourceGovernor,
 } from "../../src/services/resource-governor";
@@ -78,5 +79,46 @@ describe("resource governor", () => {
         .bind(next.id)
         .first(),
     ).toEqual({ units: 875_000 });
+  });
+
+  it("does not feed conservative reservations back as measured usage", async () => {
+    const governor = new ResourceGovernor(env.DB, () => now);
+    const estimate: ResourceEnvelope = {
+      lane: "availability",
+      operationType: "unmeasured_test",
+      items: [{ resourceType: "d1_rows_read", units: 100_000 }],
+    };
+    const first = await governor.reserve("unmeasured-first", estimate);
+    if (!first) throw new Error("initial reservation failed");
+    await governor.consume(first.id);
+
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM resource_operation_observations
+          WHERE operation_type = 'unmeasured_test'`,
+      ).first(),
+    ).toEqual({ count: 0 });
+
+    const next = await governor.reserve("unmeasured-next", estimate);
+    if (!next) throw new Error("second reservation failed");
+    expect(
+      await env.DB.prepare(
+        `SELECT reserved_units AS units
+           FROM resource_reservation_items WHERE reservation_id = ?1`,
+      )
+        .bind(next.id)
+        .first(),
+    ).toEqual({ units: 100_000 });
+  });
+
+  it("reserves enough current-lane capacity for 72 held instruments", () => {
+    const reads = RESOURCE_ENVELOPES.foregroundCurrentMarket.items.find(
+      (item) => item.resourceType === "d1_rows_read",
+    );
+    const writes = RESOURCE_ENVELOPES.foregroundCurrentMarket.items.find(
+      (item) => item.resourceType === "d1_rows_written",
+    );
+    expect((reads?.units ?? 0) * 72).toBeLessThanOrEqual(2_000_000);
+    expect((writes?.units ?? 0) * 72).toBeLessThanOrEqual(40_000);
   });
 });

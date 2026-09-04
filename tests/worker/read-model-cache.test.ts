@@ -79,6 +79,37 @@ describe("read-model availability cache", () => {
     });
   });
 
+  it("keeps idle status snapshots stable and active status responsive", async () => {
+    const current = new Date("2026-07-10T12:00:00.000Z");
+    const values = new Map<string, string>();
+    const kv = {
+      get: vi.fn(async () => null),
+      put: vi.fn(async (key: string, value: string) => {
+        values.set(key, value);
+      }),
+    } as unknown as KVNamespace;
+    const store = new ReadModelSnapshotStore(env.DB, kv, () => current);
+    const idle = await store.publish({
+      cacheKey: "idle-status",
+      family: "status",
+      requestUrl: "/api/status",
+      response: Response.json({
+        reconciliation: { stockValues: { status: "waiting" } },
+      }),
+    });
+    const active = await store.publish({
+      cacheKey: "active-status",
+      family: "status",
+      requestUrl: "/api/status",
+      response: Response.json({
+        reconciliation: { stockValues: { status: "syncing" } },
+      }),
+    });
+
+    expect(idle?.validUntil).toBe("2026-07-10T12:05:00.000Z");
+    expect(active?.validUntil).toBe("2026-07-10T12:00:30.000Z");
+  });
+
   it("never treats a custom history query as a canonical snapshot", () => {
     expect(
       cacheableReadModelFamily(

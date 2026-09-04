@@ -69,10 +69,24 @@ const normalizedRequestIdentity = (request: Request): string => {
 const internalCacheRequest = (cacheKey: string): Request =>
   new Request(`https://read-model-cache.invalid/${cacheKey}`);
 
-const ttlSeconds = (family: ReadModelFamily): number => {
-  if (family === "portfolio_history") return 15 * 60;
-  if (family === "calendar") return 5 * 60;
-  return 60;
+const ttlSeconds = (
+  family: ReadModelFamily,
+  payload?: Record<string, unknown>,
+): number => {
+  if (family === "accounts") return 6 * 60 * 60;
+  if (family === "portfolio") return 5 * 60;
+  if (family === "portfolio_history") return 30 * 60;
+  if (family === "calendar") return 15 * 60;
+  if (family === "status") {
+    const reconciliation = payload?.reconciliation;
+    const isActive =
+      isRecord(reconciliation) &&
+      Object.values(reconciliation).some(
+        (value) => isRecord(value) && value.status === "syncing",
+      );
+    return isActive ? 30 : 5 * 60;
+  }
+  return 5 * 60;
 };
 
 const sourceRevision = (response: Response, generatedAt: string): string =>
@@ -168,8 +182,9 @@ export class ReadModelSnapshotStore {
     const encoded = JSON.stringify(payload);
     const contentHash = await digest(encoded);
     const generatedAt = this.now().toISOString();
+    const ttl = ttlSeconds(input.family, payload);
     const validUntil = new Date(
-      Date.parse(generatedAt) + ttlSeconds(input.family) * 1_000,
+      Date.parse(generatedAt) + ttl * 1_000,
     ).toISOString();
     const snapshot: SnapshotRecord = {
       version: 1,
@@ -183,7 +198,7 @@ export class ReadModelSnapshotStore {
       headers: responseHeaders(input.response),
     };
     const edgeResponse = Response.json(snapshot, {
-      headers: { "Cache-Control": `max-age=${ttlSeconds(input.family)}` },
+      headers: { "Cache-Control": `max-age=${ttl}` },
     });
     try {
       const cache = await caches.open("stock-tracker-read-models-v1");

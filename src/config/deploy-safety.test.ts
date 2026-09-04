@@ -265,6 +265,10 @@ describe("deployment safety", () => {
       "migrations/0030_quota_aware_sync.sql",
       "utf8",
     );
+    const observationRepair = readFileSync(
+      "migrations/0031_resource_observation_repair.sql",
+      "utf8",
+    );
 
     expect(incremental).toContain("market_work_pending");
     expect(quotaAware).toContain("CREATE TABLE sync_intents");
@@ -272,5 +276,9 @@ describe("deployment safety", () => {
     expect(quotaAware).toContain("repair:0030:history");
     expect(quotaAware).not.toMatch(/WITH\s+RECURSIVE/i);
     expect(quotaAware).not.toMatch(/INSERT\s+INTO\s+work_items/i);
+    expect(observationRepair).toContain(
+      "DELETE FROM resource_operation_observations",
+    );
+    expect(observationRepair).not.toMatch(/INSERT\s+INTO\s+work_items/i);
   });
 });
