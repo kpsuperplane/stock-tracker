@@ -15,6 +15,7 @@ import { ReadModelRefreshOutbox } from "../services/read-model-refresh";
 import {
   RESOURCE_ENVELOPES,
   ResourceGovernor,
+  utcUsageDate,
 } from "../services/resource-governor";
 import { RetentionCleanupService } from "../services/retention-cleanup";
 import {
@@ -56,6 +57,17 @@ const isNormalizedPlannerCron = (cron: string): boolean =>
   (NORMALIZED_PLANNER_CRONS as readonly string[]).includes(cron);
 
 const refreshEarningsHistory = async (env: Env, now: Date): Promise<string> => {
+  const governor = new ResourceGovernor(env.DB, () => now);
+  const reservation = await governor.reserve(
+    `earnings-history:${utcUsageDate(now)}`,
+    RESOURCE_ENVELOPES.historyEarnings,
+  );
+  if (!reservation) {
+    return JSON.stringify({ status: "waiting", reason: "daily_budget" });
+  }
+  if (!(await governor.consume(reservation.id))) {
+    return JSON.stringify({ status: "already_attempted" });
+  }
   try {
     const result = JSON.stringify(await runEarningsHistoryBackfill(env, now));
     logEvent("earnings_history_refresh_scheduled", {
@@ -302,13 +314,25 @@ export const handleScheduled = async (
   const now = new Date(controller.scheduledTime).toISOString();
   let splitRefresh: string | null = null;
   try {
-    splitRefresh = JSON.stringify(
-      await new ScheduledSplitRefreshService({
-        db: env.DB,
-        provider: new YahooCorporateActionProvider(),
-        now: () => new Date(now),
-      }).refreshPending(),
-    );
+    const governor = new ResourceGovernor(env.DB, () => new Date(now));
+    const reservation = compactSyncEnabled
+      ? await governor.reserve(
+          `split-refresh:${utcUsageDate(new Date(now))}`,
+          RESOURCE_ENVELOPES.foregroundSplitRefresh,
+        )
+      : null;
+    splitRefresh =
+      compactSyncEnabled && !reservation
+        ? JSON.stringify({ status: "waiting", reason: "daily_budget" })
+        : compactSyncEnabled && !(await governor.consume(reservation?.id ?? ""))
+          ? JSON.stringify({ status: "already_attempted" })
+          : JSON.stringify(
+              await new ScheduledSplitRefreshService({
+                db: env.DB,
+                provider: new YahooCorporateActionProvider(),
+                now: () => new Date(now),
+              }).refreshPending(),
+            );
     logEvent("split_refresh_scheduled", {
       scheduledTime: now,
       result: splitRefresh,
@@ -346,22 +370,26 @@ export const handleScheduled = async (
         reason: "daily_budget",
       });
     } else {
-      await new ResourceGovernor(env.DB, () => new Date(now)).consume(
-        earningsReservation.id,
-      );
-      const result = await new ScheduledEarningsRefreshService({
-        db: env.DB,
-        ...(env.ALPHA_VANTAGE_API_KEY
-          ? {
-              provider: new AlphaVantageEarningsProvider(
-                env.ALPHA_VANTAGE_API_KEY,
-                alphaBudget.fetcher("earnings_calendar"),
-              ),
-            }
-          : {}),
-        now: () => new Date(now),
-      }).refreshHeldInstruments();
-      earningsRefresh = JSON.stringify(result);
+      const claimed = await new ResourceGovernor(
+        env.DB,
+        () => new Date(now),
+      ).consume(earningsReservation.id);
+      earningsRefresh = claimed
+        ? JSON.stringify(
+            await new ScheduledEarningsRefreshService({
+              db: env.DB,
+              ...(env.ALPHA_VANTAGE_API_KEY
+                ? {
+                    provider: new AlphaVantageEarningsProvider(
+                      env.ALPHA_VANTAGE_API_KEY,
+                      alphaBudget.fetcher("earnings_calendar"),
+                    ),
+                  }
+                : {}),
+              now: () => new Date(now),
+            }).refreshHeldInstruments(),
+          )
+        : JSON.stringify({ status: "already_attempted" });
     }
     logEvent("earnings_refresh_scheduled", {
       scheduledTime: now,
@@ -431,7 +459,16 @@ export const handleScheduled = async (
   }
   let compactProduction: string | null = null;
   if (compactSyncEnabled) {
-    const eventCoverage = await reconcileEventCoverage(env.DB, now);
+    const coverageGovernor = new ResourceGovernor(env.DB, () => new Date(now));
+    const coverageReservation = await coverageGovernor.reserve(
+      `event-coverage:${utcUsageDate(new Date(now))}`,
+      RESOURCE_ENVELOPES.foregroundCoverageMaintenance,
+    );
+    const eventCoverage = !coverageReservation
+      ? { status: "waiting", reason: "daily_budget" }
+      : (await coverageGovernor.consume(coverageReservation.id))
+        ? await reconcileEventCoverage(env.DB, now)
+        : { status: "already_attempted" };
     const dividendDispatch =
       portfolioFlags.syncCurrent || portfolioFlags.syncFuture
         ? await dispatchDividendRefreshes(

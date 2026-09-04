@@ -136,6 +136,43 @@ describe("compact quota-aware sync intents", () => {
     ).toBe(true);
   });
 
+  it("services completed-slice analyses before extending the same history frontier", async () => {
+    await insertInstrument("history-downstream");
+    const foreground = queue();
+    const history = queue();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO sync_intents
+         (id, deterministic_key, instrument_id, dataset, priority_class,
+          target_start_date, target_end_date, cursor_end_date, status,
+          priority, attempt_count, max_attempts, last_served_at,
+          created_at, updated_at)
+         VALUES ('history-market', 'history-market', 'history-downstream',
+                 'market', 'history', '2020-01-01', '2026-07-10',
+                 '2026-04-11', 'pending', 10, 1, 5, ?1, ?1, ?1)`,
+      ).bind(now),
+      env.DB.prepare(
+        `INSERT INTO sync_intents
+         (id, deterministic_key, instrument_id, dataset, priority_class,
+          target_start_date, target_end_date, cursor_end_date, status,
+          priority, attempt_count, max_attempts, created_at, updated_at)
+         VALUES ('history-analysis', 'history-analysis', 'history-downstream',
+                 'analysis', 'history', '2026-06-01', '2026-06-01',
+                 '2026-06-01', 'pending', 10, 0, 3, ?1, ?1)`,
+      ).bind(now),
+    ]);
+
+    expect(
+      await scheduler(foreground.binding, history.binding).dispatch(1),
+    ).toEqual({ dispatched: 1, waiting: 0 });
+    expect(
+      await env.DB.prepare(
+        `SELECT intent.dataset FROM sync_slices slice
+          JOIN sync_intents intent ON intent.id = slice.intent_id`,
+      ).first(),
+    ).toEqual({ dataset: "analysis" });
+  });
+
   it("represents a 46,637-date job with one compact intent and bounded slices", async () => {
     await insertInstrument("fixture-instrument");
     await new PipelineJobRepository(env.DB)

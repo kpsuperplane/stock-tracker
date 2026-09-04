@@ -226,7 +226,7 @@ describe("deployment safety", () => {
       "SYNC_RECENT_ENABLED",
       "SYNC_HISTORY_ENABLED",
     ]) {
-      expect(production.vars?.[key]).toBe("false");
+      expect(production.vars?.[key]).toBe("true");
     }
     for (const key of [
       "PORTFOLIO_DUAL_WRITE_ENABLED",

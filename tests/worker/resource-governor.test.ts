@@ -121,4 +121,88 @@ describe("resource governor", () => {
     expect((reads?.units ?? 0) * 72).toBeLessThanOrEqual(2_000_000);
     expect((writes?.units ?? 0) * 72).toBeLessThanOrEqual(40_000);
   });
+
+  it("keeps every current holding dispatchable after scheduled foreground work", async () => {
+    const governor = new ResourceGovernor(env.DB, () => now);
+    expect(
+      await governor.reserve(
+        "scheduled-earnings",
+        RESOURCE_ENVELOPES.foregroundEarnings,
+      ),
+    ).not.toBeNull();
+    expect(
+      await governor.reserve(
+        "scheduled-splits",
+        RESOURCE_ENVELOPES.foregroundSplitRefresh,
+      ),
+    ).not.toBeNull();
+    expect(
+      await governor.reserve(
+        "scheduled-coverage",
+        RESOURCE_ENVELOPES.foregroundCoverageMaintenance,
+      ),
+    ).not.toBeNull();
+    for (let index = 0; index < 12; index += 1) {
+      expect(
+        await governor.reserve(
+          `scheduled-dividend-${index}`,
+          RESOURCE_ENVELOPES.foregroundDividend,
+        ),
+      ).not.toBeNull();
+    }
+    for (let index = 0; index < 72; index += 1) {
+      expect(
+        await governor.reserve(
+          `scheduled-current-${index}`,
+          RESOURCE_ENVELOPES.foregroundCurrentMarket,
+        ),
+      ).not.toBeNull();
+    }
+
+    // A recent-repair slice still fits after every held instrument and all
+    // scheduled future/maintenance work, so repair makes daily progress
+    // without competing with today's valuations.
+    expect(
+      await governor.reserve(
+        "scheduled-recent-0",
+        RESOURCE_ENVELOPES.foregroundMarket,
+      ),
+    ).not.toBeNull();
+    expect(
+      await governor.reserve(
+        "scheduled-recent-overflow",
+        RESOURCE_ENVELOPES.foregroundMarket,
+      ),
+    ).toBeNull();
+  });
+
+  it("reserves report work while preserving daily deep-history progress", async () => {
+    const governor = new ResourceGovernor(env.DB, () => now);
+    expect(
+      await governor.reserve(
+        "history-earnings",
+        RESOURCE_ENVELOPES.historyEarnings,
+      ),
+    ).not.toBeNull();
+    for (let index = 0; index < 3; index += 1) {
+      expect(
+        await governor.reserve(
+          `history-market-${index}`,
+          RESOURCE_ENVELOPES.historyMarket,
+        ),
+      ).not.toBeNull();
+    }
+    expect(
+      await governor.reserve(
+        "history-analysis",
+        RESOURCE_ENVELOPES.historyAnalysis,
+      ),
+    ).not.toBeNull();
+    expect(
+      await governor.reserve(
+        "history-overflow",
+        RESOURCE_ENVELOPES.historyAnalysis,
+      ),
+    ).toBeNull();
+  });
 });

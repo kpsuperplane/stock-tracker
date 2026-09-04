@@ -391,13 +391,16 @@ export class SyncIntentScheduler {
                  AND candidate.attempt_count < candidate.max_attempts
                  AND (candidate.next_attempt_at IS NULL
                    OR candidate.next_attempt_at <= ?1)
-               ORDER BY COALESCE(candidate.last_served_at, candidate.created_at),
+               ORDER BY CASE candidate.dataset WHEN 'analysis' THEN 0 ELSE 1 END,
+                        COALESCE(candidate.last_served_at, candidate.created_at),
                         candidate.priority DESC, candidate.id
                LIMIT 1
             ))
           ORDER BY CASE priority_class
                      WHEN 'current' THEN 0 WHEN 'future' THEN 1
                      WHEN 'recent' THEN 2 ELSE 3 END,
+                   CASE WHEN priority_class = 'history' AND dataset = 'analysis'
+                        THEN 0 ELSE 1 END,
                    priority DESC, COALESCE(last_served_at, created_at), id
           LIMIT ?2`,
       )

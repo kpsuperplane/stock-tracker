@@ -104,7 +104,10 @@ export const RESOURCE_ENVELOPES = {
     operationType: "foreground_current_market_slice",
     items: [
       { resourceType: "d1_rows_read", units: 10_000 },
-      { resourceType: "d1_rows_written", units: 500 },
+      // A current slice persists at most one market fact plus revision/index
+      // bookkeeping. Keep substantial headroom over measured fixture usage
+      // without reserving nearly the entire foreground lane for 72 holdings.
+      { resourceType: "d1_rows_written", units: 250 },
       { resourceType: "provider_call", resourceKey: "yahoo-market", units: 1 },
       { resourceType: "queue_send", resourceKey: "foreground", units: 1 },
     ],
@@ -172,6 +175,32 @@ export const RESOURCE_ENVELOPES = {
         resourceKey: "alpha-earnings",
         units: 1,
       },
+    ],
+  },
+  foregroundSplitRefresh: {
+    lane: "foreground",
+    operationType: "foreground_split_refresh",
+    items: [
+      { resourceType: "d1_rows_read", units: 100_000 },
+      { resourceType: "d1_rows_written", units: 5_000 },
+      { resourceType: "provider_call", resourceKey: "yahoo-splits", units: 20 },
+    ],
+  },
+  foregroundCoverageMaintenance: {
+    lane: "foreground",
+    operationType: "foreground_coverage_maintenance",
+    items: [
+      { resourceType: "d1_rows_read", units: 10_000 },
+      { resourceType: "d1_rows_written", units: 2_000 },
+    ],
+  },
+  historyEarnings: {
+    lane: "history",
+    operationType: "history_earnings_batch",
+    items: [
+      { resourceType: "d1_rows_read", units: 100_000 },
+      { resourceType: "d1_rows_written", units: 10_000 },
+      { resourceType: "provider_call", resourceKey: "sec-earnings", units: 8 },
     ],
   },
   historyAnalysis: {

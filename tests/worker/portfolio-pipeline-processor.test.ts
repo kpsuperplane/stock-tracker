@@ -9,6 +9,59 @@ import { PortfolioPipelineProcessor } from "../../src/services/portfolio-pipelin
 
 const now = "2026-07-10T22:00:00.000Z";
 
+interface D1Usage {
+  rowsRead: number;
+  rowsWritten: number;
+}
+
+const addUsage = (usage: D1Usage, result: unknown): void => {
+  if (!result || typeof result !== "object" || !("meta" in result)) return;
+  const meta = (result as { meta?: D1Result["meta"] }).meta;
+  usage.rowsRead += meta?.rows_read ?? 0;
+  usage.rowsWritten += meta?.rows_written ?? 0;
+};
+
+const traceStatement = (
+  statement: D1PreparedStatement,
+  usage: D1Usage,
+): D1PreparedStatement =>
+  new Proxy(statement, {
+    get(source, property, receiver) {
+      if (property === "bind") {
+        return (...values: unknown[]) =>
+          traceStatement(source.bind(...values), usage);
+      }
+      if (property === "all" || property === "first" || property === "run") {
+        return async (...values: unknown[]) => {
+          const method = Reflect.get(source, property) as (
+            ...args: unknown[]
+          ) => Promise<unknown>;
+          const result = await Reflect.apply(method, source, values);
+          addUsage(usage, result);
+          return result;
+        };
+      }
+      return Reflect.get(source, property, receiver);
+    },
+  });
+
+const traceDatabase = (database: D1Database, usage: D1Usage): D1Database =>
+  new Proxy(database, {
+    get(source, property, receiver) {
+      if (property === "prepare") {
+        return (query: string) => traceStatement(source.prepare(query), usage);
+      }
+      if (property === "batch") {
+        return async (statements: D1PreparedStatement[]) => {
+          const results = await source.batch(statements);
+          for (const result of results) addUsage(usage, result);
+          return results;
+        };
+      }
+      return Reflect.get(source, property, receiver);
+    },
+  });
+
 const insertInstrument = async (id = "instrument-1"): Promise<void> => {
   await env.DB.prepare(
     `INSERT INTO instruments
@@ -113,12 +166,27 @@ const explanationProvider = (
   explain: ExplanationProvider["explain"],
 ): ExplanationProvider => ({ explain: vi.fn(explain) });
 
+const weekdays = (start: string, end: string): string[] => {
+  const dates: string[] = [];
+  for (
+    let cursor = new Date(`${start}T12:00:00.000Z`);
+    cursor <= new Date(`${end}T12:00:00.000Z`);
+    cursor = new Date(cursor.valueOf() + 86_400_000)
+  ) {
+    if (![0, 6].includes(cursor.getUTCDay())) {
+      dates.push(cursor.toISOString().slice(0, 10));
+    }
+  }
+  return dates;
+};
+
 describe("normalized portfolio pipeline processor", () => {
   it("fetches one lookback range and persists normalized facts for each work item", async () => {
     await insertInstrument();
     const calls: Array<[string, string, string]> = [];
+    const usage: D1Usage = { rowsRead: 0, rowsWritten: 0 };
     const processor = new PortfolioPipelineProcessor({
-      db: env.DB,
+      db: traceDatabase(env.DB, usage),
       marketDataProvider: marketProvider(calls),
       newsProvider: newsProvider(async () => []),
       explanationProvider: explanationProvider(async () => ({
@@ -138,6 +206,8 @@ describe("normalized portfolio pipeline processor", () => {
     });
 
     expect(calls).toEqual([["PROC-instrument-1", "2026-07-02", "2026-07-10"]]);
+    expect(usage.rowsRead).toBeLessThanOrEqual(10_000);
+    expect(usage.rowsWritten).toBeLessThanOrEqual(250);
     expect(outcomes).toEqual([
       {
         workItemId: "fact-2026-07-09",
@@ -178,6 +248,7 @@ describe("normalized portfolio pipeline processor", () => {
   it("refreshes qualified analysis in Chinese, persists sources, and reuses it on redelivery", async () => {
     await insertInstrument();
     const calls: Array<[string, string, string]> = [];
+    const usage: D1Usage = { rowsRead: 0, rowsWritten: 0 };
     const search = vi.fn(async () => [
       {
         title: "Processor Corp expands enterprise sales",
@@ -192,7 +263,7 @@ describe("normalized portfolio pipeline processor", () => {
       model: "test-model",
     }));
     const processor = new PortfolioPipelineProcessor({
-      db: env.DB,
+      db: traceDatabase(env.DB, usage),
       marketDataProvider: marketProvider(calls),
       newsProvider: newsProvider(search),
       explanationProvider: explanationProvider(explain),
@@ -206,6 +277,8 @@ describe("normalized portfolio pipeline processor", () => {
       batch: batch(),
       work: [work("fact-2026-07-10", "market_fact", "2026-07-10")],
     });
+    usage.rowsRead = 0;
+    usage.rowsWritten = 0;
 
     const analysisWork = work("analysis-2026-07-10", "analysis", "2026-07-10");
     const analysisBatch = batch({ workType: "analysis" });
@@ -213,6 +286,8 @@ describe("normalized portfolio pipeline processor", () => {
       batch: analysisBatch,
       work: [analysisWork],
     });
+    expect(usage.rowsRead).toBeLessThanOrEqual(5_000);
+    expect(usage.rowsWritten).toBeLessThanOrEqual(1_000);
     const second = await processor.processAnalysis({
       batch: analysisBatch,
       work: [analysisWork],
@@ -251,6 +326,54 @@ describe("normalized portfolio pipeline processor", () => {
       source_url: "https://example.com/processor-news",
       cited: 1,
     });
+  });
+
+  it("keeps a 90-day history slice inside its reserved D1 envelope", async () => {
+    await insertInstrument();
+    const dates = weekdays("2026-04-12", "2026-07-10");
+    const usage: D1Usage = { rowsRead: 0, rowsWritten: 0 };
+    const processor = new PortfolioPipelineProcessor({
+      db: traceDatabase(env.DB, usage),
+      marketDataProvider: {
+        getInstrument: vi.fn(async (symbol) => ({
+          metadata: {
+            symbol,
+            companyName: "Processor Corp",
+            exchange: "NYSE",
+            currency: "USD",
+            instrumentType: "EQUITY" as const,
+          },
+          bars: [
+            { date: "2026-04-10", close: 100, adjustedClose: 100 },
+            ...dates.map((date, index) => ({
+              date,
+              close: 101 + index,
+              adjustedClose: 101 + index,
+            })),
+          ],
+          corporateActionDates: new Set<string>(),
+        })),
+      },
+      newsProvider: newsProvider(async () => []),
+      explanationProvider: explanationProvider(async () => ({
+        explanationZhCn: "不会被调用。",
+        model: "test",
+      })),
+      now: () => new Date(now),
+    });
+
+    const outcomes = await processor.processMarketFact({
+      batch: batch({
+        requestedStartDate: "2026-04-12",
+        requestedEndDate: "2026-07-10",
+      }),
+      work: dates.map((date) => work(`history-${date}`, "market_fact", date)),
+    });
+
+    expect(outcomes).toHaveLength(dates.length);
+    expect(outcomes.every((outcome) => outcome.kind === "complete")).toBe(true);
+    expect(usage.rowsRead).toBeLessThanOrEqual(10_000);
+    expect(usage.rowsWritten).toBeLessThanOrEqual(3_000);
   });
 
   it("terminalizes a non-transient range validation failure instead of retrying forever", async () => {
