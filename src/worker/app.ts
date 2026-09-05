@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ZodError } from "zod";
 import { readPortfolioFeatureFlags } from "../config/features";
+import { measuredD1ResourceUnits } from "../services/d1-usage";
 import {
   cacheableReadModelFamily,
   ReadModelSnapshotStore,
@@ -167,7 +168,10 @@ export const createApp = () => {
       }
       try {
         await next();
-        await governor.consume(reservation.id);
+        await governor.consume(
+          reservation.id,
+          measuredD1ResourceUnits(context.env.DB),
+        );
         return context.res;
       } catch (error) {
         await governor.release(reservation.id).catch(() => false);
@@ -248,7 +252,10 @@ export const createApp = () => {
           response,
           previous,
         });
-        await governor.consume(reservation.id);
+        await governor.consume(
+          reservation.id,
+          measuredD1ResourceUnits(context.env.DB),
+        );
         const result = snapshot
           ? store.toResponse(snapshot, { stale: false })
           : response;

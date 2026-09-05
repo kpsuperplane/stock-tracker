@@ -1,4 +1,5 @@
 import type { SyncSliceMessage } from "../shared/contracts";
+import { easternCloseUtc } from "../shared/dates";
 import {
   nextUtcReset,
   RESOURCE_ENVELOPES,
@@ -73,6 +74,14 @@ export const dateAdd = (date: string, days: number): string => {
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
 };
+
+// Yahoo's end-of-day chart can briefly expose a date before every adjusted
+// close is finalized. Holding current work until six hours after the exchange
+// close prevents a partial snapshot from spending one call per holding.
+export const yahooDailyBarReadyAt = (marketDate: string): string =>
+  new Date(
+    Date.parse(easternCloseUtc(marketDate)) + 6 * 60 * 60_000,
+  ).toISOString();
 
 const parseIntervals = (value: string): EligibilityInterval[] => {
   try {
@@ -242,15 +251,20 @@ export class SyncIntentScheduler {
         interval.startDate,
         interval.endDate,
       ].join(":");
+      const nextAttemptAt =
+        priorityClass === "current" &&
+        this.now().toISOString() < yahooDailyBarReadyAt(interval.endDate)
+          ? yahooDailyBarReadyAt(interval.endDate)
+          : null;
       return this.dependencies.db
         .prepare(
           `INSERT OR IGNORE INTO sync_intents
            (id, deterministic_key, pipeline_job_id, instrument_id, dataset,
             priority_class, target_start_date, target_end_date,
             cursor_end_date, status, priority, attempt_count, max_attempts,
-            created_at, updated_at)
+            next_attempt_at, created_at, updated_at)
            VALUES (?1, ?2, ?3, ?4, 'market', ?5, ?6, ?7, ?7, 'pending',
-                   ?8, 0, 5, ?9, ?9)`,
+                   ?8, 0, 5, ?9, ?10, ?10)`,
         )
         .bind(
           this.newId(),
@@ -261,6 +275,7 @@ export class SyncIntentScheduler {
           interval.startDate,
           interval.endDate,
           job.priority,
+          nextAttemptAt,
           timestamp,
         );
     });
@@ -332,6 +347,11 @@ export class SyncIntentScheduler {
       ];
       for (const definition of definitions) {
         const deterministicKey = `intent:scheduled:${definition.priorityClass}:${instrument.id}`;
+        const nextAttemptAt =
+          definition.priorityClass === "current" &&
+          timestamp < yahooDailyBarReadyAt(instrument.latestCompletedDate)
+            ? yahooDailyBarReadyAt(instrument.latestCompletedDate)
+            : null;
         statements.push(
           this.dependencies.db
             .prepare(
@@ -339,9 +359,9 @@ export class SyncIntentScheduler {
                (id, deterministic_key, pipeline_job_id, instrument_id,
                 dataset, priority_class, target_start_date, target_end_date,
                 cursor_end_date, status, priority, attempt_count, max_attempts,
-                created_at, updated_at)
+                next_attempt_at, created_at, updated_at)
                VALUES (?1, ?2, NULL, ?3, 'market', ?4, ?5, ?6, ?6,
-                       'pending', ?7, 0, 5, ?8, ?8)
+                       'pending', ?7, 0, 5, ?8, ?9, ?9)
                ON CONFLICT(deterministic_key) DO UPDATE SET
                  target_start_date = excluded.target_start_date,
                  target_end_date = excluded.target_end_date,
@@ -351,9 +371,18 @@ export class SyncIntentScheduler {
                  status = CASE
                    WHEN excluded.target_end_date > sync_intents.target_end_date
                    THEN 'pending' ELSE sync_intents.status END,
+                 attempt_count = CASE
+                   WHEN excluded.target_end_date > sync_intents.target_end_date
+                   THEN 0 ELSE sync_intents.attempt_count END,
                  next_attempt_at = CASE
                    WHEN excluded.target_end_date > sync_intents.target_end_date
-                   THEN NULL ELSE sync_intents.next_attempt_at END,
+                   THEN excluded.next_attempt_at ELSE sync_intents.next_attempt_at END,
+                 last_error_code = CASE
+                   WHEN excluded.target_end_date > sync_intents.target_end_date
+                   THEN NULL ELSE sync_intents.last_error_code END,
+                 last_error_message = CASE
+                   WHEN excluded.target_end_date > sync_intents.target_end_date
+                   THEN NULL ELSE sync_intents.last_error_message END,
                  updated_at = CASE
                    WHEN excluded.target_end_date > sync_intents.target_end_date
                    THEN excluded.updated_at ELSE sync_intents.updated_at END`,
@@ -366,6 +395,7 @@ export class SyncIntentScheduler {
               definition.startDate,
               instrument.latestCompletedDate,
               definition.priority,
+              nextAttemptAt,
               timestamp,
             ),
         );

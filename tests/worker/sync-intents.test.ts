@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { PipelineJobRepository } from "../../src/db/pipeline-jobs";
+import { D1UsageMeter } from "../../src/services/d1-usage";
 import { SyncIntentScheduler } from "../../src/services/sync-intents";
 import { SyncSliceProcessor } from "../../src/services/sync-slice-processor";
 import {
@@ -9,7 +10,7 @@ import {
   type SyncSliceMessage,
 } from "../../src/shared/contracts";
 
-const now = "2026-07-10T12:00:00.000Z";
+const now = "2026-07-11T12:00:00.000Z";
 
 const insertInstrument = async (id: string): Promise<void> => {
   await env.DB.prepare(
@@ -96,6 +97,77 @@ describe("compact quota-aware sync intents", () => {
 
     expect(await service.dispatch(1)).toEqual({ dispatched: 1, waiting: 0 });
     expect(foreground.sent).toHaveLength(1);
+  });
+
+  it("waits for finalized daily bars without reserving provider capacity", async () => {
+    await insertInstrument("provider-settlement");
+    const foreground = queue();
+    const history = queue();
+    const early = new Date("2026-07-10T22:00:00.000Z");
+    const service = new SyncIntentScheduler({
+      db: env.DB,
+      foregroundQueue: foreground.binding,
+      historyQueue: history.binding,
+      now: () => early,
+    });
+    await service.ensureForegroundCoverage(
+      [{ id: "provider-settlement", latestCompletedDate: "2026-07-10" }],
+      false,
+    );
+
+    expect(await service.dispatch(1)).toEqual({ dispatched: 0, waiting: 0 });
+    expect(foreground.sent).toHaveLength(0);
+    expect(
+      await env.DB.prepare(
+        `SELECT status, next_attempt_at AS nextAttemptAt, attempt_count AS attempts
+           FROM sync_intents WHERE instrument_id = 'provider-settlement'`,
+      ).first(),
+    ).toEqual({
+      status: "pending",
+      nextAttemptAt: "2026-07-11T02:00:00.000Z",
+      attempts: 0,
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM resource_reservations
+          WHERE lane = 'foreground'`,
+      ).first(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("resets attempts when the scheduled coverage date advances", async () => {
+    await insertInstrument("daily-attempt-reset");
+    const foreground = queue();
+    const history = queue();
+    const service = scheduler(foreground.binding, history.binding);
+    await service.ensureForegroundCoverage(
+      [{ id: "daily-attempt-reset", latestCompletedDate: "2026-07-09" }],
+      false,
+    );
+    await env.DB.prepare(
+      `UPDATE sync_intents SET status = 'waiting', attempt_count = 4,
+              last_error_code = 'invalid_price', next_attempt_at = ?1
+        WHERE instrument_id = 'daily-attempt-reset'`,
+    )
+      .bind("2026-07-12T00:00:00.000Z")
+      .run();
+
+    await service.ensureForegroundCoverage(
+      [{ id: "daily-attempt-reset", latestCompletedDate: "2026-07-10" }],
+      false,
+    );
+    expect(
+      await env.DB.prepare(
+        `SELECT target_end_date AS targetEndDate, status,
+                attempt_count AS attempts, last_error_code AS errorCode
+           FROM sync_intents WHERE instrument_id = 'daily-attempt-reset'`,
+      ).first(),
+    ).toEqual({
+      targetEndDate: "2026-07-10",
+      status: "pending",
+      attempts: 0,
+      errorCode: null,
+    });
   });
 
   it("preempts history, bounds lane depth, and rotates history instruments", async () => {
@@ -241,9 +313,11 @@ describe("compact quota-aware sync intents", () => {
           resultRevision: "provider-r1",
         })),
     );
+    const meter = new D1UsageMeter(env.DB);
     const processor = new SyncSliceProcessor({
-      db: env.DB,
+      db: meter.db,
       now: () => new Date(now),
+      actualUsage: () => meter.resourceUnits(),
       processor: { processMarketFact },
     });
 
@@ -262,5 +336,57 @@ describe("compact quota-aware sync intents", () => {
            FROM coverage_intervals WHERE instrument_id = 'processor-once'`,
       ).first(),
     ).toEqual({ startDate: "2026-07-10", endDate: "2026-07-10" });
+    const budget = await env.DB.prepare(
+      `SELECT reserved_units AS reserved, actual_units AS actual
+         FROM resource_budget_days
+        WHERE lane = 'foreground' AND resource_type = 'd1_rows_read'
+          AND resource_key = ''`,
+    ).first<{ reserved: number; actual: number }>();
+    expect(budget?.actual).toBeGreaterThan(0);
+    expect(budget?.reserved).toBe(budget?.actual);
+    expect(budget?.reserved).toBeLessThan(10_000);
+  });
+
+  it("defers a provisional current bar until the next UTC day", async () => {
+    await insertInstrument("provisional-current");
+    const foreground = queue();
+    const history = queue();
+    const service = scheduler(foreground.binding, history.binding);
+    await service.ensureForegroundCoverage(
+      [{ id: "provisional-current", latestCompletedDate: "2026-07-10" }],
+      false,
+    );
+    await service.dispatch(1);
+    const message = foreground.sent[0];
+    if (!message) throw new Error("slice was not queued");
+    const processMarketFact = vi.fn(
+      async (input: { work: readonly { id: string }[] }) =>
+        input.work.map((work) => ({
+          workItemId: work.id,
+          kind: "retry" as const,
+          errorCode: "invalid_price",
+          errorMessage: "Daily bar has not settled.",
+        })),
+    );
+
+    expect(
+      await new SyncSliceProcessor({
+        db: env.DB,
+        now: () => new Date(now),
+        processor: { processMarketFact },
+      }).process(message),
+    ).toBe("processed");
+    expect(
+      await env.DB.prepare(
+        `SELECT status, next_attempt_at AS nextAttemptAt,
+                attempt_count AS attempts, last_error_code AS errorCode
+           FROM sync_intents WHERE instrument_id = 'provisional-current'`,
+      ).first(),
+    ).toEqual({
+      status: "waiting",
+      nextAttemptAt: "2026-07-12T00:00:00.000Z",
+      attempts: 1,
+      errorCode: "invalid_price",
+    });
   });
 });

@@ -1,3 +1,4 @@
+import { D1UsageMeter } from "../services/d1-usage";
 import { ReadModelRefreshOutbox } from "../services/read-model-refresh";
 import type { ReadModelRefreshMessage } from "../shared/contracts";
 import { createApp } from "./app";
@@ -18,6 +19,7 @@ export const consumeReadModelRefresh = async (
   try {
     const targets = await outbox.targets(row.family);
     for (const target of targets) {
+      const meter = new D1UsageMeter(env.DB);
       const headers = new Headers({
         "X-Read-Model-Refresh-Key": target.cacheKey,
       });
@@ -26,7 +28,7 @@ export const consumeReadModelRefresh = async (
           method: "GET",
           headers,
         }),
-        env,
+        { ...env, DB: meter.db },
       );
       if (!response.ok)
         throw new Error(`read_model_refresh_http_${response.status}`);

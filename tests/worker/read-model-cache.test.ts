@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
+import { D1UsageMeter } from "../../src/services/d1-usage";
 import {
   cacheableReadModelFamily,
   ReadModelSnapshotStore,
@@ -158,6 +159,37 @@ describe("read-model availability cache", () => {
       categories: [{ accounts: [{ name: "Default Account" }] }],
       freshness: { state: "fresh" },
     });
+  });
+
+  it("settles a cache fill to D1 metadata instead of its full estimate", async () => {
+    const meter = new D1UsageMeter(env.DB);
+    const testEnv = {
+      ...env,
+      DB: meter.db,
+      READ_MODEL_CACHE_ENABLED: "true",
+      READ_MODEL_PUBLISH_ENABLED: "false",
+    } as unknown as Env;
+    const response = await createApp().fetch(
+      new Request("https://example.test/api/accounts", {
+        headers: {
+          "Cf-Access-Authenticated-User-Email":
+            "measured-cache-fill@example.test",
+        },
+      }),
+      testEnv,
+      {} as ExecutionContext,
+    );
+
+    expect(response.status).toBe(200);
+    const budget = await env.DB.prepare(
+      `SELECT reserved_units AS reserved, actual_units AS actual
+         FROM resource_budget_days
+        WHERE lane = 'availability' AND resource_type = 'd1_rows_read'
+          AND resource_key = ''`,
+    ).first<{ reserved: number; actual: number }>();
+    expect(budget?.actual).toBeGreaterThan(0);
+    expect(budget?.reserved).toBe(budget?.actual);
+    expect(budget?.reserved).toBeLessThan(100_000);
   });
 
   it("serves an explicit stale snapshot while D1 is unavailable", async () => {

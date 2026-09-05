@@ -381,11 +381,29 @@ export class ResourceGovernor {
     actual: readonly ResourceUnits[] = [],
   ): Promise<boolean> {
     const timestamp = this.now().toISOString();
+    const result = await this.db
+      .prepare(
+        `UPDATE resource_reservations
+            SET state = 'consumed', consumed_at = ?1, updated_at = ?1
+          WHERE id = ?2 AND state = 'reserved'`,
+      )
+      .bind(timestamp, reservationId)
+      .run();
+    if (result.meta.changes !== 1) return false;
+    if (actual.length > 0) await this.recordActual(reservationId, actual);
+    return true;
+  }
+
+  async recordActual(
+    reservationId: string,
+    actual: readonly ResourceUnits[],
+  ): Promise<boolean> {
     const row = await this.db
       .prepare(
         `SELECT usage_date AS usageDate, lane,
-                operation_type AS operationType FROM resource_reservations
-          WHERE id = ?1 AND state = 'reserved'`,
+                operation_type AS operationType
+           FROM resource_reservations
+          WHERE id = ?1 AND state = 'consumed' AND measured_at IS NULL`,
       )
       .bind(reservationId)
       .first<{
@@ -394,47 +412,98 @@ export class ResourceGovernor {
         operationType: string;
       }>();
     if (!row) return false;
-    // A reservation is an upper bound, not a measurement. Callers that can
-    // observe D1/provider metadata pass it explicitly; callers that cannot do
-    // so still consume the reservation without poisoning the adaptive p99.
-    const normalized = actual
-      .filter((item) => item.units >= 0)
-      .map((item) => ({
+    const combined = new Map<string, ResourceUnits>();
+    for (const item of actual) {
+      if (!Number.isSafeInteger(item.units) || item.units < 0) continue;
+      const resourceKey = item.resourceKey ?? "";
+      const key = `${item.resourceType}\n${resourceKey}`;
+      const previous = combined.get(key);
+      combined.set(key, {
         resourceType: item.resourceType,
-        resourceKey: item.resourceKey ?? "",
-        units: Math.floor(item.units),
-      }));
-    const statements: D1PreparedStatement[] = [];
-    for (const item of normalized) {
+        resourceKey,
+        units: (previous?.units ?? 0) + item.units,
+      });
+    }
+    if (combined.size === 0) return false;
+    const timestamp = this.now().toISOString();
+    const token = crypto.randomUUID();
+    const statements: D1PreparedStatement[] = [
+      this.db
+        .prepare(
+          `UPDATE resource_reservations
+              SET measurement_token = ?1, updated_at = ?2
+            WHERE id = ?3 AND state = 'consumed' AND measured_at IS NULL
+              AND measurement_token IS NULL`,
+        )
+        .bind(token, timestamp, reservationId),
+    ];
+    for (const item of combined.values()) {
       statements.push(
         this.db
           .prepare(
             `UPDATE resource_budget_days
-                SET actual_units = actual_units + ?1, updated_at = ?2
-              WHERE usage_date = ?3 AND lane = ?4
-                AND resource_type = ?5 AND resource_key = ?6`,
+                SET reserved_units = MAX(0, reserved_units - COALESCE((
+                      SELECT reserved_units
+                        FROM resource_reservation_items
+                       WHERE reservation_id = ?1 AND resource_type = ?2
+                         AND resource_key = ?3
+                    ), 0) + ?4),
+                    actual_units = actual_units + ?4, updated_at = ?5
+              WHERE usage_date = ?6 AND lane = ?7
+                AND resource_type = ?2 AND resource_key = ?3
+                AND EXISTS (
+                  SELECT 1 FROM resource_reservation_items
+                   WHERE reservation_id = ?1 AND resource_type = ?2
+                     AND resource_key = ?3
+                )
+                AND EXISTS (
+                  SELECT 1 FROM resource_reservations
+                   WHERE id = ?1 AND measurement_token = ?8
+                     AND measured_at IS NULL
+                )`,
           )
           .bind(
+            reservationId,
+            item.resourceType,
+            item.resourceKey ?? "",
             item.units,
             timestamp,
             row.usageDate,
             row.lane,
-            item.resourceType,
-            item.resourceKey,
+            token,
           ),
         this.db
           .prepare(
             `UPDATE resource_reservation_items SET actual_units = ?1
               WHERE reservation_id = ?2 AND resource_type = ?3
-                AND resource_key = ?4`,
+                AND resource_key = ?4 AND EXISTS (
+                  SELECT 1 FROM resource_reservations
+                   WHERE id = ?2 AND measurement_token = ?5
+                     AND measured_at IS NULL
+                )`,
           )
-          .bind(item.units, reservationId, item.resourceType, item.resourceKey),
+          .bind(
+            item.units,
+            reservationId,
+            item.resourceType,
+            item.resourceKey ?? "",
+            token,
+          ),
         this.db
           .prepare(
             `INSERT INTO resource_operation_observations
              (id, usage_date, lane, operation_type, resource_type,
               resource_key, actual_units, observed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+              WHERE EXISTS (
+                SELECT 1 FROM resource_reservation_items
+                 WHERE reservation_id = ?9 AND resource_type = ?5
+                   AND resource_key = ?6
+              ) AND EXISTS (
+                SELECT 1 FROM resource_reservations
+                 WHERE id = ?9 AND measurement_token = ?10
+                   AND measured_at IS NULL
+              )`,
           )
           .bind(
             crypto.randomUUID(),
@@ -442,9 +511,11 @@ export class ResourceGovernor {
             row.lane,
             row.operationType,
             item.resourceType,
-            item.resourceKey,
+            item.resourceKey ?? "",
             item.units,
             timestamp,
+            reservationId,
+            token,
           ),
       );
     }
@@ -452,13 +523,13 @@ export class ResourceGovernor {
       this.db
         .prepare(
           `UPDATE resource_reservations
-              SET state = 'consumed', consumed_at = ?1, updated_at = ?1
-            WHERE id = ?2 AND state = 'reserved'`,
+              SET measured_at = ?1, measurement_token = NULL, updated_at = ?1
+            WHERE id = ?2 AND measurement_token = ?3 AND measured_at IS NULL`,
         )
-        .bind(timestamp, reservationId),
+        .bind(timestamp, reservationId, token),
     );
     const results = await this.db.batch(statements);
-    return (results.at(-1)?.meta.changes ?? 0) === 1;
+    return (results[0]?.meta.changes ?? 0) === 1;
   }
 
   async release(reservationId: string): Promise<boolean> {

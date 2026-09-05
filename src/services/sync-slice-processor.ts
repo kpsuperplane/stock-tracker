@@ -4,7 +4,11 @@ import type { WorkItemRecord } from "../db/work-items";
 import { isMarketTradingDayForExchange } from "../domain/market-calendar";
 import type { SyncSliceMessage } from "../shared/contracts";
 import type { PipelineWorkProcessor } from "../worker/pipeline-queue";
-import { ResourceGovernor } from "./resource-governor";
+import {
+  nextUtcReset,
+  ResourceGovernor,
+  type ResourceUnits,
+} from "./resource-governor";
 import {
   dateAdd,
   intentSelection,
@@ -18,6 +22,7 @@ export interface SyncSliceProcessorDependencies {
   processor: PipelineWorkProcessor;
   now?: () => Date;
   newId?: () => string;
+  actualUsage?: () => ResourceUnits[];
 }
 
 export class SyncSliceProcessor {
@@ -34,6 +39,59 @@ export class SyncSliceProcessor {
   }
 
   async process(message: SyncSliceMessage): Promise<"processed" | "stale"> {
+    const usage: {
+      reservationId: string | null;
+      providerStarted: boolean;
+      intent: SyncIntentRow | null;
+    } = { reservationId: null, providerStarted: false, intent: null };
+    try {
+      return await this.processClaimed(message, (slice, intent, started) => {
+        usage.reservationId = slice.reservationId;
+        usage.intent = intent;
+        usage.providerStarted = started;
+      });
+    } finally {
+      if (usage.reservationId) {
+        const actual = this.dependencies.actualUsage?.() ?? [];
+        actual.push({
+          resourceType: "queue_send",
+          resourceKey:
+            usage.intent?.priorityClass === "history"
+              ? "history"
+              : "foreground",
+          units: 1,
+        });
+        if (usage.providerStarted && usage.intent) {
+          actual.push({
+            resourceType: "provider_call",
+            resourceKey:
+              usage.intent.dataset === "analysis" ? "analysis" : "yahoo-market",
+            units: 1,
+          });
+        }
+        await this.governor
+          .recordActual(usage.reservationId, actual)
+          .catch((error) => {
+            console.warn(
+              JSON.stringify({
+                event: "sync_slice_actual_usage_failed",
+                syncSliceId: message.syncSliceId,
+                message: String(error).slice(0, 500),
+              }),
+            );
+          });
+      }
+    }
+  }
+
+  private async processClaimed(
+    message: SyncSliceMessage,
+    trackUsage: (
+      slice: SyncSliceRow,
+      intent: SyncIntentRow,
+      providerStarted: boolean,
+    ) => void,
+  ): Promise<"processed" | "stale"> {
     const timestamp = this.now().toISOString();
     const slice = await this.dependencies.db
       .prepare(
@@ -82,6 +140,7 @@ export class SyncSliceProcessor {
     ]);
     if ((claim[0]?.meta.changes ?? 0) !== 1) return "stale";
     await this.governor.consume(slice.reservationId);
+    trackUsage(slice, intent, false);
     const instrument = await this.instruments.findById(intent.instrumentId);
     if (!instrument) {
       await this.finishFailure(slice, intent, "instrument_not_found", false);
@@ -157,6 +216,7 @@ export class SyncSliceProcessor {
       await this.finishFailure(slice, intent, "sync_processor_missing", false);
       return "processed";
     }
+    trackUsage(slice, intent, true);
     const outcomes =
       (await process.call(this.dependencies.processor, { batch, work })) ?? [];
     const failure = outcomes.find((outcome) => outcome.kind !== "complete");
@@ -184,9 +244,13 @@ export class SyncSliceProcessor {
     const retry = retryable && !exhausted;
     const retryMinutes =
       [15, 60, 360, 1_440][Math.min(intent.attemptCount, 3)] ?? 1_440;
-    const nextAttempt = new Date(
-      Date.parse(timestamp) + retryMinutes * 60_000,
-    ).toISOString();
+    const providerSnapshotAnomaly =
+      intent.dataset === "market" &&
+      intent.priorityClass === "current" &&
+      ["invalid_price", "market_bar_missing"].includes(code);
+    const nextAttempt = providerSnapshotAnomaly
+      ? nextUtcReset(this.now())
+      : new Date(Date.parse(timestamp) + retryMinutes * 60_000).toISOString();
     await this.dependencies.db.batch([
       this.dependencies.db
         .prepare(

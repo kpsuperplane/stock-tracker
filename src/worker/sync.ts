@@ -1,6 +1,7 @@
 import { readPortfolioFeatureFlags } from "../config/features";
 import { WorkersAiExplanationProvider } from "../providers/explanations";
 import { YahooMarketDataProvider } from "../providers/yahoo";
+import { D1UsageMeter } from "../services/d1-usage";
 import { PortfolioPipelineProcessor } from "../services/portfolio-pipeline-processor";
 import {
   SyncIntentScheduler,
@@ -47,11 +48,13 @@ export const consumeSyncSlice = async (
   ) {
     return "stale";
   }
+  const meter = new D1UsageMeter(env.DB);
   const result = await new SyncSliceProcessor({
-    db: env.DB,
+    db: meter.db,
     now,
+    actualUsage: () => meter.resourceUnits(),
     processor: new PortfolioPipelineProcessor({
-      db: env.DB,
+      db: meter.db,
       marketDataProvider: new YahooMarketDataProvider(),
       newsProvider: newsProviderFor(env),
       explanationProvider: new WorkersAiExplanationProvider(env.AI),

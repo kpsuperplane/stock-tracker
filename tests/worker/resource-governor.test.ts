@@ -66,7 +66,7 @@ describe("resource governor", () => {
     const first = await governor.reserve("adaptive-first", small);
     if (!first) throw new Error("initial reservation failed");
     await governor.consume(first.id, [
-      { resourceType: "d1_rows_read", units: 700_000 },
+      { resourceType: "d1_rows_read", units: 200_000 },
     ]);
 
     const next = await governor.reserve("adaptive-next", small);
@@ -78,7 +78,44 @@ describe("resource governor", () => {
       )
         .bind(next.id)
         .first(),
-    ).toEqual({ units: 875_000 });
+    ).toEqual({ units: 250_000 });
+  });
+
+  it("settles estimates to measured usage exactly once", async () => {
+    const governor = new ResourceGovernor(env.DB, () => now);
+    const reservation = await governor.reserve(
+      "measured-read-model",
+      RESOURCE_ENVELOPES.readModelRefresh,
+    );
+    if (!reservation) throw new Error("read-model reservation failed");
+
+    expect(
+      await governor.consume(reservation.id, [
+        { resourceType: "d1_rows_read", units: 1_234 },
+        { resourceType: "d1_rows_written", units: 4 },
+      ]),
+    ).toBe(true);
+    expect(
+      await governor.recordActual(reservation.id, [
+        { resourceType: "d1_rows_read", units: 99_999 },
+      ]),
+    ).toBe(false);
+
+    expect(
+      await env.DB.prepare(
+        `SELECT reserved_units AS reserved, actual_units AS actual
+           FROM resource_budget_days
+          WHERE usage_date = '2026-07-10' AND lane = 'availability'
+            AND resource_type = 'd1_rows_read' AND resource_key = ''`,
+      ).first(),
+    ).toEqual({ reserved: 1_234, actual: 1_234 });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM resource_operation_observations
+          WHERE operation_type = 'read_model_refresh'
+            AND resource_type = 'd1_rows_read'`,
+      ).first(),
+    ).toEqual({ count: 1 });
   });
 
   it("does not feed conservative reservations back as measured usage", async () => {
