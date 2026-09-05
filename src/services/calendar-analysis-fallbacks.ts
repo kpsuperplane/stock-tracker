@@ -20,8 +20,10 @@ export const readCalendarAnalysisFallbacks = async (
              FROM movement_analyses a
                INDEXED BY movement_analyses_status_updated_idx
              JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-             JOIN json_each(?1) scoped ON scoped.value = f.instrument_id
             WHERE a.status = 'complete'
+              AND f.instrument_id IN (
+                SELECT CAST(value AS TEXT) FROM json_each(?1)
+              )
               AND f.movement_basis <> 'legacy_migration'
               AND f.trading_date <= ?3
          ),
