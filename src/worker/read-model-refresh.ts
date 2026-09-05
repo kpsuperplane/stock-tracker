@@ -17,7 +17,7 @@ export const consumeReadModelRefresh = async (
   const row = await outbox.claim(message);
   if (!row) return "stale";
   try {
-    const targets = await outbox.targets(row.family);
+    const targets = await outbox.targets(row.family, 50, row.targetCacheKey);
     for (const target of targets) {
       const meter = new D1UsageMeter(env.DB);
       const headers = new Headers({

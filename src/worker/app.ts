@@ -284,6 +284,7 @@ export const createApp = () => {
           .request(
             family,
             `stale:${previous.sourceRevision}:${previous.validUntil}`,
+            cacheKey,
           )
           .then(() => undefined)
           .catch((error: unknown) => {

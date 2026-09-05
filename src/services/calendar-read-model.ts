@@ -9,6 +9,7 @@ import type {
   ReadModelLocale,
   ReadModelSourceDto,
 } from "../shared/contracts";
+import { readCalendarAnalysisFallbacks } from "./calendar-analysis-fallbacks";
 import {
   type CalendarEventCursor,
   paginateCalendarEvents,
@@ -274,65 +275,12 @@ export class CalendarReadModelService {
       const instrumentIdsWithFacts = [
         ...new Set(factResult.results.map((row) => row.instrument_id)),
       ];
-      const completeRows = (
-        await this.db
-          .prepare(
-            `WITH complete AS MATERIALIZED (
-               SELECT f.instrument_id, f.trading_date, a.id,
-                      a.daily_market_fact_id, a.summary_zh_cn, a.status,
-                      a.error_code, a.error_message
-                 FROM movement_analyses a
-                   INDEXED BY movement_analyses_status_updated_idx
-                 CROSS JOIN daily_market_facts f
-                   ON f.id = a.daily_market_fact_id
-                 JOIN json_each(?1) scoped
-                   ON scoped.value = f.instrument_id
-                WHERE a.status = 'complete'
-                  AND f.movement_basis <> 'legacy_migration'
-                  AND f.trading_date <= ?3
-             ),
-             prior_summary AS (
-               SELECT complete.*,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY instrument_id
-                        ORDER BY trading_date DESC, id DESC
-                      ) AS row_number
-                 FROM complete
-                WHERE trading_date < ?2 AND summary_zh_cn IS NOT NULL
-             ),
-             prior_source AS (
-               SELECT complete.*,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY instrument_id
-                        ORDER BY trading_date DESC, id DESC
-                      ) AS row_number
-                 FROM complete
-                WHERE trading_date < ?2
-                  AND EXISTS (
-                    SELECT 1 FROM news_sources source
-                     WHERE source.movement_analysis_id = complete.id
-                  )
-             )
-             SELECT instrument_id, trading_date, id, daily_market_fact_id,
-                    summary_zh_cn, status, error_code, error_message
-               FROM complete WHERE trading_date >= ?2
-             UNION
-             SELECT instrument_id, trading_date, id, daily_market_fact_id,
-                    summary_zh_cn, status, error_code, error_message
-               FROM prior_summary WHERE row_number = 1
-             UNION
-             SELECT instrument_id, trading_date, id, daily_market_fact_id,
-                    summary_zh_cn, status, error_code, error_message
-               FROM prior_source WHERE row_number = 1
-             ORDER BY instrument_id, trading_date`,
-          )
-          .bind(
-            JSON.stringify(instrumentIdsWithFacts),
-            input.startDate,
-            input.endDate,
-          )
-          .all<CompleteAnalysisRow>()
-      ).results;
+      const completeRows = await readCalendarAnalysisFallbacks(
+        this.db,
+        instrumentIdsWithFacts,
+        input.startDate,
+        input.endDate,
+      );
       for (const row of completeRows) {
         const rows = completeAnalysesByInstrument.get(row.instrument_id) ?? [];
         rows.push(row);

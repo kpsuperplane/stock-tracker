@@ -445,7 +445,7 @@ describe("portfolio performance budgets", () => {
     );
     expect(calendarMonth.value.calendar.events.length).toBe(500);
     expect(calendarMonth.metrics.queries).toBeLessThanOrEqual(35);
-    expect(calendarMonth.metrics.rowsRead).toBeLessThanOrEqual(175_000);
+    expect(calendarMonth.metrics.rowsRead).toBeLessThanOrEqual(125_000);
     expect(calendarMonth.metrics.durationMs).toBeLessThanOrEqual(1_000);
     expect(calendarMonth.bytes).toBeLessThanOrEqual(1_100_000);
     expect(calendarMonth.wallMs).toBeLessThan(10_000);
@@ -460,7 +460,7 @@ describe("portfolio performance budgets", () => {
     );
     expect(calendarWeek.value.calendar.events.length).toBeGreaterThan(100);
     expect(calendarWeek.metrics.queries).toBeLessThanOrEqual(35);
-    expect(calendarWeek.metrics.rowsRead).toBeLessThanOrEqual(150_000);
+    expect(calendarWeek.metrics.rowsRead).toBeLessThanOrEqual(125_000);
     expect(calendarWeek.metrics.durationMs).toBeLessThanOrEqual(1_000);
 
     const etag = portfolio.headers.get("ETag");

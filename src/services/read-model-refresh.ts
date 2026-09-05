@@ -12,6 +12,7 @@ interface RefreshRow {
   leaseToken: string | null;
   leaseUntil: string | null;
   attemptCount: number;
+  targetCacheKey: string | null;
 }
 
 export interface ReadModelPublicationTarget {
@@ -31,17 +32,19 @@ export class ReadModelRefreshOutbox {
   async request(
     family: ReadModelFamily | "all",
     requestedRevision: string,
+    targetCacheKey: string | null = null,
   ): Promise<boolean> {
     const timestamp = this.now().toISOString();
-    const deterministicKey = `read-model-refresh:${family}`;
+    const deterministicKey = `read-model-refresh:${family}:${targetCacheKey ?? "canonical"}`;
     await this.db
       .prepare(
         `INSERT INTO read_model_refresh_outbox
-         (id, deterministic_key, family, requested_revision, state,
-          attempt_count, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?5)
+         (id, deterministic_key, family, requested_revision, target_cache_key,
+          state, attempt_count, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 0, ?6, ?6)
          ON CONFLICT(deterministic_key) DO UPDATE SET
            requested_revision = excluded.requested_revision,
+           target_cache_key = excluded.target_cache_key,
            state = CASE
              WHEN read_model_refresh_outbox.requested_revision = excluded.requested_revision
               AND read_model_refresh_outbox.state IN
@@ -77,6 +80,7 @@ export class ReadModelRefreshOutbox {
         deterministicKey,
         family,
         requestedRevision,
+        targetCacheKey,
         timestamp,
       )
       .run();
@@ -185,7 +189,8 @@ export class ReadModelRefreshOutbox {
       .prepare(
         `SELECT id, family, requested_revision AS requestedRevision, state,
                 lease_token AS leaseToken, lease_until AS leaseUntil,
-                attempt_count AS attemptCount
+                attempt_count AS attemptCount,
+                target_cache_key AS targetCacheKey
            FROM read_model_refresh_outbox WHERE id = ?1`,
       )
       .bind(message.readModelRefreshId)
@@ -195,15 +200,29 @@ export class ReadModelRefreshOutbox {
   async targets(
     family: ReadModelFamily | "all",
     limit = 50,
+    targetCacheKey: string | null = null,
   ): Promise<ReadModelPublicationTarget[]> {
     const rows = await this.db
       .prepare(
-        `SELECT cache_key AS cacheKey, family, request_url AS requestUrl
-           FROM read_model_publications
-          WHERE (?1 = 'all' OR family = ?1)
-          ORDER BY updated_at DESC, cache_key LIMIT ?2`,
+        `WITH ranked AS (
+           SELECT cache_key AS cacheKey, family, request_url AS requestUrl,
+                  updated_at AS updatedAt,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY family ORDER BY updated_at DESC, cache_key
+                  ) AS familyRank
+             FROM read_model_publications
+            WHERE (?1 = 'all' OR family = ?1)
+              AND (?2 IS NULL OR cache_key = ?2)
+         )
+         SELECT cacheKey, family, requestUrl FROM ranked
+          WHERE ?2 IS NOT NULL OR ?1 <> 'all' OR familyRank = 1
+          ORDER BY updatedAt DESC, cacheKey LIMIT ?3`,
       )
-      .bind(family, Math.max(1, Math.min(100, Math.floor(limit))))
+      .bind(
+        family,
+        targetCacheKey,
+        Math.max(1, Math.min(100, Math.floor(limit))),
+      )
       .all<ReadModelPublicationTarget>();
     return rows.results;
   }
