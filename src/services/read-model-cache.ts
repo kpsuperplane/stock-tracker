@@ -165,6 +165,7 @@ export class ReadModelSnapshotStore {
     headers.set("X-Read-Model-Cache", options.stale ? "stale" : "hit");
     headers.set("X-Data-As-Of", snapshot.generatedAt);
     headers.set("X-Data-Stale", String(options.stale));
+    if (options.reason) headers.set("X-Data-Stale-Reason", options.reason);
     return Response.json({ ...snapshot.payload, freshness }, { headers });
   }
 

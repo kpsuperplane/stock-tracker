@@ -32,6 +32,15 @@ export const consumeReadModelRefresh = async (
       );
       if (!response.ok)
         throw new Error(`read_model_refresh_http_${response.status}`);
+      if (response.headers.get("X-Data-Stale") === "true") {
+        await outbox.retry(
+          row,
+          response.headers.get("X-Data-Stale-Reason") === "daily_budget"
+            ? "daily_budget"
+            : "storage_unavailable",
+        );
+        return "processed";
+      }
     }
     if (!(await outbox.complete(row))) {
       await outbox.recover(1);

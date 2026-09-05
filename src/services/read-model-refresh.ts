@@ -3,6 +3,7 @@ import type {
   ReadModelRefreshMessage,
 } from "../shared/contracts";
 import type { ReadModelFamily } from "./read-model-cache";
+import { nextUtcReset } from "./resource-governor";
 
 interface RefreshRow {
   id: string;
@@ -247,17 +248,28 @@ export class ReadModelRefreshOutbox {
     reason: ReadModelFreshnessDto["reason"],
   ): Promise<void> {
     const timestamp = this.now().toISOString();
-    const nextAttemptAt = new Date(
-      Date.parse(timestamp) + Math.min(60, 2 ** row.attemptCount) * 60_000,
-    ).toISOString();
+    const budgetDeferred = reason === "daily_budget";
+    const nextAttemptAt = budgetDeferred
+      ? nextUtcReset(this.now())
+      : new Date(
+          Date.parse(timestamp) + Math.min(60, 2 ** row.attemptCount) * 60_000,
+        ).toISOString();
     await this.db
       .prepare(
         `UPDATE read_model_refresh_outbox
             SET state = 'retry', next_attempt_at = ?1, updated_at = ?2,
-                lease_token = NULL, lease_until = NULL
+                lease_token = NULL, lease_until = NULL,
+                attempt_count = CASE WHEN ?5 = 1
+                  THEN MAX(0, attempt_count - 1) ELSE attempt_count END
           WHERE id = ?3 AND state = 'processing' AND lease_token = ?4`,
       )
-      .bind(nextAttemptAt, timestamp, row.id, row.leaseToken)
+      .bind(
+        nextAttemptAt,
+        timestamp,
+        row.id,
+        row.leaseToken,
+        budgetDeferred ? 1 : 0,
+      )
       .run();
     console.warn(
       JSON.stringify({ event: "read_model_refresh_retry", id: row.id, reason }),

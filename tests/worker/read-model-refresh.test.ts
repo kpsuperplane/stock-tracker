@@ -127,4 +127,37 @@ describe("read-model refresh outbox", () => {
       },
     ]);
   });
+
+  it("defers daily-budget refreshes without consuming an attempt", async () => {
+    const sent: ReadModelRefreshMessage[] = [];
+    const outbox = new ReadModelRefreshOutbox(
+      env.DB,
+      {
+        send: vi.fn(async (message: ReadModelRefreshMessage) => {
+          sent.push(message);
+        }),
+      } as unknown as Queue<ReadModelRefreshMessage>,
+      () => now,
+      () => "budget-refresh",
+    );
+    expect(await outbox.request("status", "r1", "status-key")).toBe(true);
+    const message = sent[0];
+    if (!message) throw new Error("refresh was not queued");
+    const row = await outbox.claim(message);
+    if (!row) throw new Error("refresh was not claimed");
+
+    await outbox.retry(row, "daily_budget");
+
+    expect(
+      await env.DB.prepare(
+        `SELECT state, attempt_count AS attempts,
+                next_attempt_at AS nextAttemptAt
+           FROM read_model_refresh_outbox WHERE id = 'budget-refresh'`,
+      ).first(),
+    ).toEqual({
+      state: "retry",
+      attempts: 0,
+      nextAttemptAt: "2026-07-11T00:00:00.000Z",
+    });
+  });
 });

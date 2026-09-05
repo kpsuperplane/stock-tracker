@@ -69,6 +69,9 @@ describe("read-model availability cache", () => {
       reason: "storage_unavailable",
     });
     expect(stale.headers.get("X-Data-Stale")).toBe("true");
+    expect(stale.headers.get("X-Data-Stale-Reason")).toBe(
+      "storage_unavailable",
+    );
     expect(await stale.json()).toMatchObject({
       status: { jobs: [] },
       freshness: {
