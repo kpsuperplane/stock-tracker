@@ -1,4 +1,5 @@
 import type { ReadModelFreshnessDto } from "../shared/contracts";
+import { easternMarketDate } from "../shared/dates";
 
 export type ReadModelFamily =
   | "accounts"
@@ -52,8 +53,21 @@ const hex = (bytes: ArrayBuffer): string =>
 const digest = async (value: string): Promise<string> =>
   hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
 
-const normalizedRequestIdentity = (request: Request): string => {
+const normalizeCurrentCalendarAsOf = (url: URL, currentDate: string): void => {
+  if (
+    url.pathname === "/api/calendar" &&
+    url.searchParams.get("asOfDate") === currentDate
+  ) {
+    url.searchParams.delete("asOfDate");
+  }
+};
+
+const normalizedRequestIdentity = (
+  request: Request,
+  currentDate: string,
+): string => {
   const url = new URL(request.url);
+  normalizeCurrentCalendarAsOf(url, currentDate);
   const params = [...url.searchParams.entries()].sort(
     ([leftKey, leftValue], [rightKey, rightValue]) =>
       leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue),
@@ -64,6 +78,17 @@ const normalizedRequestIdentity = (request: Request): string => {
     request.headers.get("Cf-Access-Authenticated-User-Email") ??
     "protected-app";
   return `${accessSubject}\n${normalized.pathname}${normalized.search}`;
+};
+
+const canonicalSnapshotRequestUrl = (
+  family: ReadModelFamily,
+  requestUrl: string,
+  currentDate: string,
+): string => {
+  if (family !== "calendar") return requestUrl;
+  const url = new URL(requestUrl, "https://read-model.internal");
+  normalizeCurrentCalendarAsOf(url, currentDate);
+  return `${url.pathname}${url.search}`;
 };
 
 const internalCacheRequest = (cacheKey: string): Request =>
@@ -120,7 +145,9 @@ export class ReadModelSnapshotStore {
     ) {
       return explicit;
     }
-    return `read-model:v1:${await digest(normalizedRequestIdentity(request))}`;
+    return `read-model:v1:${await digest(
+      normalizedRequestIdentity(request, easternMarketDate(this.now())),
+    )}`;
   }
 
   async read(cacheKey: string): Promise<SnapshotRecord | null> {
@@ -190,7 +217,11 @@ export class ReadModelSnapshotStore {
     const snapshot: SnapshotRecord = {
       version: 1,
       family: input.family,
-      requestUrl: input.requestUrl,
+      requestUrl: canonicalSnapshotRequestUrl(
+        input.family,
+        input.requestUrl,
+        easternMarketDate(this.now()),
+      ),
       payload,
       sourceRevision: sourceRevision(input.response, generatedAt),
       contentHash,
@@ -231,7 +262,7 @@ export class ReadModelSnapshotStore {
       .bind(
         input.cacheKey,
         input.family,
-        input.requestUrl,
+        snapshot.requestUrl,
         snapshot.sourceRevision,
         contentHash,
         generatedAt,

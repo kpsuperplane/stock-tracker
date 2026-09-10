@@ -27,6 +27,70 @@ describe("read-model availability cache", () => {
     expect(await store.keyFor(first)).not.toBe(await store.keyFor(otherUser));
   });
 
+  it("reuses current calendar snapshots across days but isolates historical as-of queries", async () => {
+    const july10 = new ReadModelSnapshotStore(
+      env.DB,
+      env.READ_MODEL_CACHE,
+      () => new Date("2026-07-10T16:00:00.000Z"),
+    );
+    const july11 = new ReadModelSnapshotStore(
+      env.DB,
+      env.READ_MODEL_CACHE,
+      () => new Date("2026-07-11T16:00:00.000Z"),
+    );
+    const request = (asOfDate?: string) =>
+      new Request(
+        `https://example.test/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31${asOfDate ? `&asOfDate=${asOfDate}` : ""}`,
+        {
+          headers: {
+            "Cf-Access-Authenticated-User-Email": "calendar@example.test",
+          },
+        },
+      );
+
+    expect(await july10.keyFor(request("2026-07-10"))).toBe(
+      await july11.keyFor(request("2026-07-11")),
+    );
+    expect(await july10.keyFor(request("2026-07-10"))).toBe(
+      await july10.keyFor(request()),
+    );
+    expect(await july10.keyFor(request("2026-07-09"))).not.toBe(
+      await july10.keyFor(request("2026-07-10")),
+    );
+  });
+
+  it("stores current calendar refresh targets without a fixed as-of date", async () => {
+    const store = new ReadModelSnapshotStore(
+      env.DB,
+      env.READ_MODEL_CACHE,
+      () => new Date("2026-07-10T16:00:00.000Z"),
+    );
+    const request = new Request(
+      "https://example.test/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+    );
+    const cacheKey = await store.keyFor(request);
+
+    await store.publish({
+      cacheKey,
+      family: "calendar",
+      requestUrl:
+        "/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+      response: Response.json({ calendar: { asOfDate: "2026-07-10" } }),
+    });
+
+    expect(
+      await env.DB.prepare(
+        `SELECT request_url AS requestUrl FROM read_model_publications
+          WHERE cache_key = ?1`,
+      )
+        .bind(cacheKey)
+        .first<{ requestUrl: string }>(),
+    ).toEqual({
+      requestUrl:
+        "/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31",
+    });
+  });
+
   it("writes unchanged content to KV once and exposes stale freshness", async () => {
     let current = new Date("2026-07-10T12:00:00.000Z");
     const values = new Map<string, string>();
