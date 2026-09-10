@@ -1,3 +1,5 @@
+import type { ReadModelFamily } from "./read-model-cache";
+
 export type ResourceLane = "availability" | "foreground" | "history";
 export type ResourceType =
   | "d1_rows_read"
@@ -26,6 +28,13 @@ export interface ResourceEnvelope {
   operationType: string;
   items: readonly ResourceUnits[];
 }
+
+export const readModelRefreshEnvelope = (
+  family: ReadModelFamily,
+): ResourceEnvelope => ({
+  ...RESOURCE_ENVELOPES.readModelRefresh,
+  operationType: `read_model_refresh:${family}`,
+});
 
 interface BudgetDefinition {
   allocation: number;
@@ -104,9 +113,6 @@ export const RESOURCE_ENVELOPES = {
     operationType: "foreground_current_market_slice",
     items: [
       { resourceType: "d1_rows_read", units: 10_000 },
-      // A current slice persists at most one market fact plus revision/index
-      // bookkeeping. Keep substantial headroom over measured fixture usage
-      // without reserving nearly the entire foreground lane for 72 holdings.
       { resourceType: "d1_rows_written", units: 250 },
       { resourceType: "provider_call", resourceKey: "yahoo-market", units: 1 },
       { resourceType: "queue_send", resourceKey: "foreground", units: 1 },
@@ -265,48 +271,86 @@ export class ResourceGovernor {
       resourceKey: item.resourceKey ?? "",
       units: validUnits(item.units),
     }));
-    const observedSince = new Date(
-      this.now().getTime() - 7 * 24 * 60 * 60_000,
-    ).toISOString();
-    const observations = await this.db
+    const cachedEnvelope = await this.db
       .prepare(
-        `WITH ranked AS (
-           SELECT resource_type AS resourceType, resource_key AS resourceKey,
-                  actual_units AS actualUnits,
-                  ROW_NUMBER() OVER (
-                    PARTITION BY resource_type, resource_key
-                    ORDER BY actual_units
-                  ) AS rank,
-                  COUNT(*) OVER (
-                    PARTITION BY resource_type, resource_key
-                  ) AS sampleCount
-             FROM resource_operation_observations
-            WHERE lane = ?1 AND operation_type = ?2 AND observed_at >= ?3
-         )
-         SELECT resourceType, resourceKey, actualUnits
-           FROM ranked
-          WHERE rank = CAST((sampleCount * 99 + 99) / 100 AS INTEGER)`,
+        `SELECT item.resource_type AS resourceType,
+                item.resource_key AS resourceKey,
+                item.reserved_units AS envelopeUnits
+           FROM resource_reservation_items item
+          WHERE item.reservation_id = (
+            SELECT id FROM resource_reservations
+             WHERE usage_date = ?1 AND lane = ?2 AND operation_type = ?3
+             ORDER BY created_at, id LIMIT 1
+          )`,
       )
-      .bind(envelope.lane, envelope.operationType, observedSince)
+      .bind(usageDate, envelope.lane, envelope.operationType)
       .all<{
         resourceType: ResourceType;
         resourceKey: string;
-        actualUnits: number;
+        envelopeUnits: number;
       }>();
-    const normalized = baseline.map((item) => {
-      const observed = observations.results.find(
+    let normalized = baseline.map((item) => {
+      const cached = cachedEnvelope.results.find(
         (row) =>
           row.resourceType === item.resourceType &&
           row.resourceKey === item.resourceKey,
       );
       return {
         ...item,
-        units: Math.max(
-          item.units,
-          observed ? Math.ceil(observed.actualUnits * 1.25) : 0,
-        ),
+        units: Math.max(item.units, cached?.envelopeUnits ?? 0),
       };
     });
+    if (cachedEnvelope.results.length < baseline.length) {
+      const observedSince = new Date(
+        this.now().getTime() - 7 * 24 * 60 * 60_000,
+      ).toISOString();
+      const observations = await this.db
+        .prepare(
+          `WITH ranked AS (
+             SELECT resource_type AS resourceType,
+                    resource_key AS resourceKey,
+                    actual_units AS actualUnits,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY resource_type, resource_key
+                      ORDER BY actual_units
+                    ) AS rank,
+                    COUNT(*) OVER (
+                      PARTITION BY resource_type, resource_key
+                    ) AS sampleCount
+               FROM resource_operation_observations
+              WHERE lane = ?1 AND operation_type = ?2 AND observed_at >= ?3
+           )
+           SELECT resourceType, resourceKey, actualUnits
+             FROM ranked
+            WHERE rank = CAST((sampleCount * 99 + 99) / 100 AS INTEGER)`,
+        )
+        .bind(envelope.lane, envelope.operationType, observedSince)
+        .all<{
+          resourceType: ResourceType;
+          resourceKey: string;
+          actualUnits: number;
+        }>();
+      normalized = baseline.map((item) => {
+        const cached = cachedEnvelope.results.find(
+          (row) =>
+            row.resourceType === item.resourceType &&
+            row.resourceKey === item.resourceKey,
+        );
+        const observed = observations.results.find(
+          (row) =>
+            row.resourceType === item.resourceType &&
+            row.resourceKey === item.resourceKey,
+        );
+        return {
+          ...item,
+          units: Math.max(
+            item.units,
+            cached?.envelopeUnits ?? 0,
+            observed ? Math.ceil(observed.actualUnits * 1.25) : 0,
+          ),
+        };
+      });
+    }
     const budgetStatements = normalized.map((item) => {
       const budget = budgetFor(
         envelope.lane,

@@ -4,6 +4,7 @@ import {
   RESOURCE_ENVELOPES,
   type ResourceEnvelope,
   ResourceGovernor,
+  readModelRefreshEnvelope,
 } from "../../src/services/resource-governor";
 
 const now = new Date("2026-07-10T12:00:00.000Z");
@@ -69,7 +70,10 @@ describe("resource governor", () => {
       { resourceType: "d1_rows_read", units: 200_000 },
     ]);
 
-    const next = await governor.reserve("adaptive-next", small);
+    const next = await new ResourceGovernor(
+      env.DB,
+      () => new Date("2026-07-11T12:00:00.000Z"),
+    ).reserve("adaptive-next", small);
     if (!next) throw new Error("adaptive reservation failed");
     expect(
       await env.DB.prepare(
@@ -79,6 +83,60 @@ describe("resource governor", () => {
         .bind(next.id)
         .first(),
     ).toEqual({ units: 250_000 });
+  });
+
+  it("reuses the first adaptive envelope for later reservations that day", async () => {
+    const governor = new ResourceGovernor(env.DB, () => now);
+    const daily: ResourceEnvelope = {
+      lane: "availability",
+      operationType: "daily_envelope_test",
+      items: [{ resourceType: "d1_rows_read", units: 100_000 }],
+    };
+    const first = await governor.reserve("daily-envelope-first", daily);
+    if (!first) throw new Error("initial reservation failed");
+    await governor.consume(first.id, [
+      { resourceType: "d1_rows_read", units: 500_000 },
+    ]);
+
+    const second = await governor.reserve("daily-envelope-second", daily);
+    if (!second) throw new Error("second reservation failed");
+    expect(
+      await env.DB.prepare(
+        `SELECT reserved_units AS units
+           FROM resource_reservation_items WHERE reservation_id = ?1`,
+      )
+        .bind(second.id)
+        .first(),
+    ).toEqual({ units: 100_000 });
+  });
+
+  it("isolates adaptive read-model costs by response family", async () => {
+    const governor = new ResourceGovernor(env.DB, () => now);
+    const portfolio = await governor.reserve(
+      "portfolio-refresh",
+      readModelRefreshEnvelope("portfolio"),
+    );
+    if (!portfolio) throw new Error("portfolio reservation failed");
+    await governor.consume(portfolio.id, [
+      { resourceType: "d1_rows_read", units: 900_000 },
+    ]);
+
+    const nextDay = new ResourceGovernor(
+      env.DB,
+      () => new Date("2026-07-11T12:00:00.000Z"),
+    );
+    expect(
+      await nextDay.reserve(
+        "status-refresh",
+        readModelRefreshEnvelope("status"),
+      ),
+    ).not.toBeNull();
+    expect(
+      await nextDay.reserve(
+        "portfolio-refresh-next",
+        readModelRefreshEnvelope("portfolio"),
+      ),
+    ).toBeNull();
   });
 
   it("settles estimates to measured usage exactly once", async () => {

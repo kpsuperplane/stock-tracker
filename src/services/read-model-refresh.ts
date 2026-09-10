@@ -101,6 +101,21 @@ export class ReadModelRefreshOutbox {
     await this.db
       .prepare(
         `UPDATE read_model_refresh_outbox
+            SET state = 'pending', attempt_count = 0, lease_token = NULL,
+                lease_until = NULL, next_attempt_at = NULL,
+                completed_at = NULL, updated_at = ?1
+          WHERE state = 'complete' AND target_cache_key IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM read_model_publications publication
+               WHERE publication.cache_key = target_cache_key
+                 AND publication.valid_until <= ?1
+            )`,
+      )
+      .bind(timestamp)
+      .run();
+    await this.db
+      .prepare(
+        `UPDATE read_model_refresh_outbox
             SET state = 'retry', lease_token = NULL, lease_until = NULL,
                 next_attempt_at = ?1, updated_at = ?1
           WHERE state IN ('dispatching', 'queued', 'processing')

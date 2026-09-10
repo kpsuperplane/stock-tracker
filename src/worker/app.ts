@@ -13,6 +13,7 @@ import {
   RESOURCE_ENVELOPES,
   ResourceGovernor,
   type ResourceReservation,
+  readModelRefreshEnvelope,
 } from "../services/resource-governor";
 import type { ReadModelRefreshMessage } from "../shared/contracts";
 import type { Env } from "./env";
@@ -205,7 +206,7 @@ export const createApp = () => {
       try {
         reservation = await governor.reserve(
           `read-model:${cacheKey}:${crypto.randomUUID()}`,
-          RESOURCE_ENVELOPES.readModelRefresh,
+          readModelRefreshEnvelope(family),
         );
       } catch (error) {
         if (!previous && isStorageUnavailableError(error)) {

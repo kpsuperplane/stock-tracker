@@ -160,4 +160,43 @@ describe("read-model refresh outbox", () => {
       nextAttemptAt: "2026-07-11T00:00:00.000Z",
     });
   });
+
+  it("automatically republishes a completed target after it expires", async () => {
+    const sent: ReadModelRefreshMessage[] = [];
+    let id = 0;
+    const outbox = new ReadModelRefreshOutbox(
+      env.DB,
+      {
+        send: vi.fn(async (message: ReadModelRefreshMessage) => {
+          sent.push(message);
+        }),
+      } as unknown as Queue<ReadModelRefreshMessage>,
+      () => now,
+      () => `stale-target-${++id}`,
+    );
+    expect(await outbox.request("status", "r1", "status-target")).toBe(true);
+    const first = sent[0];
+    if (!first) throw new Error("refresh was not queued");
+    const claimed = await outbox.claim(first);
+    if (!claimed) throw new Error("refresh was not claimed");
+    expect(await outbox.complete(claimed)).toBe(true);
+    await env.DB.prepare(
+      `INSERT INTO read_model_publications
+       (cache_key, family, request_url, source_revision, content_hash,
+        generated_at, valid_until, updated_at)
+       VALUES ('status-target', 'status', '/api/status', 'r1', 'h1',
+               '2026-07-10T10:00:00.000Z', '2026-07-10T10:05:00.000Z',
+               '2026-07-10T10:00:00.000Z')`,
+    ).run();
+
+    expect(await outbox.recover()).toBe(1);
+    expect(sent).toHaveLength(2);
+    expect(
+      await env.DB.prepare(
+        `SELECT state, attempt_count AS attempts
+           FROM read_model_refresh_outbox
+          WHERE target_cache_key = 'status-target'`,
+      ).first(),
+    ).toEqual({ state: "queued", attempts: 0 });
+  });
 });

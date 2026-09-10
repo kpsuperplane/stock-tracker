@@ -33,6 +33,7 @@ import {
   easternMarketDate,
   previousCalendarDate,
 } from "../shared/dates";
+import { runCompactScheduledProducers } from "./compact-scheduled-producers";
 import { dispatchDividendRefreshes } from "./dividends";
 import { runEarningsHistoryBackfill } from "./earnings-history";
 import type { Env } from "./env";
@@ -53,8 +54,15 @@ const latestCompletedDate = (now: Date, exchange: string): string => {
   return candidate;
 };
 
+const normalizedCron = (cron: string): string => cron.trim().toUpperCase();
+
+const cronMatches = (actual: string, expected: string): boolean =>
+  normalizedCron(actual) === normalizedCron(expected);
+
 const isNormalizedPlannerCron = (cron: string): boolean =>
-  (NORMALIZED_PLANNER_CRONS as readonly string[]).includes(cron);
+  (NORMALIZED_PLANNER_CRONS as readonly string[]).some((candidate) =>
+    cronMatches(cron, candidate),
+  );
 
 const refreshEarningsHistory = async (env: Env, now: Date): Promise<string> => {
   const governor = new ResourceGovernor(env.DB, () => now);
@@ -172,7 +180,7 @@ export const handleScheduled = async (
     });
     return;
   }
-  if (controller.cron === NORMALIZED_DISPATCH_CRON) {
+  if (cronMatches(controller.cron, NORMALIZED_DISPATCH_CRON)) {
     const compactSyncEnabled =
       portfolioFlags.syncCurrent ||
       portfolioFlags.syncFuture ||
@@ -233,7 +241,12 @@ export const handleScheduled = async (
       for (const job of jobs.results) {
         createdIntents += await scheduler.createForPipelineJob(job.id);
       }
-      const dispatch = await scheduler.dispatch(16);
+      const production = await runCompactScheduledProducers(
+        env,
+        scheduledTime,
+        portfolioFlags,
+        { latestCompletedDate },
+      );
       logEvent("compact_sync_recovery_scheduled", {
         scheduledTime: scheduledTime.toISOString(),
         cleanup: JSON.stringify(cleanup),
@@ -241,7 +254,7 @@ export const handleScheduled = async (
         recovered,
         readModelRefreshes,
         createdIntents,
-        dispatch: JSON.stringify(dispatch),
+        production: JSON.stringify(production),
       });
       return;
     }
@@ -304,7 +317,7 @@ export const handleScheduled = async (
   }
   // Keep the legacy scheduler authoritative while the normalized write flag
   // is disabled (and available as the rollback path after enabling it).
-  if (controller.cron !== LEGACY_SCREENING_CRON) return;
+  if (!cronMatches(controller.cron, LEGACY_SCREENING_CRON)) return;
   const compactSyncEnabled =
     portfolioFlags.syncCurrent ||
     portfolioFlags.syncFuture ||

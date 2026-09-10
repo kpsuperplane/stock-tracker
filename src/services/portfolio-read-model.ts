@@ -8,6 +8,7 @@ import type {
   ReadModelLocale,
   ReadModelSourceDto,
 } from "../shared/contracts";
+import { readCalendarAnalysisFallbacks } from "./calendar-analysis-fallbacks";
 
 interface TransactionRow {
   instrument_id: string;
@@ -344,49 +345,13 @@ export class PortfolioReadModelService {
       for (const row of analysisRows)
         analyses.set(row.daily_market_fact_id, row);
       const instrumentIdsWithFacts = [...usableFacts.keys()];
-      const completeRows = (
-        await this.db
-          .prepare(
-            `SELECT f.instrument_id, f.trading_date, a.daily_market_fact_id,
-                    a.summary_zh_cn, a.status, a.error_code, a.error_message
-             FROM movement_analyses a
-             JOIN daily_market_facts f ON f.id = a.daily_market_fact_id
-             WHERE a.status = 'complete'
-               AND f.instrument_id IN (SELECT value FROM json_each(?1))
-               AND f.movement_basis <> 'legacy_migration'
-               AND f.trading_date <= ?2
-               AND (
-                 f.trading_date = (
-                   SELECT MAX(previous_fact.trading_date)
-                   FROM daily_market_facts previous_fact
-                   JOIN movement_analyses previous_analysis
-                     ON previous_analysis.daily_market_fact_id = previous_fact.id
-                   WHERE previous_fact.instrument_id = f.instrument_id
-                     AND previous_fact.movement_basis <> 'legacy_migration'
-                     AND previous_fact.trading_date <= ?2
-                     AND previous_analysis.status = 'complete'
-                     AND previous_analysis.summary_zh_cn IS NOT NULL
-                 )
-                 OR f.trading_date = (
-                   SELECT MAX(previous_fact.trading_date)
-                   FROM daily_market_facts previous_fact
-                   JOIN movement_analyses previous_analysis
-                     ON previous_analysis.daily_market_fact_id = previous_fact.id
-                   WHERE previous_fact.instrument_id = f.instrument_id
-                     AND previous_fact.movement_basis <> 'legacy_migration'
-                     AND previous_fact.trading_date <= ?2
-                     AND previous_analysis.status = 'complete'
-                     AND EXISTS (
-                       SELECT 1 FROM news_sources previous_source
-                       WHERE previous_source.movement_analysis_id = previous_analysis.id
-                     )
-                 )
-               )
-             ORDER BY f.instrument_id, f.trading_date`,
-          )
-          .bind(JSON.stringify(instrumentIdsWithFacts), input.today)
-          .all<CompleteAnalysisRow>()
-      ).results;
+      const completeRows: CompleteAnalysisRow[] =
+        await readCalendarAnalysisFallbacks(
+          this.db,
+          instrumentIdsWithFacts,
+          input.today,
+          input.today,
+        );
       for (const row of completeRows) {
         const rows = completeAnalysesByInstrument.get(row.instrument_id) ?? [];
         rows.push(row);

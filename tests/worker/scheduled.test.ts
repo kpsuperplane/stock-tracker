@@ -26,7 +26,7 @@ describe("scheduled handler", () => {
     );
   });
 
-  it("keeps the 15-minute compact timer recovery-only", async () => {
+  it("recreates current coverage on every 15-minute recovery tick", async () => {
     const now = "2026-07-09T22:15:00.000Z";
     await env.DB.batch([
       env.DB.prepare(
@@ -64,9 +64,15 @@ describe("scheduled handler", () => {
 
     expect(
       await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM sync_intents",
+        `SELECT priority_class AS priorityClass,
+                target_start_date AS startDate, target_end_date AS endDate
+           FROM sync_intents WHERE instrument_id = 'recovery-only'`,
       ).first(),
-    ).toEqual({ count: 0 });
+    ).toEqual({
+      priorityClass: "current",
+      startDate: "2026-07-09",
+      endDate: "2026-07-09",
+    });
   });
 
   it("creates current and recent intents on the daily data-refresh cron", async () => {
