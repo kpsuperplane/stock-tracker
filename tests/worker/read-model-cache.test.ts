@@ -91,6 +91,91 @@ describe("read-model availability cache", () => {
     });
   });
 
+  it("falls back to a recent pre-normalization calendar snapshot", async () => {
+    let reads = 0;
+    const legacySnapshot = {
+      version: 1,
+      family: "calendar",
+      requestUrl:
+        "/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-09",
+      payload: { calendar: { asOfDate: "2026-07-09" } },
+      sourceRevision: '"calendar-r1"',
+      contentHash: "calendar-hash",
+      generatedAt: "2026-07-09T16:00:00.000Z",
+      validUntil: "2026-07-09T16:15:00.000Z",
+      headers: {},
+    };
+    const kv = {
+      get: vi.fn(async () => {
+        reads += 1;
+        return reads === 3 ? legacySnapshot : null;
+      }),
+    } as unknown as KVNamespace;
+    const store = new ReadModelSnapshotStore(
+      env.DB,
+      kv,
+      () => new Date("2026-07-10T16:00:00.000Z"),
+    );
+    const request = new Request(
+      "https://example.test/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+      {
+        headers: {
+          "Cf-Access-Authenticated-User-Email": "legacy@example.test",
+        },
+      },
+    );
+
+    const lookup = await store.readForRequest(
+      request,
+      await store.keyFor(request),
+    );
+
+    expect(lookup).toEqual({
+      snapshot: legacySnapshot,
+      migratedLegacyKey: true,
+    });
+    expect(kv.get).toHaveBeenCalledTimes(3);
+  });
+
+  it("registers a migrated calendar snapshot as a rolling refresh target", async () => {
+    const store = new ReadModelSnapshotStore(
+      env.DB,
+      env.READ_MODEL_CACHE,
+      () => new Date("2026-07-10T16:00:00.000Z"),
+    );
+    const cacheKey = "read-model:v1:migrated-calendar";
+    await store.registerPublicationTarget({
+      cacheKey,
+      family: "calendar",
+      requestUrl:
+        "/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-10",
+      snapshot: {
+        version: 1,
+        family: "calendar",
+        requestUrl:
+          "/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31&asOfDate=2026-07-09",
+        payload: { calendar: { asOfDate: "2026-07-09" } },
+        sourceRevision: '"calendar-r1"',
+        contentHash: "calendar-hash",
+        generatedAt: "2026-07-09T16:00:00.000Z",
+        validUntil: "2026-07-09T16:15:00.000Z",
+        headers: {},
+      },
+    });
+
+    expect(
+      await env.DB.prepare(
+        `SELECT request_url AS requestUrl FROM read_model_publications
+          WHERE cache_key = ?1`,
+      )
+        .bind(cacheKey)
+        .first<{ requestUrl: string }>(),
+    ).toEqual({
+      requestUrl:
+        "/api/calendar?locale=en&view=month&startDate=2026-07-01&endDate=2026-07-31",
+    });
+  });
+
   it("writes unchanged content to KV once and exposes stale freshness", async () => {
     let current = new Date("2026-07-10T12:00:00.000Z");
     const values = new Map<string, string>();

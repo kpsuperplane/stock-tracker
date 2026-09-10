@@ -20,6 +20,11 @@ interface SnapshotRecord {
   headers: Record<string, string>;
 }
 
+export interface SnapshotLookup {
+  snapshot: SnapshotRecord;
+  migratedLegacyKey: boolean;
+}
+
 const headerNames = [
   "content-language",
   "etag",
@@ -62,12 +67,7 @@ const normalizeCurrentCalendarAsOf = (url: URL, currentDate: string): void => {
   }
 };
 
-const normalizedRequestIdentity = (
-  request: Request,
-  currentDate: string,
-): string => {
-  const url = new URL(request.url);
-  normalizeCurrentCalendarAsOf(url, currentDate);
+const requestIdentity = (request: Request, url: URL): string => {
   const params = [...url.searchParams.entries()].sort(
     ([leftKey, leftValue], [rightKey, rightValue]) =>
       leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue),
@@ -78,6 +78,43 @@ const normalizedRequestIdentity = (
     request.headers.get("Cf-Access-Authenticated-User-Email") ??
     "protected-app";
   return `${accessSubject}\n${normalized.pathname}${normalized.search}`;
+};
+
+const normalizedRequestIdentity = (
+  request: Request,
+  currentDate: string,
+): string => {
+  const url = new URL(request.url);
+  normalizeCurrentCalendarAsOf(url, currentDate);
+  return requestIdentity(request, url);
+};
+
+const addDays = (date: string, days: number): string =>
+  new Date(Date.parse(`${date}T12:00:00.000Z`) + days * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+const legacyCalendarCacheKeys = async (
+  request: Request,
+  currentDate: string,
+): Promise<string[]> => {
+  const requestUrl = new URL(request.url);
+  if (
+    requestUrl.pathname !== "/api/calendar" ||
+    (requestUrl.searchParams.has("asOfDate") &&
+      requestUrl.searchParams.get("asOfDate") !== currentDate)
+  ) {
+    return [];
+  }
+  const keys: string[] = [];
+  for (let offset = 0; offset <= 7; offset += 1) {
+    const candidate = new URL(requestUrl);
+    candidate.searchParams.set("asOfDate", addDays(currentDate, -offset));
+    keys.push(
+      `read-model:v1:${await digest(requestIdentity(request, candidate))}`,
+    );
+  }
+  return keys;
 };
 
 const canonicalSnapshotRequestUrl = (
@@ -166,6 +203,59 @@ export class ReadModelSnapshotStore {
       cacheTtl: 30,
     });
     return isSnapshot(candidate) ? candidate : null;
+  }
+
+  async readForRequest(
+    request: Request,
+    cacheKey: string,
+  ): Promise<SnapshotLookup | null> {
+    const current = await this.read(cacheKey);
+    if (current) return { snapshot: current, migratedLegacyKey: false };
+    const currentDate = easternMarketDate(this.now());
+    for (const legacyKey of await legacyCalendarCacheKeys(
+      request,
+      currentDate,
+    )) {
+      const snapshot = await this.read(legacyKey);
+      if (snapshot) return { snapshot, migratedLegacyKey: true };
+    }
+    return null;
+  }
+
+  async registerPublicationTarget(input: {
+    cacheKey: string;
+    family: ReadModelFamily;
+    requestUrl: string;
+    snapshot: SnapshotRecord;
+  }): Promise<void> {
+    const requestUrl = canonicalSnapshotRequestUrl(
+      input.family,
+      input.requestUrl,
+      easternMarketDate(this.now()),
+    );
+    await this.db
+      .prepare(
+        `INSERT INTO read_model_publications
+         (cache_key, family, request_url, source_revision, content_hash,
+          generated_at, valid_until, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(cache_key) DO UPDATE SET
+           family = excluded.family,
+           request_url = excluded.request_url
+         WHERE read_model_publications.family <> excluded.family
+            OR read_model_publications.request_url <> excluded.request_url`,
+      )
+      .bind(
+        input.cacheKey,
+        input.family,
+        requestUrl,
+        input.snapshot.sourceRevision,
+        input.snapshot.contentHash,
+        input.snapshot.generatedAt,
+        input.snapshot.validUntil,
+        this.now().toISOString(),
+      )
+      .run();
   }
 
   isFresh(snapshot: SnapshotRecord): boolean {

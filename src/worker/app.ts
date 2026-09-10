@@ -191,7 +191,10 @@ export const createApp = () => {
       context.env.READ_MODEL_CACHE,
     );
     const cacheKey = await store.keyFor(context.req.raw);
-    const previous = await store.read(cacheKey).catch(() => null);
+    const snapshotLookup = await store
+      .readForRequest(context.req.raw, cacheKey)
+      .catch(() => null);
+    const previous = snapshotLookup?.snapshot ?? null;
     const requestUrl = `${context.req.path}${new URL(context.req.url).search}`;
     const internalRefresh =
       new URL(context.req.url).hostname === "read-model.internal" &&
@@ -278,14 +281,25 @@ export const createApp = () => {
 
     if (!internalRefresh && previous) {
       context.executionCtx.waitUntil(
-        new ReadModelRefreshOutbox(
-          context.env.DB,
-          context.env.SYNC_FOREGROUND_QUEUE as Queue<ReadModelRefreshMessage>,
+        (snapshotLookup?.migratedLegacyKey
+          ? store.registerPublicationTarget({
+              cacheKey,
+              family,
+              requestUrl,
+              snapshot: previous,
+            })
+          : Promise.resolve()
         )
-          .request(
-            family,
-            `stale:${previous.sourceRevision}:${previous.validUntil}`,
-            cacheKey,
+          .then(() =>
+            new ReadModelRefreshOutbox(
+              context.env.DB,
+              context.env
+                .SYNC_FOREGROUND_QUEUE as Queue<ReadModelRefreshMessage>,
+            ).request(
+              family,
+              `stale:${previous.sourceRevision}:${previous.validUntil}`,
+              cacheKey,
+            ),
           )
           .then(() => undefined)
           .catch((error: unknown) => {
